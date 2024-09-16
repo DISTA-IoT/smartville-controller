@@ -1,7 +1,12 @@
 FROM python:3.8
 
 ARG WANDB_API_KEY
+ARG GIT_USERNAME
+ARG GIT_TOKEN
+
 ENV WANDB_API_KEY=${WANDB_API_KEY}
+ENV GIT_USERNAME=${GIT_USERNAME}
+ENV GIT_TOKEN=${GIT_TOKEN}
 
 RUN apt-get update && \
     apt-get install -y git nano vim python3-pip\
@@ -61,7 +66,7 @@ RUN git checkout gar-experimental
 
 RUN rm -r .git
 
-RUN git clone https://github.com/DISTA-IoT/smartville-controller smartController
+RUN git clone https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/DISTA-IoT/smartville-controller smartController
 
 COPY  smartController/prometheus_grafana_datasource.yaml /usr/share/grafana/conf/provisioning/datasources
 
