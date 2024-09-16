@@ -68,10 +68,10 @@ RUN rm -r .git
 
 RUN git clone https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/DISTA-IoT/smartville-controller smartController
 
-COPY  smartController/prometheus_grafana_datasource.yaml /usr/share/grafana/conf/provisioning/datasources
+COPY  prometheus_grafana_datasource.yaml /usr/share/grafana/conf/provisioning/datasources
 
 RUN chmod -R 777 /pox/
 
-ENTRYPOINT ["/pox/entrypoint.sh"]
+# ENTRYPOINT ["pox/smartController/entrypoint.sh"]
 
 
