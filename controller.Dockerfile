@@ -66,7 +66,7 @@ RUN git checkout gar-experimental
 
 RUN rm -r .git
 
-RUN git clone https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/DISTA-IoT/smartville-controller smartController
+RUN git clone https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/DISTA-IoT/smartville-controller pox/smartController
 
 COPY  prometheus_grafana_datasource.yaml /usr/share/grafana/conf/provisioning/datasources
 
