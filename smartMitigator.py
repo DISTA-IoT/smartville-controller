@@ -41,7 +41,6 @@ from pox.lib.util import str_to_bool
 import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import *
 import time
-import argparse
 from pox.lib.recoco import Timer
 from pox.openflow.of_json import *
 from pox.lib.addresses import EthAddr
@@ -127,7 +126,7 @@ class SmartSwitch(EventMixin):
 
 
   def smart_check(self):
-      print('Smart Mitigator here!')
+     # print('Smart Mitigator here!')
       if self.use_node_feats:
         self.brain.classify_duet(
           flows=list(self.flow_logger.flows_dict.values()),
@@ -488,7 +487,6 @@ class SmartSwitch(EventMixin):
       packet_in_event.connection.send(msg)
 
 
-
   def _handle_openflow_PacketIn(self, event):
     switch_id = event.connection.dpid
     incomming_port = event.port
@@ -527,12 +525,10 @@ class SmartSwitch(EventMixin):
         )
       
 
-
 #global methods
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
    
-
 #handle switch section
 #connection enstablished 
 def _handle_ConnectionUp (event):
@@ -552,23 +548,23 @@ def requests_stats():
 
 def launch(**kwargs):
     """
-    Launches the SmartController Component. This method is automatically invoked when 
-    the smartController component is run from pox using the following command:
+    Launches the SmartMitigator Component. This method is automatically invoked when 
+    the smartMitigator component is run from pox using the following command:
     
     ```
-    $ pox.py smartController.smartController 
+    $ pox.py smartController.smartMitigator 
     ```
 
     It migth be useful to launch some PoX logging components alonside the smartController:
 
     ```
-    $ /pox/pox.py samples.pretty_log smartController.smartController 
+    $ /pox/pox.py samples.pretty_log smartController.smartMitigator 
     ```
     
     You can also add parameters for this component using the longparam syntax (i.e., double hyphens):
 
       ```
-    $ /pox/pox.py samples.pretty_log smartController.smartController --use_packet_feats=false --multi_class=false --flow_idle_timeout=3
+    $ /pox/pox.py samples.pretty_log smartController.smartMitigator --use_packet_feats=false --multi_class=false --flow_idle_timeout=3
     ```
 
     The available parameters are:
