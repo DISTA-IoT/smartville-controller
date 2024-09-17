@@ -136,7 +136,7 @@ class FlowLogger(object):
           flow_feat_dim=self.flow_feat_dim,
           flow_buff_len=self.flow_buff_len)
         
-        # This is were our labelling takes place... 
+        # This is where our labelling takes place... 
         new_flow.element_class = self.training_labels_dict[sender_ip_addr]
         new_flow.zda = self.zda_dict[sender_ip_addr]
         new_flow.test_zda = self.test_zda_dict[sender_ip_addr]
