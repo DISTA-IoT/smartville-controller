@@ -194,7 +194,7 @@ AC2_TEST_ZDA_DICT["192.168.1.11"] = True
 
 
 #########################################################################################################
-############# CUSTOM CURRICULUM (Used for custom/random traffic patterns fill as desised.)  ########### 
+############# CUSTOM CURRICULUM (Used for custom/random traffic patterns fill as desired.)  ########### 
 ######################################################################################################### 
 
 # IpV4 attackers (for training purposes) Also victim response flows are considered infected
