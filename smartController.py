@@ -491,8 +491,13 @@ class SmartSwitch(EventMixin):
   def _handle_openflow_PacketIn(self, event):
     switch_id = event.connection.dpid
     incomming_port = event.port
-    packet = event.parsed
-
+    try:
+      packet = event.parsed
+    except:
+      # If the parsing fails, just skip this packet without raising an exception
+      print('.')
+      return 
+       
     if not packet.parsed:
       log.warning(f"switch {switch_id}, port {incomming_port}: ignoring unparsed packet")
       return
