@@ -23,6 +23,24 @@
             "justMyCode": true
         },
         {
+            "name": "SmartMitigator",
+            "type": "python",
+            "request": "launch",
+            "program": "/pox/pox.py",
+            "args": [
+                "samples.pretty_log",
+                "smartController.smartMitigator",
+                "--wb_tracking=False",
+                "--ai_debug=True",
+                "--multi_class=False",
+                "--k_shot=5",
+                "--batch_size=20",
+                "--node_features=False",
+                //"--curriculum=custom"
+            ],
+            "justMyCode": true
+        },
+        {
             "name": "Consumer",
             "type": "python",
             "request": "launch",
