@@ -46,7 +46,7 @@ from pox.openflow.of_json import *
 from pox.lib.addresses import EthAddr
 from smartController.entry import Entry
 from smartController.flowlogger import FlowLogger
-from smartController.controller_brain import ControllerBrain
+from smartController.mitigation_brain import MitigationBrain
 from smartController.metricslogger import MetricsLogger
 from collections import defaultdict
 from smartController.curricula import \
@@ -126,14 +126,10 @@ class SmartSwitch(EventMixin):
 
 
   def smart_check(self):
-     # print('Smart Mitigator here!')
-      if self.use_node_feats:
-        self.brain.classify_duet(
-          flows=list(self.flow_logger.flows_dict.values()),
-          node_feats=self.metrics_logger.metrics_dict)
-      else:
-        self.brain.classify_duet(
-          flows=list(self.flow_logger.flows_dict.values()))
+    self.brain.classify_duet(
+      flows=list(self.flow_logger.flows_dict.values()),
+      node_feats=(self.metrics_logger.metrics_dict if self.use_node_feats else None))
+      
 
 
   def _handle_expiration(self):
@@ -714,7 +710,7 @@ def launch(**kwargs):
         )
   
     # The controllerBrain holds the ML functionalities.
-    controller_brain = ControllerBrain(
+    mitigation_brain = MitigationBrain(
         eval=eval,
         use_packet_feats=use_packet_feats,
         use_node_feats=node_features,
@@ -738,7 +734,7 @@ def launch(**kwargs):
     smart_switch = SmartSwitch(
       flow_logger=flow_logger,
       metrics_logger=metrics_logger,
-      brain=controller_brain,
+      brain=mitigation_brain,
       use_node_feats=node_features,
       **switching_args
       )
