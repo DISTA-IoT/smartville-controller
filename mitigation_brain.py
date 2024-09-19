@@ -567,15 +567,19 @@ class MitigationBrain():
                                 mode=INFERENCE)
         
         query_mask = self.get_canonical_query_mask(INFERENCE)
+
         query_mask = torch.cat([query_mask, torch.ones_like(batch_labels).to(torch.bool)])
 
         support_flow_batch = torch.vstack([support_flow_batch, flow_input_batch])
+
         if self.use_packet_feats:
-            support_packet_batch = torch.vstack([support_packet_batch, packet_input_batch])
+            support_packet_batch = (torch.vstack([support_packet_batch, packet_input_batch]))
         if self.use_node_feats:
             support_node_feat_batch = torch.vstack([support_node_feat_batch, node_feat_input_batch])
+
         support_labels = torch.cat([support_labels.squeeze(1), batch_labels]).unsqueeze(1)
         support_zda_labels = torch.cat([support_zda_labels.squeeze(1), zda_labels]).unsqueeze(1)
+
         logits, hidden_vectors, predicted_kernel = self.infer(
             flow_input_batch=support_flow_batch,
             packet_input_batch=support_packet_batch,
@@ -921,8 +925,7 @@ class MitigationBrain():
                 batch_labels=balanced_labels,
                 query_mask=query_mask)
 
-           #####  COPY FROM HERE
-           #   
+  
             # one_hot_labels
             one_hot_labels = self.get_oh_labels(
                 curr_shape=(balanced_labels.shape[0],logits.shape[1]), 
