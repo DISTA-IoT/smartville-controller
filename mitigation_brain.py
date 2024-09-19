@@ -23,7 +23,6 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from smartController.wandb_tracker import WandBTracker
-from smartController.flow import CircularBuffer
 from pox.core import core  # only for logging.
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -494,7 +493,8 @@ class MitigationBrain():
             node_feat_input_batch,
             batch_labels,
             zda_batch_labels,
-            test_zda_batch_labels):
+            test_zda_batch_labels,
+            mode):
         """
         Don't know why, but you can have more than one sample
         per class in inference time. 
@@ -503,127 +503,39 @@ class MitigationBrain():
         Otherwise we will have bad surprises when sampling from them!!!
         (i.e. sampling more elements than those requested!)
         """
+        buffers = (self.replay_buffers if mode == TRAINING else self.test_replay_buffers)
+
         unique_labels = torch.unique(batch_labels)
 
         for label in unique_labels:
+
             mask = batch_labels == label
-
-            if self.use_packet_feats:
-                if self.use_node_feats:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            packet_input_batch[mask][sample_idx].unsqueeze(0),
-                            node_feat_input_batch[mask][sample_idx].unsqueeze(0),
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-                else:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            packet_input_batch[mask][sample_idx].unsqueeze(0),
-                            None,
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-            else:
-                if self.use_node_feats:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            None,
-                            node_feat_input_batch[mask][sample_idx].unsqueeze(0),
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))                   
-                else:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            None,
-                            None, 
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-        
-        if not self.experience_learning_allowed:
-            buff_lengths = [len(replay_buff) for replay_buff in self.replay_buffers.values()]
-
-            if self.AI_DEBUG:
-                self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
-
-            self.experience_learning_allowed = torch.all(
-                torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in buff_lengths]))
             
+            for sample_idx in range(flow_input_batch[mask].shape[0]):
+                buffers[label.item()].push(
+                    flow_state=flow_input_batch[mask][sample_idx].unsqueeze(0), 
+                    packet_state=(packet_input_batch[mask][sample_idx].unsqueeze(0) if self.use_packet_feats else None),
+                    node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
+                    label=batch_labels[mask][sample_idx].unsqueeze(0),
+                    zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
+                    test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
+                
+        if mode == TRAINING and not self.experience_learning_allowed:
+            buff_lengths = [len(replay_buff) for replay_buff in buffers.values()]
+            if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
+            self.experience_learning_allowed = torch.all(
+                torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in buff_lengths]))        
 
-
-    def push_to_test_replay_buffers(
-            self,
-            flow_input_batch, 
-            packet_input_batch,
-            node_feat_input_batch, 
-            batch_labels,
-            zda_batch_labels,
-            test_zda_batch_labels):
-
-        unique_labels = torch.unique(batch_labels)
-
-        for label in unique_labels:
-            mask = batch_labels == label
-
-            if self.use_packet_feats:
-                if self.use_node_feats:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.test_replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            packet_input_batch[mask][sample_idx].unsqueeze(0),
-                            node_feat_input_batch[mask][sample_idx].unsqueeze(0),
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))                 
-                else:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.test_replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            packet_input_batch[mask][sample_idx].unsqueeze(0),
-                            None,
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-            else:
-                if self.use_node_feats:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.test_replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            None,
-                            node_feat_input_batch[mask][sample_idx].unsqueeze(0),
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-                else:
-                    for sample_idx in range(flow_input_batch[mask].shape[0]):
-                        self.test_replay_buffers[label.item()].push(
-                            flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                            None,
-                            None,
-                            label=batch_labels[mask][sample_idx].unsqueeze(0),
-                            zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                            test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-
-        test_buff_lengths = [len(replay_buff) for replay_buff in self.test_replay_buffers.values()]
-
-        if not self.inference_allowed or not self.eval_allowed:
-
-            if self.AI_DEBUG:
-                self.logger_instance.info(f'Test Buffer lengths: {test_buff_lengths}')
+        if mode == INFERENCE and (not self.inference_allowed or not self.eval_allowed):
+            test_buff_lengths = [len(replay_buff) for replay_buff in buffers.values()]
+            if self.AI_DEBUG: self.logger_instance.info(f'Test Buffer lengths: {test_buff_lengths}')
 
             self.inference_allowed = torch.all(
                 torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in test_buff_lengths]))
             self.eval_allowed = torch.all(
                 torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in test_buff_lengths]))
-            
-            
+
+
     def classify_duet(self, flows, node_feats: dict = None):
         """
         makes inferences about a duet flow (source ip, dest ip)
@@ -655,7 +567,8 @@ class MitigationBrain():
                         node_feat_arg,  
                         batch_labels=batch_labels[to_push_mask],
                         zda_batch_labels=zda_labels[to_push_mask],
-                        test_zda_batch_labels=test_zda_labels[to_push_mask])
+                        test_zda_batch_labels=test_zda_labels[to_push_mask],
+                        mode=TRAINING)
                 else:
                     known_mask = ~zda_labels.bool()
                     to_push_mask = torch.logical_or(test_zda_labels.bool(), known_mask)
@@ -665,13 +578,14 @@ class MitigationBrain():
                     if self.use_packet_feats:
                         packet_feat_arg = packet_input_batch[to_push_mask] 
 
-                    self.push_to_test_replay_buffers(
+                    self.push_to_replay_buffers(
                         flow_input_batch[to_push_mask], 
                         packet_feat_arg, 
                         node_feat_arg,  
                         batch_labels=batch_labels[to_push_mask],
                         zda_batch_labels=zda_labels[to_push_mask],
-                        test_zda_batch_labels=test_zda_labels[to_push_mask])
+                        test_zda_batch_labels=test_zda_labels[to_push_mask],
+                        mode=INFERENCE)
 
                 
                 if self.inference_allowed:
