@@ -536,118 +536,132 @@ class MitigationBrain():
                 torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in test_buff_lengths]))
 
 
+
+    def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
+
+        if mode==TRAINING:
+            return ~test_zda_labels.bool()
+        else:
+            known_mask = ~zda_labels.bool()
+            return torch.logical_or(test_zda_labels.bool(), known_mask)
+
+
+    def online_inference(
+            self, 
+            flow_input_batch,
+            packet_input_batch,
+            node_feat_input_batch,
+            batch_labels,
+            zda_labels):
+        
+        self.classifier.eval()
+        self.confidence_decoder.eval()
+
+        support_flow_batch, \
+            support_packet_batch, \
+                support_node_feat_batch, \
+                    support_labels, \
+                        support_zda_labels, \
+                            support_test_zda_labels = self.sample_from_replay_buffers(
+                                samples_per_class=self.replay_buff_batch_size,
+                                mode=INFERENCE)
+        
+        query_mask = self.get_canonical_query_mask(INFERENCE)
+        query_mask = torch.cat([query_mask, torch.ones_like(batch_labels).to(torch.bool)])
+
+        support_flow_batch = torch.vstack([support_flow_batch, flow_input_batch])
+        if self.use_packet_feats:
+            support_packet_batch = torch.vstack([support_packet_batch, packet_input_batch])
+        if self.use_node_feats:
+            support_node_feat_batch = torch.vstack([support_node_feat_batch, node_feat_input_batch])
+        support_labels = torch.cat([support_labels.squeeze(1), batch_labels]).unsqueeze(1)
+        support_zda_labels = torch.cat([support_zda_labels.squeeze(1), zda_labels]).unsqueeze(1)
+        logits, hidden_vectors, predicted_kernel = self.infer(
+            flow_input_batch=support_flow_batch,
+            packet_input_batch=support_packet_batch,
+            node_feat_input_batch=support_node_feat_batch,
+            batch_labels=support_labels,
+            query_mask=query_mask)
+
+        # one_hot_labels
+        one_hot_labels = self.get_oh_labels(
+            curr_shape=(support_labels.shape[0],logits.shape[1]), 
+            targets=support_labels)
+        
+        # known class horizonal mask:
+        known_oh_labels = one_hot_labels[~support_zda_labels.squeeze(1).bool()]
+        known_class_h_mask = known_oh_labels.sum(0)>0
+
+        _, predicted_clusters, kr_precision = self.kernel_regression_step(
+            predicted_kernel, 
+            one_hot_labels,
+            INFERENCE)
+        
+        _, ad_acc = self.AD_step(
+            zda_labels=support_zda_labels, 
+            preds=logits[:, known_class_h_mask], 
+            query_mask=query_mask,
+            mode=INFERENCE)
+        
+        cs_acc = self.learning_step(support_labels, logits, INFERENCE, query_mask)
+
+        if self.AI_DEBUG: 
+            self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
+                                    f'Online {INFERENCE}  CS accuracy: {cs_acc.item()}')
+            self.logger_instance.info(f'Online {INFERENCE} KR accuracy: {kr_precision}')
+        
+        self.classifier.train()
+        self.confidence_decoder.train()
+
+
     def classify_duet(self, flows, node_feats: dict = None):
         """
         makes inferences about a duet flow (source ip, dest ip)
         """
-        node_feat_arg = None
-        packet_feat_arg = None
         
         with lock:
 
             if len(flows) == 0:
                 return None
             else:
-                flow_input_batch, packet_input_batch, node_feat_input_batch = self.assembly_input_tensor(
-                    flows,
-                    node_feats)
-                batch_labels, zda_labels, test_zda_labels = self.get_labels(flows)
+                flow_input_batch, \
+                    packet_input_batch, \
+                        node_feat_input_batch = self.assembly_input_tensor(
+                                                        flows,
+                                                        node_feats)
+                
+                batch_labels, \
+                    zda_labels, \
+                        test_zda_labels = self.get_labels(flows)
 
-                if random.random() > 0.3:
-                    to_push_mask = ~test_zda_labels.bool()
+                mode=(TRAINING if random.random() > 0.3 else INFERENCE)
 
-                    if self.use_node_feats:
-                        node_feat_arg = node_feat_input_batch[to_push_mask]
-                    if self.use_packet_feats:
-                        packet_feat_arg = packet_input_batch[to_push_mask] 
+                to_push_mask = self.get_pushing_mask(
+                    zda_labels, 
+                    test_zda_labels, 
+                    mode)
+                
+                node_feat_arg = (node_feat_input_batch[to_push_mask] if self.use_node_feats else None)
+                packet_feat_arg = (packet_input_batch[to_push_mask] if self.use_packet_feats else None) 
 
-                    self.push_to_replay_buffers(
-                        flow_input_batch[to_push_mask], 
-                        packet_feat_arg,
-                        node_feat_arg,  
-                        batch_labels=batch_labels[to_push_mask],
-                        zda_batch_labels=zda_labels[to_push_mask],
-                        test_zda_batch_labels=test_zda_labels[to_push_mask],
-                        mode=TRAINING)
-                else:
-                    known_mask = ~zda_labels.bool()
-                    to_push_mask = torch.logical_or(test_zda_labels.bool(), known_mask)
-
-                    if self.use_node_feats:
-                        node_feat_arg = node_feat_input_batch[to_push_mask]
-                    if self.use_packet_feats:
-                        packet_feat_arg = packet_input_batch[to_push_mask] 
-
-                    self.push_to_replay_buffers(
-                        flow_input_batch[to_push_mask], 
-                        packet_feat_arg, 
-                        node_feat_arg,  
-                        batch_labels=batch_labels[to_push_mask],
-                        zda_batch_labels=zda_labels[to_push_mask],
-                        test_zda_batch_labels=test_zda_labels[to_push_mask],
-                        mode=INFERENCE)
+                self.push_to_replay_buffers(
+                    flow_input_batch[to_push_mask], 
+                    packet_feat_arg,
+                    node_feat_arg,  
+                    batch_labels=batch_labels[to_push_mask],
+                    zda_batch_labels=zda_labels[to_push_mask],
+                    test_zda_batch_labels=test_zda_labels[to_push_mask],
+                    mode=mode)
 
                 
                 if self.inference_allowed:
 
-                    self.classifier.eval()
-                    self.confidence_decoder.eval()
-
-                    balanced_flow_batch, \
-                        balanced_packet_batch, \
-                            balanced_node_feat_batch, \
-                                balanced_labels, \
-                                    balanced_zda_labels, \
-                                        balanced_test_zda_labels = self.sample_from_replay_buffers(
-                                            samples_per_class=self.replay_buff_batch_size,
-                                            mode=INFERENCE)
-                    
-                    query_mask = self.get_canonical_query_mask(INFERENCE)
-                    query_mask = torch.cat([query_mask, torch.ones_like(batch_labels).to(torch.bool)])
-
-                    balanced_flow_batch = torch.vstack([balanced_flow_batch, flow_input_batch])
-                    if self.use_packet_feats:
-                        balanced_packet_batch = torch.vstack([balanced_packet_batch, packet_input_batch])
-                    if self.use_node_feats:
-                        balanced_node_feat_batch = torch.vstack([balanced_node_feat_batch, node_feat_input_batch])
-                    balanced_labels = torch.cat([balanced_labels.squeeze(1), batch_labels]).unsqueeze(1)
-                    balanced_zda_labels = torch.cat([balanced_zda_labels.squeeze(1), zda_labels]).unsqueeze(1)
-                    logits, hidden_vectors, predicted_kernel = self.infer(
-                        flow_input_batch=balanced_flow_batch,
-                        packet_input_batch=balanced_packet_batch,
-                        node_feat_input_batch=balanced_node_feat_batch,
-                        batch_labels=balanced_labels,
-                        query_mask=query_mask)
-
-                    # one_hot_labels
-                    one_hot_labels = self.get_oh_labels(
-                        curr_shape=(balanced_labels.shape[0],logits.shape[1]), 
-                        targets=balanced_labels)
-                    
-                    # known class horizonal mask:
-                    known_oh_labels = one_hot_labels[~balanced_zda_labels.squeeze(1).bool()]
-                    known_class_h_mask = known_oh_labels.sum(0)>0
-
-                    _, predicted_clusters, kr_precision = self.kernel_regression_step(
-                        predicted_kernel, 
-                        one_hot_labels,
-                        INFERENCE)
-                    
-                    _, ad_acc = self.AD_step(
-                        zda_labels=balanced_zda_labels, 
-                        preds=logits[:, known_class_h_mask], 
-                        query_mask=query_mask,
-                        mode=INFERENCE)
-                    
-                    cs_acc = self.learning_step(balanced_labels, logits, INFERENCE, query_mask)
-
-                    if self.AI_DEBUG: 
-                        self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
-                                                f'Online {INFERENCE}  CS accuracy: {cs_acc.item()}')
-                        self.logger_instance.info(f'Online {INFERENCE} KR accuracy: {kr_precision}')
-                    
-                    self.classifier.train()
-                    self.confidence_decoder.train()
+                    self.online_inference(
+                        flow_input_batch,
+                        packet_input_batch,
+                        node_feat_input_batch,
+                        batch_labels,
+                        zda_labels)
 
                 if self.experience_learning_allowed:
                     self.experience_learning()
