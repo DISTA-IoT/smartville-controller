@@ -17,7 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 from smartController.neural_modules import  MultiClassFlowClassifier, ThreeStreamMulticlassFlowClassifier, \
         TwoStreamMulticlassFlowClassifier, KernelRegressionLoss, ConfidenceDecoder
-from smartController.replay_buffer import ReplayBuffer
+from smartController.replay_buffer import ReplayBuffer, Batch
 import os
 import torch
 import torch.optim as optim
@@ -538,7 +538,13 @@ class MitigationBrain():
 
 
     def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
-
+        """
+        The pushing mask is a vertical mask (i.e. a binary mask taht assings 1 or 0 to each 
+        sample in the batch). The pushing mask tells us what samples are going to be saved in the 
+        replay buffer. In the case of a training replay buffer, we save every input sample except those 
+        that appertain to test zda labels. In the case of a test replay buffer, we omit the samples 
+        that come from training zdas classes, so we take both known classes and test zdas.
+        """
         if mode==TRAINING:
             return ~test_zda_labels.bool()
         else:
@@ -546,54 +552,59 @@ class MitigationBrain():
             return torch.logical_or(test_zda_labels.bool(), known_mask)
 
 
+    def merge_batches(self, left_batch, rigth_batch):
+        """
+        Self-explainable... handles squeezing for you....
+        """
+        flow_features = torch.vstack([left_batch.flow_features, rigth_batch.flow_features])
+        packet_features = (torch.vstack([left_batch.packet_features, rigth_batch.packet_features]) if self.use_packet_feats else None)
+        node_features = (torch.vstack([left_batch.node_features, rigth_batch.node_features]) if self.use_node_feats else None)
+
+        class_labels = torch.cat([left_batch.class_labels.squeeze(1), rigth_batch.class_labels]).unsqueeze(1)
+        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), rigth_batch.zda_labels]).unsqueeze(1)
+        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), rigth_batch.test_zda_labels]).unsqueeze(1)
+
+        return Batch(
+                flow_features=flow_features,
+                packet_features=packet_features,
+                node_features=node_features,
+                class_labels=class_labels,
+                zda_labels=zda_labels,
+                test_zda_labels=test_zda_labels)
+
+
     def online_inference(
             self, 
-            flow_input_batch,
-            packet_input_batch,
-            node_feat_input_batch,
-            batch_labels,
-            zda_labels):
+            batch):
         
         self.classifier.eval()
         self.confidence_decoder.eval()
 
-        support_flow_batch, \
-            support_packet_batch, \
-                support_node_feat_batch, \
-                    support_labels, \
-                        support_zda_labels, \
-                            support_test_zda_labels = self.sample_from_replay_buffers(
+        support_batch = self.sample_from_replay_buffers(
                                 samples_per_class=self.replay_buff_batch_size,
                                 mode=INFERENCE)
         
-        query_mask = self.get_canonical_query_mask(INFERENCE)
-
-        query_mask = torch.cat([query_mask, torch.ones_like(batch_labels).to(torch.bool)])
-
-        support_flow_batch = torch.vstack([support_flow_batch, flow_input_batch])
-
-        if self.use_packet_feats:
-            support_packet_batch = (torch.vstack([support_packet_batch, packet_input_batch]))
-        if self.use_node_feats:
-            support_node_feat_batch = torch.vstack([support_node_feat_batch, node_feat_input_batch])
-
-        support_labels = torch.cat([support_labels.squeeze(1), batch_labels]).unsqueeze(1)
-        support_zda_labels = torch.cat([support_zda_labels.squeeze(1), zda_labels]).unsqueeze(1)
+        support_query_mask = self.get_canonical_query_mask(INFERENCE)
+        merged_query_mask = torch.cat([
+            support_query_mask, 
+            torch.ones_like(batch.class_labels).to(torch.bool)])
+        
+        merged_batch = self.merge_batches(support_batch, batch)
 
         logits, hidden_vectors, predicted_kernel = self.infer(
-            flow_input_batch=support_flow_batch,
-            packet_input_batch=support_packet_batch,
-            node_feat_input_batch=support_node_feat_batch,
-            batch_labels=support_labels,
-            query_mask=query_mask)
+            flow_input_batch=merged_batch.flow_features,
+            packet_input_batch=merged_batch.packet_features,
+            node_feat_input_batch=merged_batch.node_features,
+            batch_labels=merged_batch.class_labels,
+            query_mask=merged_query_mask)
 
         # one_hot_labels
         one_hot_labels = self.get_oh_labels(
-            curr_shape=(support_labels.shape[0],logits.shape[1]), 
-            targets=support_labels)
+            curr_shape=(merged_batch.class_labels.shape[0],logits.shape[1]), 
+            targets=merged_batch.class_labels)
         
         # known class horizonal mask:
-        known_oh_labels = one_hot_labels[~support_zda_labels.squeeze(1).bool()]
+        known_oh_labels = one_hot_labels[~merged_batch.zda_labels.squeeze(1).bool()]
         known_class_h_mask = known_oh_labels.sum(0)>0
 
         _, predicted_clusters, kr_precision = self.kernel_regression_step(
@@ -602,12 +613,12 @@ class MitigationBrain():
             INFERENCE)
         
         _, ad_acc = self.AD_step(
-            zda_labels=support_zda_labels, 
+            zda_labels=merged_batch.zda_labels, 
             preds=logits[:, known_class_h_mask], 
-            query_mask=query_mask,
+            query_mask=merged_query_mask,
             mode=INFERENCE)
         
-        cs_acc = self.learning_step(support_labels, logits, INFERENCE, query_mask)
+        cs_acc = self.learning_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
@@ -628,44 +639,29 @@ class MitigationBrain():
             if len(flows) == 0:
                 return None
             else:
-                flow_input_batch, \
-                    packet_input_batch, \
-                        node_feat_input_batch = self.assembly_input_tensor(
-                                                        flows,
-                                                        node_feats)
-                
-                batch_labels, \
-                    zda_labels, \
-                        test_zda_labels = self.get_labels(flows)
 
+                batch = self.assembly_input_tensor(flows, node_feats)
+                
                 mode=(TRAINING if random.random() > 0.3 else INFERENCE)
 
                 to_push_mask = self.get_pushing_mask(
-                    zda_labels, 
-                    test_zda_labels, 
+                    batch.zda_labels, 
+                    batch.test_zda_labels, 
                     mode)
-                
-                node_feat_arg = (node_feat_input_batch[to_push_mask] if self.use_node_feats else None)
-                packet_feat_arg = (packet_input_batch[to_push_mask] if self.use_packet_feats else None) 
 
                 self.push_to_replay_buffers(
-                    flow_input_batch[to_push_mask], 
-                    packet_feat_arg,
-                    node_feat_arg,  
-                    batch_labels=batch_labels[to_push_mask],
-                    zda_batch_labels=zda_labels[to_push_mask],
-                    test_zda_batch_labels=test_zda_labels[to_push_mask],
+                    batch.flow_features[to_push_mask], 
+                    (batch.packet_features[to_push_mask] if self.use_packet_feats else None),
+                    (batch.node_features[to_push_mask] if self.use_node_feats else None),  
+                    batch_labels=batch.class_labels[to_push_mask],
+                    zda_batch_labels=batch.zda_labels[to_push_mask],
+                    test_zda_batch_labels=batch.test_zda_labels[to_push_mask],
                     mode=mode)
 
                 
                 if self.inference_allowed:
 
-                    self.online_inference(
-                        flow_input_batch,
-                        packet_input_batch,
-                        node_feat_input_batch,
-                        batch_labels,
-                        zda_labels)
+                    self.online_inference(batch)
 
                 if self.experience_learning_allowed:
                     self.experience_learning()
@@ -718,7 +714,13 @@ class MitigationBrain():
 
             init = False
 
-        return balanced_flow_batch, balanced_packet_batch, balanced_node_feat_batch, balanced_labels, balanced_zda_labels, balanced_test_zda_labels
+        return Batch(
+            flow_features=balanced_flow_batch, 
+            packet_features=balanced_packet_batch, 
+            node_features=balanced_node_feat_batch,
+            class_labels=balanced_labels,
+            zda_labels=balanced_zda_labels,
+            test_zda_labels=balanced_test_zda_labels)
 
 
     def get_canonical_query_mask(self, phase):
@@ -822,35 +824,30 @@ class MitigationBrain():
 
     def experience_learning(self):
 
-        balanced_flow_batch, \
-            balanced_packet_batch, \
-                balanced_node_feat_batch, \
-                    balanced_labels, \
-                        balanced_zda_labels, \
-                            balanced_test_zda_labels = self.sample_from_replay_buffers(
+        training_batch = self.sample_from_replay_buffers(
                 samples_per_class=self.replay_buff_batch_size,
                 mode=TRAINING)
         
         query_mask = self.get_canonical_query_mask(TRAINING)
 
-        assert query_mask.shape[0] == balanced_labels.shape[0]
+        assert query_mask.shape[0] == training_batch.class_labels.shape[0]
 
         logits, hidden_vectors, predicted_kernel = self.infer(
-            flow_input_batch=balanced_flow_batch,
-            packet_input_batch=balanced_packet_batch,
-            node_feat_input_batch=balanced_node_feat_batch,
-            batch_labels=balanced_labels,
+            flow_input_batch=training_batch.flow_features,
+            packet_input_batch=training_batch.packet_features,
+            node_feat_input_batch=training_batch.node_features,
+            batch_labels=training_batch.class_labels,
             query_mask=query_mask)
         
         loss = 0
 
         # one_hot_labels
         one_hot_labels = self.get_oh_labels(
-            curr_shape=(balanced_labels.shape[0],logits.shape[1]), 
-            targets=balanced_labels)
+            curr_shape=(training_batch.class_labels.shape[0],logits.shape[1]), 
+            targets=training_batch.class_labels)
         
         # known class horizonal mask:
-        known_oh_labels = one_hot_labels[~balanced_zda_labels.squeeze(1).bool()]
+        known_oh_labels = one_hot_labels[~training_batch.zda_labels.squeeze(1).bool()]
         known_class_h_mask = known_oh_labels.sum(0)>0
 
         kr_loss, predicted_clusters, _ = self.kernel_regression_step(
@@ -863,7 +860,7 @@ class MitigationBrain():
         
         if self.multi_class:
             ad_loss, _ = self.AD_step(
-                zda_labels=balanced_zda_labels, 
+                zda_labels=training_batch.zda_labels, 
                 preds=logits[:, known_class_h_mask], 
                 query_mask=query_mask,
                 mode=TRAINING)
@@ -878,7 +875,7 @@ class MitigationBrain():
             self.report(
                 preds=logits[:,known_class_h_mask],  
                 hiddens=hidden_vectors.detach(), 
-                labels=balanced_labels,
+                labels=training_batch.class_labels,
                 predicted_clusters=predicted_clusters, 
                 query_mask=query_mask,
                 phase=TRAINING)
@@ -886,10 +883,10 @@ class MitigationBrain():
             if self.eval_allowed:
                 self.evaluate_models()
 
-        cs_acc = self.learning_step(balanced_labels, logits, TRAINING, query_mask, loss)
+        cs_acc = self.learning_step(training_batch.class_labels, logits, TRAINING, query_mask, loss)
             
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'{TRAINING} batch labels mean: {balanced_labels.to(torch.float16).mean().item()} '+\
+            self.logger_instance.info(f'{TRAINING} batch labels mean: {training_batch.class_labels.to(torch.float16).mean().item()} '+\
                                       f'{TRAINING} batch prediction mean: {logits.max(1)[1].to(torch.float32).mean()}')
             self.logger_instance.info(f'{TRAINING} mean multiclass classif accuracy: {cs_acc}')
 
@@ -905,34 +902,29 @@ class MitigationBrain():
 
         for _ in range(EVALUATION_ROUNDS):
                 
-            balanced_flow_batch, \
-                balanced_packet_batch, \
-                    balanced_node_feat_batch, \
-                        balanced_labels, \
-                            balanced_zda_labels, \
-                                balanced_test_zda_labels = self.sample_from_replay_buffers(
+            eval_batch = self.sample_from_replay_buffers(
                                     samples_per_class=self.replay_buff_batch_size,
                                     mode=INFERENCE)
             
             query_mask = self.get_canonical_query_mask(INFERENCE)
 
-            assert query_mask.shape[0] == balanced_labels.shape[0]
+            assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
 
             logits, hidden_vectors, predicted_kernel = self.infer(
-                flow_input_batch=balanced_flow_batch,
-                packet_input_batch=balanced_packet_batch,
-                node_feat_input_batch=balanced_node_feat_batch,
-                batch_labels=balanced_labels,
+                flow_input_batch=eval_batch.flow_features,
+                packet_input_batch=eval_batch.packet_features,
+                node_feat_input_batch=eval_batch.node_features,
+                batch_labels=eval_batch.class_labels,
                 query_mask=query_mask)
 
   
             # one_hot_labels
             one_hot_labels = self.get_oh_labels(
-                curr_shape=(balanced_labels.shape[0],logits.shape[1]), 
-                targets=balanced_labels)
+                curr_shape=(eval_batch.class_labels.shape[0],logits.shape[1]), 
+                targets=eval_batch.class_labels)
             
             # known class horizonal mask:
-            known_oh_labels = one_hot_labels[~balanced_zda_labels.squeeze(1).bool()]
+            known_oh_labels = one_hot_labels[~eval_batch.zda_labels.squeeze(1).bool()]
             known_class_h_mask = known_oh_labels.sum(0)>0
 
             _, predicted_clusters, kr_precision = self.kernel_regression_step(
@@ -941,7 +933,7 @@ class MitigationBrain():
             INFERENCE)
 
             _, ad_acc = self.AD_step(
-                zda_labels=balanced_zda_labels, 
+                zda_labels=eval_batch.zda_labels, 
                 preds=logits[:, known_class_h_mask], 
                 query_mask=query_mask,
                 mode=INFERENCE)
@@ -950,7 +942,7 @@ class MitigationBrain():
             preds=logits.detach(),
             targets_onehot=one_hot_labels[query_mask])
             
-            cs_acc = self.learning_step(balanced_labels, logits, INFERENCE, query_mask)
+            cs_acc = self.learning_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
 
             mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
             mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
@@ -973,7 +965,7 @@ class MitigationBrain():
         self.report(
                 preds=logits[:,known_class_h_mask], 
                 hiddens=hidden_vectors.detach(), 
-                labels=balanced_labels,
+                labels=eval_batch.class_labels,
                 predicted_clusters=predicted_clusters, 
                 query_mask=query_mask,
                 phase=INFERENCE)
@@ -1105,10 +1097,14 @@ class MitigationBrain():
             flows,
             node_feats):
         """
-        A batch is composed of a set of flows. 
+        Assemblies a batch from current observations. 
+        A (flow) batch is composed of a set of flows. 
         Each Flow has a bidimensional feature tensor. 
         (self.MAX_FLOW_TIMESTEPS x 4 features)
+
+        Returns a Batch object containing the corresponding features and labels.
         """
+
         flow_input_batch = flows[0].get_feat_tensor().unsqueeze(0)
         packet_input_batch = None
         node_feat_input_batch = None
@@ -1119,6 +1115,7 @@ class MitigationBrain():
             flows[0].node_feats = -1 * torch.ones(
                     size=(10,5),
                     device=self.device)
+            
             if flows[0].dest_ip in node_feats.keys():
                 flows[0].node_feats[:len(node_feats[flows[0].dest_ip][CPU]),:]  = torch.hstack([
                         torch.Tensor(node_feats[flows[0].dest_ip][CPU]).unsqueeze(1),
@@ -1156,7 +1153,19 @@ class MitigationBrain():
                             flow.node_feats.unsqueeze(0)],
                             dim=0)
                         
-        return flow_input_batch, packet_input_batch, node_feat_input_batch
+
+        batch_labels, \
+                    zda_labels, \
+                        test_zda_labels = self.get_labels(flows)
+        
+        return Batch(
+            flow_features=flow_input_batch, 
+            packet_features=packet_input_batch, 
+            node_features=node_feat_input_batch,
+            class_labels=batch_labels,
+            zda_labels=zda_labels,
+            test_zda_labels=test_zda_labels)
+         
     
 
     def plot_confusion_matrix(

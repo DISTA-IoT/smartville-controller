@@ -20,6 +20,27 @@ import random
 from collections import deque
 
 
+class Batch():
+    """
+    A comodity class to pass the elements of every batch back and forth...
+    """
+    def __init__(
+            self,
+            flow_features=None,
+            packet_features=None,
+            node_features=None,
+            class_labels=None,
+            zda_labels=None,
+            test_zda_labels=None
+            ):
+        
+        self.flow_features = flow_features
+        self.packet_features = packet_features
+        self.node_features = node_features
+        self.class_labels = class_labels
+        self.zda_labels = zda_labels
+        self.test_zda_labels = test_zda_labels
+
 
 class ReplayBuffer():
     
