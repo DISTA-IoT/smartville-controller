@@ -450,7 +450,16 @@ class MitigationBrain():
             node_feat_input_batch,
             batch_labels,
             query_mask):
-
+        """
+        Forward inference pass on neural modules.
+        Notice that we can feed our prototypical learners with all kind of labels, (including zdas)
+        as far as we do not back-propagate error gradients from the corresponding outputs. 
+        We'll handle this epistemic correctness during learning, not during forward pass. 
+            Returns:
+                logits: logit multiclass classification predictions (only for the QUERY samples!) 
+                hiddens: 
+                predicted_kernel:
+        """
         if self.use_packet_feats:
             if self.use_node_feats:
                 logits, hiddens, predicted_kernel = self.classifier(
@@ -612,13 +621,12 @@ class MitigationBrain():
             one_hot_labels,
             INFERENCE)
         
-        _, ad_acc = self.AD_step(
-            zda_labels=merged_batch.zda_labels, 
+        _, ad_acc = self.zda_classification_step(
+            zda_labels=merged_batch.zda_labels[merged_query_mask], 
             preds=logits[:, known_class_h_mask], 
-            query_mask=merged_query_mask,
             mode=INFERENCE)
         
-        cs_acc = self.learning_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+        cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
@@ -724,6 +732,23 @@ class MitigationBrain():
 
 
     def get_canonical_query_mask(self, phase):
+        """
+        The query mask differentiates support from query samples. 
+        Support samples are used for centroid computation and prototypical learning.
+        Query samples are assigned to each centroid based on their simmilarity in the manifold.
+
+        This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 or 0 to each sample in the batch, indicating
+        if it is a query sample or not (in which case it will be a support sample).
+
+        This method assumes that the samples in the batch are concatenated in continuous slices, i.e. all the 
+        samples corresponding to class A are in the first M positions, where M correspondons to the number of support + query samples for each class,
+        In the next M positions, we'll have samples from class B, and so on... 
+        
+        So we need to mask K samples of each class, where K is the number of query samples for each class, and this methods masks the last K samples of each class. 
+        
+        The unique difference between training and evaluation cases is that the number of knonw classes (i.e. the knowledge base) might be different, so 
+        we take that number into account for creating the quesy mask... (the mask will have dimensions N times M where N is the number of classes in the knowledge base)
+        """
         if phase == TRAINING:
             class_count = self.current_training_known_classes_count
         elif phase == INFERENCE:
@@ -732,8 +757,14 @@ class MitigationBrain():
         query_mask = torch.zeros(
             size=(class_count, self.replay_buff_batch_size),
             device=self.device).to(torch.bool)
+        
+        # This is a trick for labelling withouth messing around with indexes.
+        # We started from a bi-dimensional binary mask, all zeros, 
+        # we fill with ones the last self.K_shot positions of every row (that corresponds to each class)  
         query_mask[:, self.k_shot:] = True
-        return query_mask.view(-1)
+        # and then we flatten the di-dimensional mask to get a one-dimensional one that works for us! 
+        query_mask = query_mask.view(-1)
+        return query_mask
 
 
     def get_oh_labels(self, curr_shape, targets):
@@ -746,44 +777,61 @@ class MitigationBrain():
         return targets_onehot
     
 
-    def AD_step(self, zda_labels, preds, query_mask, mode):
-        
+    def zda_classification_step(
+            self,
+            zda_labels,  
+            preds, 
+            mode):
+        """
+        Params:
+            zda_labels: 
+                vertical mask indicating if the sample is a Zda or not.
+                (1 bit for each query sample. not including support samples here) 
+            preds: 
+                these logit vectors have logits that indicate guessed assignation to known classes ONLY.
+                note also that we have one logits vector for each query sample. (not including support samples here)
+            mode:
+                can be TRAINING or INFERENCE, helps to differentiate the number of classes in play...
+        """
 
+        # Binary outcomes guessing if the sample is a Zda or a sample from a known class. 
         zda_predictions = self.confidence_decoder(scores=preds)
 
         os_loss = self.os_criterion(
             input=zda_predictions,
-            target=zda_labels[query_mask])
+            target=zda_labels)
         
+        # one-hot binary labels have two positions. 
+        # [1,0] -> Zda
+        # [0,1] -> known stuff  
+        # we make this to rapidly compute the confusion matrix in pytorch...   
         onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0],2)).long()
         onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
 
-        if mode == TRAINING:
-            self.training_os_cm += efficient_os_cm(
-                preds=(zda_predictions.detach() > 0.5).long(),
-                targets_onehot=onehot_zda_labels[query_mask].long()
-                )
-            os_acc = get_balanced_accuracy(self.training_os_cm, negative_weight=0.5)
+        batch_os_cm = efficient_os_cm(
+            preds=(zda_predictions.detach() > 0.5).long(),
+            targets_onehot=onehot_zda_labels.long()
+            )
+        
+        cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
+        cummulative_os_cm += batch_os_cm
+        zda_balance = zda_labels.to(torch.float16).mean().item()
+        batch_os_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance)
+        cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
 
-        elif mode == INFERENCE:
-            self.eval_os_cm += efficient_os_cm(
-                preds=(zda_predictions.detach() > 0.5).long(),
-                targets_onehot=onehot_zda_labels[query_mask].long()
-                )
-            os_acc = get_balanced_accuracy(self.eval_os_cm, negative_weight=0.5)
-
-        zda_balance = zda_labels[query_mask].to(torch.float16).mean().item()
+        
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: os_acc.item(), STEP_LABEL:self.backprop_counter})
+            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.backprop_counter})
 
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'{mode} batch AD labels mean: {zda_balance} '+\
-                                      f'{mode} batch AD prediction mean: {zda_predictions.to(torch.float32).mean()}')
-            self.logger_instance.info(f'{mode} mean AD training accuracy: {os_acc}')
+            # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance}')
+            # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean()}')
+            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc}')
+            self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc}')
 
-        return os_loss, os_acc
+        return os_loss, cummulative_os_acc
     
 
     def kernel_regression_step(self, predicted_kernel, one_hot_labels, mode):
@@ -823,14 +871,16 @@ class MitigationBrain():
 
 
     def experience_learning(self):
+        """
+        This method performs learning. (It is the only one who does so). 
+        Other methods may use the neural networks, but just for inference. 
+        """
 
         training_batch = self.sample_from_replay_buffers(
                 samples_per_class=self.replay_buff_batch_size,
                 mode=TRAINING)
         
         query_mask = self.get_canonical_query_mask(TRAINING)
-
-        assert query_mask.shape[0] == training_batch.class_labels.shape[0]
 
         logits, hidden_vectors, predicted_kernel = self.infer(
             flow_input_batch=training_batch.flow_features,
@@ -841,12 +891,13 @@ class MitigationBrain():
         
         loss = 0
 
-        # one_hot_labels
+        # get one_hot_labels
         one_hot_labels = self.get_oh_labels(
             curr_shape=(training_batch.class_labels.shape[0],logits.shape[1]), 
             targets=training_batch.class_labels)
         
-        # known class horizonal mask:
+        # get known class horizonal mask: An horizontal mask is a one-dimensional tensor with as many items
+        # as the number of classes in the knowledge base. For each class, it is telling us if it is a zda or not.  
         known_oh_labels = one_hot_labels[~training_batch.zda_labels.squeeze(1).bool()]
         known_class_h_mask = known_oh_labels.sum(0)>0
 
@@ -859,12 +910,14 @@ class MitigationBrain():
             loss += kr_loss
         
         if self.multi_class:
-            ad_loss, _ = self.AD_step(
-                zda_labels=training_batch.zda_labels, 
-                preds=logits[:, known_class_h_mask], 
-                query_mask=query_mask,
+            # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
+            # if instead we are on a binary attack/non attack classification setting, 
+            # we do not care if the detected attacks are known or unknown.. 
+            zda_detection_loss, _ = self.zda_classification_step(
+                zda_labels=training_batch.zda_labels[query_mask], 
+                preds=logits[:, known_class_h_mask], # take only the known-class logit scores  
                 mode=TRAINING)
-            loss += ad_loss
+            loss += zda_detection_loss
 
         self.training_cs_cm += efficient_cm(
         preds=logits.detach(),
@@ -883,7 +936,12 @@ class MitigationBrain():
             if self.eval_allowed:
                 self.evaluate_models()
 
-        cs_acc = self.learning_step(training_batch.class_labels, logits, TRAINING, query_mask, loss)
+        cs_acc = self.class_classification_step(
+            training_batch.class_labels, 
+            logits, 
+            TRAINING, 
+            query_mask, 
+            loss)
             
         if self.AI_DEBUG: 
             self.logger_instance.info(f'{TRAINING} batch labels mean: {training_batch.class_labels.to(torch.float16).mean().item()} '+\
@@ -932,17 +990,16 @@ class MitigationBrain():
             one_hot_labels,
             INFERENCE)
 
-            _, ad_acc = self.AD_step(
-                zda_labels=eval_batch.zda_labels, 
+            _, ad_acc = self.zda_classification_step(
+                zda_labels=eval_batch.zda_labels[query_mask], 
                 preds=logits[:, known_class_h_mask], 
-                query_mask=query_mask,
                 mode=INFERENCE)
 
             self.eval_cs_cm += efficient_cm(
             preds=logits.detach(),
             targets_onehot=one_hot_labels[query_mask])
             
-            cs_acc = self.learning_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
+            cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
 
             mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
             mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
@@ -1046,11 +1103,26 @@ class MitigationBrain():
             self.save_ad_model(postfix='coupled')
 
 
-    def learning_step(self, labels, predictions, mode, query_mask, prev_loss=0):
-        
-        cs_loss = self.cs_criterion(input=predictions,
-                                    target=labels[query_mask].squeeze(1))
+    def class_classification_step(
+            self, 
+            class_labels, 
+            class_predictions, 
+            mode, 
+            query_mask, 
+            prev_loss=0):
+        """
+        Class classification:
+        It obviously computes the error  signal taking into account only query samples,
+        Note:  
+            This learning signal includes the qeury samples of train zdas and their corresponding class labels.
+            This is epistemically legal, in the sense that train zdas are fake zdas.
+            During testing instead, everythong is legal because we are not learning anymore, just evaluating.
+        """
+        cs_loss = self.cs_criterion(
+            input=class_predictions,
+            target=class_labels[query_mask].squeeze(1))
 
+        # Only during training we learn from feedback errors.  
         if mode == TRAINING:
             loss = prev_loss + cs_loss
             # backward pass
@@ -1059,8 +1131,11 @@ class MitigationBrain():
             # update weights
             self.cs_optimizer.step()
 
-        # compute accuracy
-        acc = self.get_accuracy(logits_preds=predictions, decimal_labels=labels, query_mask=query_mask)
+        # compute accuracy (inclue zda class labels for computing accuracy)
+        acc = self.get_accuracy(
+            logits_preds=class_predictions,
+            decimal_labels=class_labels,
+            query_mask=query_mask)
 
         # report progress
         if self.wbt:
