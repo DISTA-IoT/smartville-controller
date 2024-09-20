@@ -34,7 +34,7 @@
                 "--ai_debug=True",
                 "--multi_class=True",
                 "--k_shot=5",
-                "--batch_size=20",
+                "--batch_size=7",
                 "--node_features=False",
                 //"--curriculum=custom"
             ],
