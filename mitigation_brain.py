@@ -95,7 +95,7 @@ KERNEL_REGRESSOR_HEADS = 2
 
 EVALUATION_ROUNDS = 50
 
-REGULARIZATION = True
+CLUSTERING_LOSS_BACKPROP = True
 
 # Constants for wandb monitoring:
 INFERENCE = 'Inference'
@@ -275,7 +275,9 @@ class MitigationBrain():
             wb_config_dict['KERNEL_REGRESSOR_HEADS'] = KERNEL_REGRESSOR_HEADS
             wb_config_dict['REPULSIVE_WEIGHT']  = REPULSIVE_WEIGHT
             wb_config_dict['ATTRACTIVE_WEIGHT']  = ATTRACTIVE_WEIGHT
-            wb_config_dict['REGULARIZATION']  = REGULARIZATION
+            # Clustering loss is actually the opposite of a regularization, because it slightly may bias the manifold
+            # toward training class distributions. We keep the "regularization" name in wandb reporting for retrocompatibility.
+            wb_config_dict['REGULARIZATION']  = CLUSTERING_LOSS_BACKPROP
 
             self.wbl = WandBTracker(
                 wanb_project_name=wb_project_name,
@@ -391,10 +393,10 @@ class MitigationBrain():
 
         params_for_optimizer = \
             list(self.confidence_decoder.parameters()) + \
-                list(self.classifier.parameters())
+            list(self.classifier.parameters())
 
         self.classifier.to(self.device)
-        self.cs_optimizer = optim.Adam(
+        self.optimizer = optim.Adam(
             params_for_optimizer, 
             lr=lr)
 
@@ -445,10 +447,7 @@ class MitigationBrain():
 
     def infer(
             self,
-            flow_input_batch,
-            packet_input_batch,
-            node_feat_input_batch,
-            batch_labels,
+            batch,
             query_mask):
         """
         Forward inference pass on neural modules.
@@ -463,31 +462,31 @@ class MitigationBrain():
         if self.use_packet_feats:
             if self.use_node_feats:
                 logits, hiddens, predicted_kernel = self.classifier(
-                    flow_input_batch, 
-                    packet_input_batch, 
-                    node_feat_input_batch,
-                    batch_labels, 
+                    batch.flow_features, 
+                    batch.packet_features, 
+                    batch.node_features,
+                    batch.class_labels, 
                     self.current_known_classes_count,
                     query_mask)
             else:
                 logits, hiddens, predicted_kernel = self.classifier(
-                    flow_input_batch, 
-                    packet_input_batch, 
-                    batch_labels, 
+                    batch.flow_features, 
+                    batch.packet_features, 
+                    batch.class_labels, 
                     self.current_known_classes_count,
                     query_mask)
         else:
             if self.use_node_feats:
                 logits, hiddens, predicted_kernel = self.classifier(
-                    flow_input_batch, 
-                    node_feat_input_batch, 
-                    batch_labels, 
+                    batch.flow_features, 
+                    batch.node_features, 
+                    batch.class_labels, 
                     self.current_known_classes_count,
                     query_mask)
             else:
                 logits, hiddens, predicted_kernel = self.classifier(
-                    flow_input_batch, 
-                    batch_labels, 
+                    batch.flow_features, 
+                    batch.class_labels, 
                     self.current_known_classes_count,
                     query_mask)
 
@@ -601,10 +600,7 @@ class MitigationBrain():
         merged_batch = self.merge_batches(support_batch, batch)
 
         logits, hidden_vectors, predicted_kernel = self.infer(
-            flow_input_batch=merged_batch.flow_features,
-            packet_input_batch=merged_batch.packet_features,
-            node_feat_input_batch=merged_batch.node_features,
-            batch_labels=merged_batch.class_labels,
+            merged_batch,
             query_mask=merged_query_mask)
 
         # one_hot_labels
@@ -626,7 +622,7 @@ class MitigationBrain():
             preds=logits[:, known_class_h_mask], 
             mode=INFERENCE)
         
-        cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+        _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
@@ -829,7 +825,7 @@ class MitigationBrain():
             # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance}')
             # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean()}')
             self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc}')
-            self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc}')
+            # self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc}')
 
         return os_loss, cummulative_os_acc
     
@@ -883,31 +879,29 @@ class MitigationBrain():
         query_mask = self.get_canonical_query_mask(TRAINING)
 
         logits, hidden_vectors, predicted_kernel = self.infer(
-            flow_input_batch=training_batch.flow_features,
-            packet_input_batch=training_batch.packet_features,
-            node_feat_input_batch=training_batch.node_features,
-            batch_labels=training_batch.class_labels,
+            training_batch,
             query_mask=query_mask)
         
-        loss = 0
-
         # get one_hot_labels
         one_hot_labels = self.get_oh_labels(
-            curr_shape=(training_batch.class_labels.shape[0],logits.shape[1]), 
+            curr_shape=(
+                training_batch.class_labels.shape[0],
+                logits.shape[1]), 
             targets=training_batch.class_labels)
         
         # get known class horizonal mask: An horizontal mask is a one-dimensional tensor with as many items
-        # as the number of classes in the knowledge base. For each class, it is telling us if it is a zda or not.  
+        # as the number of NOT ZDA classes. For each class, it is telling us if it is a zda or not.  
         known_oh_labels = one_hot_labels[~training_batch.zda_labels.squeeze(1).bool()]
         known_class_h_mask = known_oh_labels.sum(0)>0
-
+        
+        loss = 0
+ 
         kr_loss, predicted_clusters, _ = self.kernel_regression_step(
             predicted_kernel, 
             one_hot_labels, 
             TRAINING)
-    
-        if REGULARIZATION:
-            loss += kr_loss
+        
+        if CLUSTERING_LOSS_BACKPROP: loss += kr_loss
         
         if self.multi_class:
             # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
@@ -919,10 +913,31 @@ class MitigationBrain():
                 mode=TRAINING)
             loss += zda_detection_loss
 
+        classification_loss, cs_acc = self.class_classification_step(
+            training_batch.class_labels, 
+            logits, 
+            TRAINING, 
+            query_mask)
+        
         self.training_cs_cm += efficient_cm(
         preds=logits.detach(),
-        targets_onehot=one_hot_labels[query_mask])
+        targets_onehot=one_hot_labels[query_mask])      
         
+        loss += classification_loss
+            
+        # Only during training we learn from feedback errors.  
+        # backward pass
+        self.optimizer.zero_grad()
+        loss.backward()
+        # update weights
+        self.optimizer.step()
+
+
+        if self.AI_DEBUG: 
+            # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item()}')
+            # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean()}')
+            self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc}')
+
 
         if self.backprop_counter % REPORT_STEP_FREQUENCY == 0:
             self.report(
@@ -935,18 +950,6 @@ class MitigationBrain():
 
             if self.eval_allowed:
                 self.evaluate_models()
-
-        cs_acc = self.class_classification_step(
-            training_batch.class_labels, 
-            logits, 
-            TRAINING, 
-            query_mask, 
-            loss)
-            
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'{TRAINING} batch labels mean: {training_batch.class_labels.to(torch.float16).mean().item()} '+\
-                                      f'{TRAINING} batch prediction mean: {logits.max(1)[1].to(torch.float32).mean()}')
-            self.logger_instance.info(f'{TRAINING} mean multiclass classif accuracy: {cs_acc}')
 
 
     def evaluate_models(self):
@@ -969,10 +972,7 @@ class MitigationBrain():
             assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
 
             logits, hidden_vectors, predicted_kernel = self.infer(
-                flow_input_batch=eval_batch.flow_features,
-                packet_input_batch=eval_batch.packet_features,
-                node_feat_input_batch=eval_batch.node_features,
-                batch_labels=eval_batch.class_labels,
+                eval_batch,
                 query_mask=query_mask)
 
   
@@ -999,7 +999,7 @@ class MitigationBrain():
             preds=logits.detach(),
             targets_onehot=one_hot_labels[query_mask])
             
-            cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
+            _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
 
             mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
             mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
@@ -1108,8 +1108,7 @@ class MitigationBrain():
             class_labels, 
             class_predictions, 
             mode, 
-            query_mask, 
-            prev_loss=0):
+            query_mask):
         """
         Class classification:
         It obviously computes the error  signal taking into account only query samples,
@@ -1122,15 +1121,6 @@ class MitigationBrain():
             input=class_predictions,
             target=class_labels[query_mask].squeeze(1))
 
-        # Only during training we learn from feedback errors.  
-        if mode == TRAINING:
-            loss = prev_loss + cs_loss
-            # backward pass
-            self.cs_optimizer.zero_grad()
-            loss.backward()
-            # update weights
-            self.cs_optimizer.step()
-
         # compute accuracy (inclue zda class labels for computing accuracy)
         acc = self.get_accuracy(
             logits_preds=class_predictions,
@@ -1142,7 +1132,7 @@ class MitigationBrain():
             self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.backprop_counter})
 
-        return acc
+        return cs_loss, acc
     
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
