@@ -822,10 +822,10 @@ class MitigationBrain():
             self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.backprop_counter})
 
         if self.AI_DEBUG: 
-            # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance}')
-            # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean()}')
-            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc}')
-            # self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc}')
+            # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
+            # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
+            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+            # self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
 
         return os_loss, cummulative_os_acc
     
@@ -860,8 +860,8 @@ class MitigationBrain():
                 self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.backprop_counter})
 
             if self.AI_DEBUG: 
-                self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari} NMI:{kr_nmi}')
-                self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item()}')
+                self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
+                self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
 
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
@@ -934,9 +934,9 @@ class MitigationBrain():
 
 
         if self.AI_DEBUG: 
-            # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item()}')
-            # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean()}')
-            self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc}')
+            # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
+            # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
+            self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
 
 
         if self.backprop_counter % REPORT_STEP_FREQUENCY == 0:
@@ -999,9 +999,9 @@ class MitigationBrain():
             mean_eval_kr_ari += (kr_precision / EVALUATION_ROUNDS)
 
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'{INFERENCE} mean eval AD accuracy: {mean_eval_ad_acc.item()} '+\
-                                    f'{INFERENCE}  mean eval CS accuracy: {mean_eval_cs_acc.item()}')
-            self.logger_instance.info(f'{INFERENCE} mean eval KR accuracy: {mean_eval_kr_ari}')
+            self.logger_instance.info(f'{INFERENCE} mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} '+\
+                                    f'{INFERENCE}  mean eval CS accuracy: {mean_eval_cs_acc.item():.2f}')
+            self.logger_instance.info(f'{INFERENCE} mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
             self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.backprop_counter})
