@@ -126,7 +126,7 @@ class SmartSwitch(EventMixin):
 
 
   def smart_check(self):
-    self.brain.classify_duet(
+    self.brain.process_input(
       flows=list(self.flow_logger.flows_dict.values()),
       node_feats=(self.metrics_logger.metrics_dict if self.use_node_feats else None))
       

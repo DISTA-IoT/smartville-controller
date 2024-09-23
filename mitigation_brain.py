@@ -603,14 +603,9 @@ class MitigationBrain():
             merged_batch,
             query_mask=merged_query_mask)
 
-        # one_hot_labels
-        one_hot_labels = self.get_oh_labels(
-            curr_shape=(merged_batch.class_labels.shape[0],logits.shape[1]), 
-            targets=merged_batch.class_labels)
-        
+        one_hot_labels = self.get_oh_labels(merged_batch, logits)
         # known class horizonal mask:
-        known_oh_labels = one_hot_labels[~merged_batch.zda_labels.squeeze(1).bool()]
-        known_class_h_mask = known_oh_labels.sum(0)>0
+        known_class_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
 
         _, predicted_clusters, kr_precision = self.kernel_regression_step(
             predicted_kernel, 
@@ -619,7 +614,7 @@ class MitigationBrain():
         
         _, ad_acc = self.zda_classification_step(
             zda_labels=merged_batch.zda_labels[merged_query_mask], 
-            preds=logits[:, known_class_h_mask], 
+            preds=logits[:, known_class_mask], 
             mode=INFERENCE)
         
         _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
@@ -633,45 +628,41 @@ class MitigationBrain():
         self.confidence_decoder.train()
 
 
-    def classify_duet(self, flows, node_feats: dict = None):
+    def process_input(self, flows, node_feats: dict = None):
         """
-        makes inferences about a duet flow (source ip, dest ip)
         """
+        if len(flows) > 0:
+            
+            batch = self.assembly_input_tensor(flows, node_feats)
+            
+            mode=(TRAINING if random.random() > 0.3 else INFERENCE)
+
+            to_push_mask = self.get_pushing_mask(
+                batch.zda_labels, 
+                batch.test_zda_labels, 
+                mode)
+
+            self.push_to_replay_buffers(
+                batch.flow_features[to_push_mask], 
+                (batch.packet_features[to_push_mask] if self.use_packet_feats else None),
+                (batch.node_features[to_push_mask] if self.use_node_feats else None),  
+                batch_labels=batch.class_labels[to_push_mask],
+                zda_batch_labels=batch.zda_labels[to_push_mask],
+                test_zda_batch_labels=batch.test_zda_labels[to_push_mask],
+                mode=mode)
+
+            
+            if self.inference_allowed:
+                self.online_inference(batch)
+
+            if self.experience_learning_allowed:
+                self.experience_learning()
+                self.backprop_counter += 1
+
+        else:
+            return None
         
-        with lock:
 
-            if len(flows) == 0:
-                return None
-            else:
-
-                batch = self.assembly_input_tensor(flows, node_feats)
-                
-                mode=(TRAINING if random.random() > 0.3 else INFERENCE)
-
-                to_push_mask = self.get_pushing_mask(
-                    batch.zda_labels, 
-                    batch.test_zda_labels, 
-                    mode)
-
-                self.push_to_replay_buffers(
-                    batch.flow_features[to_push_mask], 
-                    (batch.packet_features[to_push_mask] if self.use_packet_feats else None),
-                    (batch.node_features[to_push_mask] if self.use_node_feats else None),  
-                    batch_labels=batch.class_labels[to_push_mask],
-                    zda_batch_labels=batch.zda_labels[to_push_mask],
-                    test_zda_batch_labels=batch.test_zda_labels[to_push_mask],
-                    mode=mode)
-
-                
-                if self.inference_allowed:
-
-                    self.online_inference(batch)
-
-                if self.experience_learning_allowed:
-                    self.experience_learning()
-                    self.backprop_counter += 1
-
-        
     def sample_from_replay_buffers(self, samples_per_class, mode):
         balanced_packet_batch = None
         balanced_node_feat_batch = None
@@ -763,13 +754,22 @@ class MitigationBrain():
         return query_mask
 
 
-    def get_oh_labels(self, curr_shape, targets):
+    def get_oh_labels(self, batch, logits):
+        """
+        Create a one-hot encoding of the targets.
+        """
+        curr_shape=(
+                batch.class_labels.shape[0],
+                logits.shape[1]), 
+        
+        targets=batch.class_labels
         targets = targets.to(torch.int64)
-        # Create a one-hot encoding of the targets.
+        
         targets_onehot = torch.zeros(
             size=curr_shape,
             device=targets.device)
         targets_onehot.scatter_(1, targets.view(-1, 1), 1)
+
         return targets_onehot
     
 
@@ -866,6 +866,15 @@ class MitigationBrain():
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
 
+    def get_known_classes_mask(batch, one_hot_labels):
+        """
+        get known class horizonal mask: An horizontal mask is a one-dimensional tensor with as many items
+        as the number of NOT ZDA classes. For each class, it is telling us if it is a zda or not.  
+        """
+        known_oh_labels = one_hot_labels[~batch.zda_labels.squeeze(1).bool()]
+        return known_oh_labels.sum(0)>0
+
+
     def experience_learning(self):
         """
         This method performs learning. (It is the only one who does so). 
@@ -879,20 +888,11 @@ class MitigationBrain():
         query_mask = self.get_canonical_query_mask(TRAINING)
 
         logits, hidden_vectors, predicted_kernel = self.infer(
-            training_batch,
+            batch=training_batch,
             query_mask=query_mask)
         
-        # get one_hot_labels
-        one_hot_labels = self.get_oh_labels(
-            curr_shape=(
-                training_batch.class_labels.shape[0],
-                logits.shape[1]), 
-            targets=training_batch.class_labels)
-        
-        # get known class horizonal mask: An horizontal mask is a one-dimensional tensor with as many items
-        # as the number of NOT ZDA classes. For each class, it is telling us if it is a zda or not.  
-        known_oh_labels = one_hot_labels[~training_batch.zda_labels.squeeze(1).bool()]
-        known_class_h_mask = known_oh_labels.sum(0)>0
+        one_hot_labels = self.get_oh_labels(training_batch, logits)
+        known_class_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
         
         loss = 0
  
@@ -909,7 +909,7 @@ class MitigationBrain():
             # we do not care if the detected attacks are known or unknown.. 
             zda_detection_loss, _ = self.zda_classification_step(
                 zda_labels=training_batch.zda_labels[query_mask], 
-                preds=logits[:, known_class_h_mask], # take only the known-class logit scores  
+                preds=logits[:, known_class_mask], # take only the known-class logit scores  
                 mode=TRAINING)
             loss += zda_detection_loss
 
@@ -941,7 +941,7 @@ class MitigationBrain():
 
         if self.backprop_counter % REPORT_STEP_FREQUENCY == 0:
             self.report(
-                preds=logits[:,known_class_h_mask],  
+                preds=logits[:,known_class_mask],  
                 hiddens=hidden_vectors.detach(), 
                 labels=training_batch.class_labels,
                 predicted_clusters=predicted_clusters, 
@@ -975,15 +975,8 @@ class MitigationBrain():
                 eval_batch,
                 query_mask=query_mask)
 
-  
-            # one_hot_labels
-            one_hot_labels = self.get_oh_labels(
-                curr_shape=(eval_batch.class_labels.shape[0],logits.shape[1]), 
-                targets=eval_batch.class_labels)
-            
-            # known class horizonal mask:
-            known_oh_labels = one_hot_labels[~eval_batch.zda_labels.squeeze(1).bool()]
-            known_class_h_mask = known_oh_labels.sum(0)>0
+            one_hot_labels = self.get_oh_labels(eval_batch, logits)
+            known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
 
             _, predicted_clusters, kr_precision = self.kernel_regression_step(
             predicted_kernel, 
