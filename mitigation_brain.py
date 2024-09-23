@@ -760,7 +760,7 @@ class MitigationBrain():
         """
         curr_shape=(
                 batch.class_labels.shape[0],
-                logits.shape[1]), 
+                logits.shape[1])
         
         targets=batch.class_labels
         targets = targets.to(torch.int64)
@@ -866,7 +866,7 @@ class MitigationBrain():
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
 
-    def get_known_classes_mask(batch, one_hot_labels):
+    def get_known_classes_mask(self, batch, one_hot_labels):
         """
         get known class horizonal mask: An horizontal mask is a one-dimensional tensor with as many items
         as the number of NOT ZDA classes. For each class, it is telling us if it is a zda or not.  
