@@ -585,6 +585,8 @@ class MitigationBrain():
             self, 
             batch):
         
+        flows_to_block = []
+
         self.classifier.eval()
         self.confidence_decoder.eval()
 
@@ -627,10 +629,14 @@ class MitigationBrain():
         self.classifier.train()
         self.confidence_decoder.train()
 
+        return flows_to_block
+
 
     def process_input(self, flows, node_feats: dict = None):
         """
         """
+        flows_to_block = []
+
         if len(flows) > 0:
             
             batch = self.assembly_input_tensor(flows, node_feats)
@@ -650,18 +656,16 @@ class MitigationBrain():
                 zda_batch_labels=batch.zda_labels[to_push_mask],
                 test_zda_batch_labels=batch.test_zda_labels[to_push_mask],
                 mode=mode)
-
             
             if self.inference_allowed:
-                self.online_inference(batch)
+                flows_to_block = self.online_inference(batch)
 
             if self.experience_learning_allowed:
                 self.experience_learning()
                 self.backprop_counter += 1
 
-        else:
-            return None
-        
+        return flows_to_block        
+
 
     def sample_from_replay_buffers(self, samples_per_class, mode):
         balanced_packet_batch = None
@@ -721,19 +725,19 @@ class MitigationBrain():
     def get_canonical_query_mask(self, phase):
         """
         The query mask differentiates support from query samples. 
-        Support samples are used for centroid computation and prototypical learning.
-        Query samples are assigned to each centroid based on their simmilarity in the manifold.
+        Support samples are used for centroid computation.
+        Query samples are used for  prototypical learning, i.e., they are assigned to each centroid based on their simmilarity in the manifold.
 
         This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 or 0 to each sample in the batch, indicating
         if it is a query sample or not (in which case it will be a support sample).
 
         This method assumes that the samples in the batch are concatenated in continuous slices, i.e. all the 
         samples corresponding to class A are in the first M positions, where M correspondons to the number of support + query samples for each class,
-        In the next M positions, we'll have samples from class B, and so on... 
+        In the positions M+1 to 2M positions, we'll have samples from class B, and so on... 
         
         So we need to mask K samples of each class, where K is the number of query samples for each class, and this methods masks the last K samples of each class. 
         
-        The unique difference between training and evaluation cases is that the number of knonw classes (i.e. the knowledge base) might be different, so 
+        The unique difference between training and evaluation cases is that the number of known classes might be different, so 
         we take that number into account for creating the quesy mask... (the mask will have dimensions N times M where N is the number of classes in the knowledge base)
         """
         if phase == TRAINING:
