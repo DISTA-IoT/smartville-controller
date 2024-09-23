@@ -27,6 +27,24 @@ AC0_TRAINING_LABELS_DICT= defaultdict(lambda: "Bening") # class "bening" is defa
 AC0_ZDA_DICT = defaultdict(lambda: False) 
 AC0_TEST_ZDA_DICT = defaultdict(lambda: False) 
 
+####################### Benign Traffic: 
+
+# Victim-0
+AC0_TRAINING_LABELS_DICT["192.168.1.3"] = "Doorlock (Bening)"
+
+# Victim-1
+AC0_TRAINING_LABELS_DICT["192.168.1.4"] = "Echo (Bening)"
+AC0_ZDA_DICT["192.168.1.4"] = True
+AC0_TEST_ZDA_DICT["192.168.1.4"] = True
+
+# Victim-2
+AC0_TRAINING_LABELS_DICT["192.168.1.5"] = "Hue (Bening)"
+AC0_ZDA_DICT["192.168.1.5"] = True
+
+# Victim-3
+AC0_TRAINING_LABELS_DICT["192.168.1.6"] = "Doorlock (Bening)"
+
+
 ####################### Known attacks: 
 
 # attacker-4
@@ -83,6 +101,26 @@ AC0_TEST_ZDA_DICT["192.168.1.16"] = True
 AC1_TRAINING_LABELS_DICT= defaultdict(lambda: "Bening") # class "bening" is default and is reserved for leggittimate traffic. 
 AC1_ZDA_DICT = defaultdict(lambda: False) 
 AC1_TEST_ZDA_DICT = defaultdict(lambda: False) 
+
+####################### Benign Traffic: 
+
+# Victim-0
+AC1_TRAINING_LABELS_DICT["192.168.1.3"] = "Doorlock (Bening)"
+AC1_ZDA_DICT["192.168.1.3"] = True
+AC1_TEST_ZDA_DICT["192.168.1.3"] = True
+
+# Victim-1
+AC1_TRAINING_LABELS_DICT["192.168.1.4"] = "Echo (Bening)"
+
+# Victim-2
+AC1_TRAINING_LABELS_DICT["192.168.1.5"] = "Hue (Bening)"
+AC1_ZDA_DICT["192.168.1.5"] = True
+
+# Victim-3
+AC1_TRAINING_LABELS_DICT["192.168.1.6"] = "Doorlock (Bening)"
+AC1_ZDA_DICT["192.168.1.6"] = True
+AC1_TEST_ZDA_DICT["192.168.1.6"] = True
+
 
 ####################### Known attacks: 
 
@@ -141,6 +179,26 @@ AC1_TEST_ZDA_DICT["192.168.1.16"] = True
 AC2_TRAINING_LABELS_DICT= defaultdict(lambda: "Bening") # class "bening" is default and is reserved for leggittimate traffic. 
 AC2_ZDA_DICT = defaultdict(lambda: False) 
 AC2_TEST_ZDA_DICT = defaultdict(lambda: False) 
+
+
+####################### Benign Traffic: 
+
+# Victim-0
+AC2_TRAINING_LABELS_DICT["192.168.1.3"] = "Doorlock (Bening)"
+
+
+# Victim-1
+AC2_TRAINING_LABELS_DICT["192.168.1.4"] = "Echo (Bening)"
+AC2_ZDA_DICT["192.168.1.4"] = True
+# Victim-2
+AC2_TRAINING_LABELS_DICT["192.168.1.5"] = "Hue (Bening)"
+AC2_ZDA_DICT["192.168.1.5"] = True
+AC2_TEST_ZDA_DICT["192.168.1.5"] = True
+
+# Victim-3
+AC2_TRAINING_LABELS_DICT["192.168.1.6"] = "Doorlock (Bening)"
+
+
 
 ####################### Known attacks: 
 
