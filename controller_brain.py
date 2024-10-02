@@ -210,7 +210,7 @@ class DynamicLabelEncoder:
         return list(self.label_to_int.keys())
 
 
-class MitigationBrain():
+class ControllerBrain():
 
     def __init__(self,
                  eval,

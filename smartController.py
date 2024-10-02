@@ -46,7 +46,7 @@ from pox.openflow.of_json import *
 from pox.lib.addresses import EthAddr
 from smartController.entry import Entry
 from smartController.flowlogger import FlowLogger
-from smartController.mitigation_brain import MitigationBrain
+from smartController.controller_brain import ControllerBrain
 from smartController.metricslogger import MetricsLogger
 from collections import defaultdict
 from smartController.curricula import \
@@ -710,7 +710,7 @@ def launch(**kwargs):
         )
   
     # The controllerBrain holds the ML functionalities.
-    mitigation_brain = MitigationBrain(
+    controller_brain = ControllerBrain(
         eval=eval,
         use_packet_feats=use_packet_feats,
         use_node_feats=node_features,
@@ -735,7 +735,7 @@ def launch(**kwargs):
     smart_switch = SmartSwitch(
       flow_logger=flow_logger,
       metrics_logger=metrics_logger,
-      brain=mitigation_brain,
+      brain=controller_brain,
       use_node_feats=node_features,
       **switching_args
       )
