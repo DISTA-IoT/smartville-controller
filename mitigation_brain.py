@@ -607,7 +607,9 @@ class MitigationBrain():
 
         one_hot_labels = self.get_oh_labels(merged_batch, logits)
         # known class horizonal mask:
-        known_class_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
+        known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
+        # known class vertical mask:
+        known_class_v_mask = ~(merged_batch.zda_labels.to(torch.bool)).squeeze()
 
         _, predicted_clusters, kr_precision = self.kernel_regression_step(
             predicted_kernel, 
@@ -616,10 +618,15 @@ class MitigationBrain():
         
         _, ad_acc = self.zda_classification_step(
             zda_labels=merged_batch.zda_labels[merged_query_mask], 
-            preds=logits[:, known_class_mask], 
+            preds=logits[:, known_class_h_mask], 
             mode=INFERENCE)
         
-        _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+        _, cs_acc = self.class_classification_step(
+            merged_batch.class_labels[known_class_v_mask],
+            one_hot_labels[known_class_v_mask][:,known_class_h_mask], 
+            logits[known_class_v_mask[merged_query_mask]][:,known_class_h_mask], 
+            INFERENCE, 
+            merged_query_mask[known_class_v_mask])
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
@@ -896,8 +903,10 @@ class MitigationBrain():
             query_mask=query_mask)
         
         one_hot_labels = self.get_oh_labels(training_batch, logits)
-        known_class_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
-        
+        # known class horizontal mask: 
+        known_class_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
+        # known class vertical mask:
+        known_class_v_mask = ~(training_batch.zda_labels.to(torch.bool)).squeeze()
         loss = 0
  
         kr_loss, predicted_clusters, _ = self.kernel_regression_step(
@@ -913,15 +922,16 @@ class MitigationBrain():
             # we do not care if the detected attacks are known or unknown.. 
             zda_detection_loss, _ = self.zda_classification_step(
                 zda_labels=training_batch.zda_labels[query_mask], 
-                preds=logits[:, known_class_mask], # take only the known-class logit scores  
+                preds=logits[:, known_class_h_mask], # take only the known-class logit scores  
                 mode=TRAINING)
             loss += zda_detection_loss
 
         classification_loss, cs_acc = self.class_classification_step(
-            training_batch.class_labels, 
-            logits, 
+            training_batch.class_labels[known_class_v_mask], 
+            one_hot_labels[known_class_v_mask][:,known_class_h_mask], 
+            logits[known_class_v_mask[query_mask]][:,known_class_h_mask], 
             TRAINING, 
-            query_mask)
+            query_mask[known_class_v_mask])
         
         self.training_cs_cm += efficient_cm(
         preds=logits.detach(),
@@ -945,7 +955,7 @@ class MitigationBrain():
 
         if self.backprop_counter % REPORT_STEP_FREQUENCY == 0:
             self.report(
-                preds=logits[:,known_class_mask],  
+                preds=logits[:,known_class_h_mask],  
                 hiddens=hidden_vectors.detach(), 
                 labels=training_batch.class_labels,
                 predicted_clusters=predicted_clusters, 
@@ -980,8 +990,11 @@ class MitigationBrain():
                 query_mask=query_mask)
 
             one_hot_labels = self.get_oh_labels(eval_batch, logits)
+            # known class horizontal mask: 
             known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
-
+            # known class vertical mask:
+            known_class_v_mask = ~(eval_batch.zda_labels.to(torch.bool)).squeeze()
+            
             _, predicted_clusters, kr_precision = self.kernel_regression_step(
             predicted_kernel, 
             one_hot_labels,
@@ -996,7 +1009,12 @@ class MitigationBrain():
             preds=logits.detach(),
             targets_onehot=one_hot_labels[query_mask])
             
-            _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
+            _, cs_acc = self.class_classification_step(
+                eval_batch.class_labels[known_class_v_mask],
+                one_hot_labels[known_class_v_mask][:,known_class_h_mask],  
+                logits[known_class_v_mask[query_mask]][:,known_class_h_mask], 
+                INFERENCE, 
+                query_mask[known_class_v_mask])
 
             mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
             mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
@@ -1103,6 +1121,7 @@ class MitigationBrain():
     def class_classification_step(
             self, 
             class_labels, 
+            one_hot_labels,
             class_predictions, 
             mode, 
             query_mask):
@@ -1116,7 +1135,7 @@ class MitigationBrain():
         """
         cs_loss = self.cs_criterion(
             input=class_predictions,
-            target=class_labels[query_mask].squeeze(1))
+            target=one_hot_labels[query_mask].squeeze(1))
 
         # compute accuracy (inclue zda class labels for computing accuracy)
         acc = self.get_accuracy(
