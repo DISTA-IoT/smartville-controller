@@ -595,7 +595,8 @@ def launch(**kwargs):
         - 'max_buffered_packets' (int, optional): Max num. of packets the switch buffers while waiting to solve the dest MAC address and forward. Default is 5. 
         - 'max_buffering_secs' (int, optional): Max time in seconds the switch buffers a packet while waiting to solve the dest MAC address and forward. Default is 5. 
         - 'arp_req_exp_secs' (int, optional): Max time in secs. that the switch waits for an ARP response before issuing another requets. (prevents ARP flooding). Default is 4. 
-
+        - 'init_k_shot' (int, optional): Initial value for k_shot in k_shot learning. Default is 5. 
+        - 'report_step_freq' (int, optional): Evaluation, reporting and action taking is done each report_step_freq inference steps.
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -604,14 +605,13 @@ def launch(**kwargs):
     seed = int(kwargs.get('seed', 777))
     ai_debug = str_to_bool(kwargs.get('ai_debug', False))
 
-
     multi_class = str_to_bool(kwargs.get('multi_class', True))
     use_packet_feats = str_to_bool(kwargs.get('use_packet_feats', True))
     packet_buffer_len = int(kwargs.get('packet_buffer_len', 1))
     packet_feat_dim = int(kwargs.get('packet_feat_dim', 64))
     h_dim = int(kwargs.get('h_dim', 800))
     dropout = float(kwargs.get('dropout', 0.6))
-    k_shot = int(kwargs.get('k_shot', 5))
+    init_k_shot = int(kwargs.get('init_k_shot', 5))
     batch_size = int(kwargs.get('batch_size', 20))
     anonymize_transport_ports = str_to_bool(kwargs.get('anonym_ports', True))
     flow_buff_len = int(kwargs.get('flow_buff_len', 10))
@@ -628,6 +628,7 @@ def launch(**kwargs):
     FLOWSTATS_FREQ_SECS = int(kwargs.get('flowstats_freq_secs', 5))
     PORTSTATS_FREQ_SECS = int(kwargs.get('portstats_freq_secs', 5))
 
+    kwargs['report_step_freq'] = kwargs.get('report_step_freq',50)
 
     # Switching arguments:
     switching_args = {}
@@ -719,7 +720,7 @@ def launch(**kwargs):
         h_dim=h_dim,
         dropout=dropout,
         multi_class=multi_class, 
-        k_shot=k_shot,
+        init_k_shot=init_k_shot,
         replay_buffer_batch_size=batch_size,
         kernel_regression=True,
         device=device,
