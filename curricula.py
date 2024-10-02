@@ -28,7 +28,7 @@ AC0_ZDA_DICT = defaultdict(lambda: False)
 AC0_TEST_ZDA_DICT = defaultdict(lambda: False) 
 
 ####################### Benign Traffic: 
-
+"""
 # Victim-0
 AC0_TRAINING_LABELS_DICT["192.168.1.3"] = "Doorlock (Bening)"
 
@@ -43,7 +43,7 @@ AC0_ZDA_DICT["192.168.1.5"] = True
 
 # Victim-3
 AC0_TRAINING_LABELS_DICT["192.168.1.6"] = "Doorlock (Bening)"
-
+"""
 
 ####################### Known attacks: 
 
@@ -182,14 +182,14 @@ AC2_TEST_ZDA_DICT = defaultdict(lambda: False)
 
 
 ####################### Benign Traffic: 
-
+"""
 # Victim-0
 AC2_TRAINING_LABELS_DICT["192.168.1.3"] = "Doorlock (Bening)"
-
 
 # Victim-1
 AC2_TRAINING_LABELS_DICT["192.168.1.4"] = "Echo (Bening)"
 AC2_ZDA_DICT["192.168.1.4"] = True
+
 # Victim-2
 AC2_TRAINING_LABELS_DICT["192.168.1.5"] = "Hue (Bening)"
 AC2_ZDA_DICT["192.168.1.5"] = True
@@ -197,8 +197,7 @@ AC2_TEST_ZDA_DICT["192.168.1.5"] = True
 
 # Victim-3
 AC2_TRAINING_LABELS_DICT["192.168.1.6"] = "Doorlock (Bening)"
-
-
+"""
 
 ####################### Known attacks: 
 
