@@ -85,8 +85,6 @@ REPLAY_BUFFER_MAX_CAPACITY=1000
 
 LEARNING_RATE=1e-3
 
-REPORT_STEP_FREQUENCY = 50
-
 REPULSIVE_WEIGHT = 1
 
 ATTRACTIVE_WEIGHT = 1
@@ -223,7 +221,7 @@ class MitigationBrain():
                  h_dim,
                  dropout,
                  multi_class,
-                 k_shot,
+                 init_k_shot,
                  replay_buffer_batch_size,
                  kernel_regression,
                  device='cpu',
@@ -259,19 +257,19 @@ class MitigationBrain():
         self.current_test_known_classes_count = 0
         self.reset_train_cms()
         self.reset_test_cms()
-        self.k_shot = k_shot
+        self.k_shot = init_k_shot
         self.replay_buff_batch_size = replay_buffer_batch_size
         self.encoder = DynamicLabelEncoder()
         self.replay_buffers = {}
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, seed)
-        
+        self.report_step_freq = wb_config_dict['report_step_freq'] 
         if self.wbt:
 
             wb_config_dict['PRETRAINED_MODEL_PATH'] = PRETRAINED_MODELS_DIR
             wb_config_dict['REPLAY_BUFFER_MAX_CAPACITY'] = REPLAY_BUFFER_MAX_CAPACITY
             wb_config_dict['LEARNING_RATE'] = LEARNING_RATE
-            wb_config_dict['REPORT_STEP_FREQUENCY'] = REPORT_STEP_FREQUENCY
+            wb_config_dict['REPORT_STEP_FREQUENCY'] = self.report_step_freq
             wb_config_dict['KERNEL_REGRESSOR_HEADS'] = KERNEL_REGRESSOR_HEADS
             wb_config_dict['REPULSIVE_WEIGHT']  = REPULSIVE_WEIGHT
             wb_config_dict['ATTRACTIVE_WEIGHT']  = ATTRACTIVE_WEIGHT
@@ -735,10 +733,12 @@ class MitigationBrain():
         samples corresponding to class A are in the first M positions, where M correspondons to the number of support + query samples for each class,
         In the positions M+1 to 2M positions, we'll have samples from class B, and so on... 
         
-        So we need to mask K samples of each class, where K is the number of query samples for each class, and this methods masks the last K samples of each class. 
+        So we need to mask M-K samples of each class, where K is the number of support samples for each class, 
+        and this methods masks the first M-K samples of each class. 
         
         The unique difference between training and evaluation cases is that the number of known classes might be different, so 
-        we take that number into account for creating the quesy mask... (the mask will have dimensions N times M where N is the number of classes in the knowledge base)
+        we take that number into account for creating the quesy mask... 
+        (the mask will have dimensions N times M where N is the number of classes in the knowledge base)
         """
         if phase == TRAINING:
             class_count = self.current_training_known_classes_count
@@ -751,11 +751,28 @@ class MitigationBrain():
         
         # This is a trick for labelling withouth messing around with indexes.
         # We started from a bi-dimensional binary mask, all zeros, 
-        # we fill with ones the last self.K_shot positions of every row (that corresponds to each class)  
-        query_mask[:, self.k_shot:] = True
+        # we fill with ones the last self.replay_buff_batch_size - self.K_shot positions (that correspond to the query samples)
+        #  of every row (that corresponds to each class)
+        query_mask[:, self.replay_buff_batch_size - self.k_shot:] = True
         # and then we flatten the di-dimensional mask to get a one-dimensional one that works for us! 
         query_mask = query_mask.view(-1)
         return query_mask
+
+
+    def update_k_shot(self):
+        """
+        As an AI to get the k_shot
+        """
+
+        # action = self.dealer(self.current_accs, self.current_costs)
+        action = 0
+
+        self.k_shot = self.k_shot + action
+
+        if self.k_shot < self.min_k_shot:
+            self.k_shot = self.min_k_shot
+        if self.k_shot > self.max_k_shot:
+            self.k_shot = self.max_k_shot
 
 
     def get_oh_labels(self, batch, logits):
@@ -862,11 +879,11 @@ class MitigationBrain():
                 self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.backprop_counter})
 
                 self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.backprop_counter})
-
+            """
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
-                self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
-
+                # self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
+            """
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
 
@@ -943,7 +960,7 @@ class MitigationBrain():
             self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
 
 
-        if self.backprop_counter % REPORT_STEP_FREQUENCY == 0:
+        if self.backprop_counter % self.report_step_freq == 0:
             self.report(
                 preds=logits[:,known_class_mask],  
                 hiddens=hidden_vectors.detach(), 
