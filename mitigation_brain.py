@@ -1003,9 +1003,9 @@ class MitigationBrain():
             mean_eval_kr_ari += (kr_precision / EVALUATION_ROUNDS)
 
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'{INFERENCE} mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} '+\
-                                    f'{INFERENCE}  mean eval CS accuracy: {mean_eval_cs_acc.item():.2f}')
-            self.logger_instance.info(f'{INFERENCE} mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
+            self.logger_instance.info(f'EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} '+\
+                                    f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f}')
+            self.logger_instance.info(f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
             self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.backprop_counter})
