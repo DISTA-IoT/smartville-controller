@@ -44,6 +44,27 @@
             "justMyCode": true
         },
         {
+            "name": "DevTiger",
+            "type": "python",
+            "request": "launch",
+            "program": "/pox/pox.py",
+            "args": [
+                "samples.pretty_log",
+                "smartController.tiger",
+                "--wb_tracking=False",
+                "--ai_debug=True",
+                "--multi_class=True",
+                "--init_k_shot=5",
+                "--batch_size=8",
+                "--node_features=False",
+                "--wb_project_name=TIGER",
+                "--wb_run_name=base",
+                "--report_step_freq=10"
+                //"--curriculum=custom"
+            ],
+            "justMyCode": true
+        },
+        {
             "name": "Consumer",
             "type": "python",
             "request": "launch",
