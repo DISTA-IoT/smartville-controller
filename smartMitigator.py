@@ -628,7 +628,7 @@ def launch(**kwargs):
     FLOWSTATS_FREQ_SECS = int(kwargs.get('flowstats_freq_secs', 5))
     PORTSTATS_FREQ_SECS = int(kwargs.get('portstats_freq_secs', 5))
 
-    kwargs['report_step_freq'] = kwargs.get('report_step_freq',50)
+    report_step_freq = kwargs.get('report_step_freq',50)
 
     # Switching arguments:
     switching_args = {}
@@ -729,6 +729,7 @@ def launch(**kwargs):
         wb_track=wb_tracking,
         wb_project_name=wb_project_name,
         wb_run_name=wb_run_name,
+        report_step_freq=report_step_freq,
         wb_config_dict=kwargs)
       
     # Registering Switch component:

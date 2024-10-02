@@ -230,6 +230,7 @@ class MitigationBrain():
                  wb_track=False,
                  wb_project_name='',
                  wb_run_name='',
+                 report_step_freq=50,
                  **wb_config_dict):
         
         self.eval = eval
@@ -263,7 +264,7 @@ class MitigationBrain():
         self.replay_buffers = {}
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, seed)
-        self.report_step_freq = wb_config_dict['report_step_freq'] 
+        self.report_step_freq = report_step_freq 
         if self.wbt:
 
             wb_config_dict['PRETRAINED_MODEL_PATH'] = PRETRAINED_MODELS_DIR
