@@ -621,14 +621,13 @@ def launch(**kwargs):
     grafana_password = kwargs.get('grafana_password', 'admin')
     max_kafka_conn_retries = int(kwargs.get('max_kafka_conn_retries', 5))
     curriculum = kwargs.get('curriculum', "1")
+    report_step_freq = int(kwargs.get('report_step_freq',50))
 
     wb_tracking = str_to_bool(kwargs.get('wb_tracking', False))
     wb_project_name = kwargs.get('wb_project_name', 'SmartVille')
     wb_run_name = kwargs.get('wb_run_name', f"AC{curriculum}|DROP {dropout}|H_DIM {h_dim}|{packet_buffer_len}-PKT|{flow_buff_len}TS")
     FLOWSTATS_FREQ_SECS = int(kwargs.get('flowstats_freq_secs', 5))
     PORTSTATS_FREQ_SECS = int(kwargs.get('portstats_freq_secs', 5))
-
-    report_step_freq = kwargs.get('report_step_freq',50)
 
     # Switching arguments:
     switching_args = {}
