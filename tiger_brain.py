@@ -294,13 +294,15 @@ class TigerBrain():
         # now launch traffic yourself!
         print(f'stopping traffic...')
         response = requests.get(self.container_manager_ep+'stop_traffic')
-        response = requests.get(self.container_manager_ep+'stop_traffic')
-        time.sleep(1)
+        time.sleep(3)
         print(f'launching traffic...')
         response = requests.get(self.container_manager_ep+'launch_traffic')
-        time.sleep(1)
-        print(f'stabilising traffic...')
-        response = requests.get(self.container_manager_ep+'fix_traffic')
+        if response.status_code == 200:
+            data = response.text
+            print(data)
+        else:
+            print(f"Error: Received status code {response.status_code}")
+
 
 
     def add_replay_buffer(self, class_name):
@@ -653,6 +655,7 @@ class TigerBrain():
     def process_input(self, flows, node_feats: dict = None):
         """
         """
+        self.logger_instance.info(f'Encoder state mapping: {self.encoder.get_mapping()}')
         flows_to_block = []
 
         if len(flows) > 0:
@@ -862,11 +865,13 @@ class TigerBrain():
             self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.backprop_counter})
 
+        """
         if self.AI_DEBUG: 
             # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
             # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+            # self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
             # self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
+        """
 
         return os_loss, cummulative_os_acc
     
