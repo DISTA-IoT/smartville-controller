@@ -597,6 +597,7 @@ def launch(**kwargs):
         - 'arp_req_exp_secs' (int, optional): Max time in secs. that the switch waits for an ARP response before issuing another requets. (prevents ARP flooding). Default is 4. 
         - 'init_k_shot' (int, optional): Initial value for k_shot in k_shot learning. Default is 5. 
         - 'report_step_freq' (int, optional): Evaluation, reporting and action taking is done each report_step_freq inference steps.
+        - 'host_ip_addr' (string ip_addr): The host's IP address with wich the switch communicates to control the traffic generation. Default: 192.168.122.1
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -622,13 +623,13 @@ def launch(**kwargs):
     max_kafka_conn_retries = int(kwargs.get('max_kafka_conn_retries', 5))
     curriculum = kwargs.get('curriculum', "1")
     report_step_freq = int(kwargs.get('report_step_freq',50))
-
     wb_tracking = str_to_bool(kwargs.get('wb_tracking', False))
     wb_project_name = kwargs.get('wb_project_name', 'SmartVille')
     wb_run_name = kwargs.get('wb_run_name', f"AC{curriculum}|DROP {dropout}|H_DIM {h_dim}|{packet_buffer_len}-PKT|{flow_buff_len}TS")
     FLOWSTATS_FREQ_SECS = int(kwargs.get('flowstats_freq_secs', 5))
     PORTSTATS_FREQ_SECS = int(kwargs.get('portstats_freq_secs', 5))
-
+    host_ip_addr  = kwargs.get('host_ip_addr', '192.168.122.1')
+    
     # Switching arguments:
     switching_args = {}
     switching_args['flow_idle_timeout'] = int(kwargs.get('flow_idle_timeout', 10))
@@ -722,6 +723,7 @@ def launch(**kwargs):
         init_k_shot=init_k_shot,
         replay_buffer_batch_size=batch_size,
         kernel_regression=True,
+        host_ip_addr=host_ip_addr,
         device=device,
         seed=seed,
         debug=ai_debug,

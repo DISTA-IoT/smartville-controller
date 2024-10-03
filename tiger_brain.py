@@ -32,7 +32,8 @@ import itertools
 from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
-
+import requests
+import time
 # List of colors
 colors = [
     'red', 'blue', 'green', 'purple', 'orange', 'pink', 'cyan',  'brown', 'yellow',
@@ -224,6 +225,7 @@ class TigerBrain():
                  init_k_shot,
                  replay_buffer_batch_size,
                  kernel_regression,
+                 host_ip_addr,
                  device='cpu',
                  seed=777,
                  debug=False,
@@ -265,6 +267,8 @@ class TigerBrain():
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, seed)
         self.report_step_freq = report_step_freq 
+        self.container_manager_ep = f'http://{host_ip_addr}:7777/'
+
         if self.wbt:
 
             wb_config_dict['PRETRAINED_MODEL_PATH'] = PRETRAINED_MODELS_DIR
@@ -282,6 +286,21 @@ class TigerBrain():
                 wanb_project_name=wb_project_name,
                 run_name=wb_run_name,
                 config_dict=wb_config_dict).wb_logger        
+
+        self.restart_traffic()
+
+
+    def restart_traffic(self):
+        # now launch traffic yourself!
+        print(f'stopping traffic...')
+        response = requests.get(self.container_manager_ep+'stop_traffic')
+        response = requests.get(self.container_manager_ep+'stop_traffic')
+        time.sleep(1)
+        print(f'launching traffic...')
+        response = requests.get(self.container_manager_ep+'launch_traffic')
+        time.sleep(1)
+        print(f'stabilising traffic...')
+        response = requests.get(self.container_manager_ep+'fix_traffic')
 
 
     def add_replay_buffer(self, class_name):
