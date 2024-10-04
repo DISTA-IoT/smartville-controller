@@ -32,8 +32,8 @@ import itertools
 from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
-import requests
-import time
+from smartController.tiger_environment import TigerEnvironment
+
 # List of colors
 colors = [
     'red', 'blue', 'green', 'purple', 'orange', 'pink', 'cyan',  'brown', 'yellow',
@@ -267,7 +267,7 @@ class TigerBrain():
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, seed)
         self.report_step_freq = report_step_freq 
-        self.container_manager_ep = f'http://{host_ip_addr}:7777/'
+        self.env = TigerEnvironment({'host_ip_addr': host_ip_addr})
 
         if self.wbt:
 
@@ -287,21 +287,10 @@ class TigerBrain():
                 run_name=wb_run_name,
                 config_dict=wb_config_dict).wb_logger        
 
-        self.restart_traffic()
+        
+        self.env.reset()
 
-
-    def restart_traffic(self):
-        # now launch traffic yourself!
-        print(f'stopping traffic...')
-        response = requests.get(self.container_manager_ep+'stop_traffic')
-        time.sleep(3)
-        print(f'launching traffic...')
-        response = requests.get(self.container_manager_ep+'launch_traffic')
-        if response.status_code == 200:
-            data = response.text
-            print(data)
-        else:
-            print(f"Error: Received status code {response.status_code}")
+    
 
 
 
