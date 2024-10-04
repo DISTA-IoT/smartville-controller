@@ -125,7 +125,12 @@ class FlowLogger(object):
         return curr_packets_circ_buff.is_full
 
 
-    def process_received_flow(self, flow):
+    def process_received_flow(
+          self, 
+          flow,
+          class_labels,
+          zda_labels,
+          test_zda_labels):
         
         sender_ip_addr = flow['match']['nw_src'].split('/')[0]
 
@@ -137,9 +142,9 @@ class FlowLogger(object):
           flow_buff_len=self.flow_buff_len)
         
         # This is where our labelling takes place... 
-        new_flow.element_class = self.training_labels_dict[sender_ip_addr]
-        new_flow.zda = self.zda_dict[sender_ip_addr]
-        new_flow.test_zda = self.test_zda_dict[sender_ip_addr]
+        new_flow.element_class = class_labels[sender_ip_addr]
+        new_flow.zda = zda_labels[sender_ip_addr]
+        new_flow.test_zda = test_zda_labels[sender_ip_addr]
 
         
         flow_features = self.extract_flow_feature_tensor(flow=flow)
@@ -172,12 +177,15 @@ class FlowLogger(object):
                 self.flows_dict[flow_object.flow_id].packets_tensor.add(single_packet_tensor)
 
     
-    def _handle_flowstats_received (self, event):
+    def _handle_flowstats_received (self, event, class_labels, zda_labels, test_zda_labels):
       self.logger_instance.debug("FlowStatsReceived")
       stats = flow_stats_to_list(event.stats)
       for sender_flow in stats:
-        self.process_received_flow(flow=sender_flow)
-        
+        self.process_received_flow(
+           flow=sender_flow,
+           class_labels=class_labels,
+           zda_labels=zda_labels,
+           test_zda_labels=test_zda_labels)
 
     def reset_all_flows_metadata(self):
        self.flows_dict = {}

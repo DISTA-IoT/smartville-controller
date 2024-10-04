@@ -649,7 +649,7 @@ class TigerBrain():
     def process_input(self, flows, node_feats: dict = None):
         """
         """
-        self.logger_instance.info(f'Encoder state mapping: {self.encoder.get_mapping()}')
+        #  self.logger_instance.info(f'Encoder state mapping: {self.encoder.get_mapping()}')
         flows_to_block = []
 
         if len(flows) > 0:
