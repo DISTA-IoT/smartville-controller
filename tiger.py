@@ -597,6 +597,7 @@ def launch(**kwargs):
         - 'init_k_shot' (int, optional): Initial value for k_shot in k_shot learning. Default is 5. 
         - 'report_step_freq' (int, optional): Evaluation, reporting and action taking is done each report_step_freq inference steps.
         - 'host_ip_addr' (string ip_addr): The host's IP address with wich the switch communicates to control the traffic generation. Default: 192.168.122.1
+        - 'tiger_init_budget' (int, optional): The initial budget of the TIGER agent. default: 100
     """
     global FLOWSTATS_FREQ_SECS
 
