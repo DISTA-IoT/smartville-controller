@@ -78,6 +78,9 @@ class SmartSwitch(EventMixin):
         flow_logger, 
         metrics_logger, 
         brain,
+        class_labels,
+        zda_labels,
+        test_zda_labels,
         use_node_feats: bool = False,
         flow_idle_timeout: int = 10,
         arp_timeout: int = 120,
@@ -121,6 +124,10 @@ class SmartSwitch(EventMixin):
     self.flow_logger = flow_logger
 
     self.metrics_logger = metrics_logger
+
+    self.class_labels = class_labels
+    self.zda_labels = zda_labels
+    self.test_zda_labels = test_zda_labels
 
     core.listen_to_dependencies(self)
 
@@ -736,6 +743,9 @@ def launch(**kwargs):
       flow_logger=flow_logger,
       metrics_logger=metrics_logger,
       brain=controller_brain,
+      class_labels=TRAINING_LABELS_DICT,
+      zda_labels=ZDA_DICT,
+      test_zda_labels=TEST_ZDA_DICT,
       use_node_feats=node_features,
       **switching_args
       )
@@ -751,7 +761,11 @@ def launch(**kwargs):
     if FLOWSTATS_FREQ_SECS > 0:
       core.openflow.addListenerByName(
         "FlowStatsReceived", 
-        flow_logger._handle_flowstats_received)
+        lambda event: flow_logger._handle_flowstats_received(
+           event, 
+           smart_switch.class_labels, 
+           smart_switch.zda_labels, 
+           smart_switch.test_zda_labels))
       
     """
     if PORTSTATS_FREQ_SECS > 0:
