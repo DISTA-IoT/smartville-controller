@@ -30,16 +30,15 @@
             "args": [
                 "samples.pretty_log",
                 "smartController.smartController",
-                "--wb_tracking=False",
+                "--wb_tracking=True",
                 "--ai_debug=True",
                 "--multi_class=True",
                 "--init_k_shot=5",
-                "--batch_size=8",
+                "--batch_size=20",
                 "--node_features=False",
-                "--wb_project_name=StarWars",
-                "--wb_run_name=mitigationKisK",
+                "--wb_project_name=TIGER",
+                "--wb_run_name=full_pretraining",
                 "--report_step_freq=10"
-                //"--curriculum=custom"
             ],
             "justMyCode": true
         },
