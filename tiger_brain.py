@@ -437,14 +437,14 @@ class TigerBrain():
 
             if os.path.exists(self.classifier_path+'.pt'):
                 # Load the pre-trained weights
-                self.classifier.load_state_dict(torch.load(self.classifier_path+'.pt'))
+                self.classifier.load_state_dict(torch.load(self.classifier_path+'.pt', weights_only=True))
                 self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.classifier_path}.pt")
             else:
                 self.logger_instance.info(f"Pre-trained weights not found at {self.classifier_path}.pt")
                 
             if self.multi_class:
                 if os.path.exists(self.confidence_decoder_path+'.pt'):
-                    self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt'))
+                    self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt', weights_only=True))
                     self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.confidence_decoder_path}.pt")
                 else:
                     self.logger_instance.info(f"Pre-trained weights not found at {self.confidence_decoder_path}.pt")             
