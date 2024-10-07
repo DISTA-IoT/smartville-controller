@@ -32,6 +32,8 @@ import itertools
 from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+import time
+import requests 
 
 # List of colors
 colors = [
@@ -224,6 +226,7 @@ class ControllerBrain():
                  init_k_shot,
                  replay_buffer_batch_size,
                  kernel_regression,
+                 host_ip_addr,
                  device='cpu',
                  seed=777,
                  debug=False,
@@ -231,7 +234,7 @@ class ControllerBrain():
                  wb_project_name='',
                  wb_run_name='',
                  report_step_freq=50,
-                 **wb_config_dict):
+                 **kwargs):
         
         self.eval = eval
         self.use_packet_feats = use_packet_feats
@@ -264,24 +267,39 @@ class ControllerBrain():
         self.replay_buffers = {}
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, seed)
-        self.report_step_freq = report_step_freq 
+        self.report_step_freq = report_step_freq
+        self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         if self.wbt:
 
-            wb_config_dict['PRETRAINED_MODEL_PATH'] = PRETRAINED_MODELS_DIR
-            wb_config_dict['REPLAY_BUFFER_MAX_CAPACITY'] = REPLAY_BUFFER_MAX_CAPACITY
-            wb_config_dict['LEARNING_RATE'] = LEARNING_RATE
-            wb_config_dict['REPORT_STEP_FREQUENCY'] = self.report_step_freq
-            wb_config_dict['KERNEL_REGRESSOR_HEADS'] = KERNEL_REGRESSOR_HEADS
-            wb_config_dict['REPULSIVE_WEIGHT']  = REPULSIVE_WEIGHT
-            wb_config_dict['ATTRACTIVE_WEIGHT']  = ATTRACTIVE_WEIGHT
+            kwargs['PRETRAINED_MODEL_PATH'] = PRETRAINED_MODELS_DIR
+            kwargs['REPLAY_BUFFER_MAX_CAPACITY'] = REPLAY_BUFFER_MAX_CAPACITY
+            kwargs['LEARNING_RATE'] = LEARNING_RATE
+            kwargs['REPORT_STEP_FREQUENCY'] = self.report_step_freq
+            kwargs['KERNEL_REGRESSOR_HEADS'] = KERNEL_REGRESSOR_HEADS
+            kwargs['REPULSIVE_WEIGHT']  = REPULSIVE_WEIGHT
+            kwargs['ATTRACTIVE_WEIGHT']  = ATTRACTIVE_WEIGHT
             # Clustering loss is actually the opposite of a regularization, because it slightly may bias the manifold
             # toward training class distributions. We keep the "regularization" name in wandb reporting for retrocompatibility.
-            wb_config_dict['REGULARIZATION']  = CLUSTERING_LOSS_BACKPROP
+            kwargs['REGULARIZATION']  = CLUSTERING_LOSS_BACKPROP
 
             self.wbl = WandBTracker(
                 wanb_project_name=wb_project_name,
                 run_name=wb_run_name,
-                config_dict=wb_config_dict).wb_logger        
+                config_dict=kwargs).wb_logger        
+        self.restart_traffic()
+
+
+    def restart_traffic(self):
+        print(f'stopping eventual traffic flows...')
+        response = requests.get(self.container_manager_ep+'stop_traffic')
+        time.sleep(0.5)
+        print(f'launching traffic...')
+        response = requests.get(self.container_manager_ep+'launch_traffic')
+        if response.status_code == 200:
+            data = response.text
+            print(data)
+        else:
+            print(f"Error: Received status code {response.status_code}")
 
 
     def add_replay_buffer(self, class_name):
@@ -537,9 +555,7 @@ class ControllerBrain():
             test_buff_lengths = [len(replay_buff) for replay_buff in buffers.values()]
             if self.AI_DEBUG: self.logger_instance.info(f'Test Buffer lengths: {test_buff_lengths}')
 
-            self.inference_allowed = torch.all(
-                torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in test_buff_lengths]))
-            self.eval_allowed = torch.all(
+            self.inference_allowed = self.eval_allowed = torch.all(
                 torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in test_buff_lengths]))
 
 
@@ -582,7 +598,7 @@ class ControllerBrain():
 
     def online_inference(
             self, 
-            batch):
+            online_batch):
         
         flows_to_block = []
 
@@ -594,11 +610,19 @@ class ControllerBrain():
                                 mode=INFERENCE)
         
         support_query_mask = self.get_canonical_query_mask(INFERENCE)
+        online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
+
         merged_query_mask = torch.cat([
-            support_query_mask, 
-            torch.ones_like(batch.class_labels).to(torch.bool)])
+                                support_query_mask, 
+                                online_query_mask
+                                ])
         
-        merged_batch = self.merge_batches(support_batch, batch)
+        accuracy_mask = torch.cat([
+                                torch.zeros_like(support_query_mask), 
+                                online_query_mask
+                                ])
+
+        merged_batch = self.merge_batches(support_batch, online_batch)
 
         logits, hidden_vectors, predicted_kernel = self.infer(
             merged_batch,
@@ -843,11 +867,13 @@ class ControllerBrain():
             self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.backprop_counter})
             self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.backprop_counter})
 
+        """
         if self.AI_DEBUG: 
             # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
             # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+            # self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
             # self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
+        """
 
         return os_loss, cummulative_os_acc
     

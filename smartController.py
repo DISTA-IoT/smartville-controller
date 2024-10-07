@@ -52,9 +52,8 @@ from collections import defaultdict
 from smartController.curricula import \
   AC0_TRAINING_LABELS_DICT, AC0_TEST_ZDA_DICT, AC0_ZDA_DICT, \
   AC1_TRAINING_LABELS_DICT, AC1_TEST_ZDA_DICT, AC1_ZDA_DICT, \
-  AC2_TRAINING_LABELS_DICT, AC2_TEST_ZDA_DICT, AC2_ZDA_DICT, \
-  CUSTOM_TRAINING_LABELS_DICT, CUSTOM_TEST_ZDA_DICT, CUSTOM_ZDA_DICT
-
+  AC2_TRAINING_LABELS_DICT, AC2_TEST_ZDA_DICT, AC2_ZDA_DICT
+import requests
 
 log = core.getLogger()
 
@@ -591,7 +590,7 @@ def launch(**kwargs):
         - 'grafana_user' (str, optional): username for the grafana dashboard. Default is 'admin'
         - 'grafana_password' (str, optional): password for the grafana dashboard. Default is 'admin'
         - 'max_kafka_conn_retries' (int, optional): max. num. of connections attempts to the kafka broker. Default is 5.
-        - 'curriculum' (int, optional): labelling scheme for known attacks, train ZdAs and test ZdAs. (can be 0,1, or 2). Default is 1. 
+        - 'curriculum' (int, optional): labelling scheme for known attacks, train ZdAs and test ZdAs. (can be 0,1,2, or custom). Default is custom. 
         - 'wb_tracking' (bool, optional): Track this run with WeightsAndBiases. (default is False)
         - 'wb_project_name' (str, optional): if 'wb_tracking'=True, The name of the W&B project to associate the run with. Default is 'SmartVille'
         - 'wb_run_name' (str, optional): if 'wb_tracking'=True, the name of the W&B run to track training metrics. Default is AC{curriculum}|DROP {dropout}|H_DIM {h_dim}|{packet_buffer_len}-PKT|{flow_buff_len}TS
@@ -604,6 +603,7 @@ def launch(**kwargs):
         - 'arp_req_exp_secs' (int, optional): Max time in secs. that the switch waits for an ARP response before issuing another requets. (prevents ARP flooding). Default is 4. 
         - 'init_k_shot' (int, optional): Initial value for k_shot in k_shot learning. Default is 5. 
         - 'report_step_freq' (int, optional): Evaluation, reporting and action taking is done each report_step_freq inference steps.
+        - 'host_ip_addr' (string ip_addr): The host's IP address with wich the switch communicates to control the traffic generation. Default: 192.168.122.1
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -627,15 +627,15 @@ def launch(**kwargs):
     grafana_user = kwargs.get('grafana_user', 'admin')
     grafana_password = kwargs.get('grafana_password', 'admin')
     max_kafka_conn_retries = int(kwargs.get('max_kafka_conn_retries', 5))
-    curriculum = kwargs.get('curriculum', "1")
+    curriculum = kwargs.get('curriculum', "custom")
     report_step_freq = int(kwargs.get('report_step_freq',50))
-
     wb_tracking = str_to_bool(kwargs.get('wb_tracking', False))
     wb_project_name = kwargs.get('wb_project_name', 'SmartVille')
     wb_run_name = kwargs.get('wb_run_name', f"AC{curriculum}|DROP {dropout}|H_DIM {h_dim}|{packet_buffer_len}-PKT|{flow_buff_len}TS")
     FLOWSTATS_FREQ_SECS = int(kwargs.get('flowstats_freq_secs', 5))
     PORTSTATS_FREQ_SECS = int(kwargs.get('portstats_freq_secs', 5))
-
+    host_ip_addr  = kwargs.get('host_ip_addr', '192.168.122.1')
+    
     # Switching arguments:
     switching_args = {}
     switching_args['flow_idle_timeout'] = int(kwargs.get('flow_idle_timeout', 10))
@@ -668,9 +668,24 @@ def launch(**kwargs):
               ZDA_DICT = AC2_ZDA_DICT
               TEST_ZDA_DICT = AC2_TEST_ZDA_DICT
         elif curriculum == "custom":
-              TRAINING_LABELS_DICT = CUSTOM_TRAINING_LABELS_DICT
-              ZDA_DICT = CUSTOM_ZDA_DICT
-              TEST_ZDA_DICT = CUSTOM_TEST_ZDA_DICT
+              TRAINING_LABELS_DICT = defaultdict(lambda: "Bening")
+              ZDA_DICT = defaultdict(lambda: False)
+              TEST_ZDA_DICT = defaultdict(lambda: False)
+              try:
+                response = requests.get(f'http://{host_ip_addr}:7777/'+'labels')
+
+                # Check if the request was successful
+                if response.status_code == 200:
+                    # Parse the JSON response into a Python dictionary
+                    data = response.json()
+                    # Print the received dictionary
+                    print("Received labels from containger manager server:", data)
+                    TRAINING_LABELS_DICT.update(data)
+                else:
+                    print(f"Error: Received status code {response.status_code}")
+              except requests.exceptions.RequestException as e:
+                  print(f"An error occurred: {e}")
+                  assert 1 == 0
 
     else:
         ZDA_DICT = defaultdict(lambda: False)            # No ZdA detection experiments in binary classification 
@@ -729,6 +744,7 @@ def launch(**kwargs):
         init_k_shot=init_k_shot,
         replay_buffer_batch_size=batch_size,
         kernel_regression=True,
+        host_ip_addr=host_ip_addr,
         device=device,
         seed=seed,
         debug=ai_debug,
