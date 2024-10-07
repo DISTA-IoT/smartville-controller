@@ -49,10 +49,6 @@ from smartController.flowlogger import FlowLogger
 from smartController.controller_brain import ControllerBrain
 from smartController.metricslogger import MetricsLogger
 from collections import defaultdict
-from smartController.curricula import \
-  AC0_TRAINING_LABELS_DICT, AC0_TEST_ZDA_DICT, AC0_ZDA_DICT, \
-  AC1_TRAINING_LABELS_DICT, AC1_TEST_ZDA_DICT, AC1_ZDA_DICT, \
-  AC2_TRAINING_LABELS_DICT, AC2_TEST_ZDA_DICT, AC2_ZDA_DICT
 import requests
 
 log = core.getLogger()
@@ -590,7 +586,6 @@ def launch(**kwargs):
         - 'grafana_user' (str, optional): username for the grafana dashboard. Default is 'admin'
         - 'grafana_password' (str, optional): password for the grafana dashboard. Default is 'admin'
         - 'max_kafka_conn_retries' (int, optional): max. num. of connections attempts to the kafka broker. Default is 5.
-        - 'curriculum' (int, optional): labelling scheme for known attacks, train ZdAs and test ZdAs. (can be 0,1,2, or custom). Default is custom. 
         - 'wb_tracking' (bool, optional): Track this run with WeightsAndBiases. (default is False)
         - 'wb_project_name' (str, optional): if 'wb_tracking'=True, The name of the W&B project to associate the run with. Default is 'SmartVille'
         - 'wb_run_name' (str, optional): if 'wb_tracking'=True, the name of the W&B run to track training metrics. Default is AC{curriculum}|DROP {dropout}|H_DIM {h_dim}|{packet_buffer_len}-PKT|{flow_buff_len}TS
@@ -647,50 +642,30 @@ def launch(**kwargs):
 
 
     """
-    LABELLING Strategy:
-
-    SmartVille implements a labeling strategy by assuming that each node performs one attack. 
-    By doing so, IP addresses are labelled using the name of the attack (in the multi-class classification setting)
-    Or simply "attack" in the binary classification setting.
+    Curricula for training (See utils/curricula in the Smartville root repository.) 
     """
+    ZDA_DICT = defaultdict(lambda: False)            # No ZdA detection experiments in binary classification 
+    TEST_ZDA_DICT = defaultdict(lambda: False)       # No ZdA detection experiments in binary classification
+    TRAINING_LABELS_DICT= defaultdict(lambda: "Bening")  # class "bening" is default and is reserved for leggittimate traffic. 
     if multi_class:
 
-        if curriculum == "0":
-              TRAINING_LABELS_DICT = AC0_TRAINING_LABELS_DICT
-              ZDA_DICT = AC0_ZDA_DICT
-              TEST_ZDA_DICT = AC0_TEST_ZDA_DICT
-        elif curriculum == "1":
-              TRAINING_LABELS_DICT = AC1_TRAINING_LABELS_DICT
-              ZDA_DICT = AC1_ZDA_DICT
-              TEST_ZDA_DICT = AC1_TEST_ZDA_DICT
-        elif curriculum == "2":
-              TRAINING_LABELS_DICT = AC2_TRAINING_LABELS_DICT
-              ZDA_DICT = AC2_ZDA_DICT
-              TEST_ZDA_DICT = AC2_TEST_ZDA_DICT
-        elif curriculum == "custom":
-              TRAINING_LABELS_DICT = defaultdict(lambda: "Bening")
-              ZDA_DICT = defaultdict(lambda: False)
-              TEST_ZDA_DICT = defaultdict(lambda: False)
-              try:
-                response = requests.get(f'http://{host_ip_addr}:7777/'+'labels')
+      try:
+        response = requests.get(f'http://{host_ip_addr}:7777/'+'curricula')
 
-                # Check if the request was successful
-                if response.status_code == 200:
-                    # Parse the JSON response into a Python dictionary
-                    data = response.json()
-                    # Print the received dictionary
-                    print("Received labels from containger manager server:", data)
-                    TRAINING_LABELS_DICT.update(data)
-                else:
-                    print(f"Error: Received status code {response.status_code}")
-              except requests.exceptions.RequestException as e:
-                  print(f"An error occurred: {e}")
-                  assert 1 == 0
+        if response.status_code == 200:
+            data = response.json()
+            print("Curricula received from containger manager server.")
+            TRAINING_LABELS_DICT.update(data['CLASS_LABELS'])
+            ZDA_DICT.update(data['ZDA_LABELS'])
+            TEST_ZDA_DICT.update(data['TEST_ZDA_LABELS']) 
+        else:
+            print(f"Error: Received status code {response.status_code}")
+      except requests.exceptions.RequestException as e:
+          print(f"An error occurred: {e}")
+          assert 1 == 0
 
     else:
-        ZDA_DICT = defaultdict(lambda: False)            # No ZdA detection experiments in binary classification 
-        TEST_ZDA_DICT = defaultdict(lambda: False)       # No ZdA detection experiments in binary classification
-        TRAINING_LABELS_DICT= defaultdict(lambda: "Bening")  # class "bening" is default and is reserved for leggittimate traffic. 
+        
         TRAINING_LABELS_DICT["192.168.1.7"] = "Attack"
         TRAINING_LABELS_DICT["192.168.1.8"] = "Attack"
         TRAINING_LABELS_DICT["192.168.1.9"] = "Attack"
