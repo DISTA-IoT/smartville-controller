@@ -247,7 +247,7 @@ class TigerBrain():
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
-        self.backprop_counter = 0
+        self.step_counter = 0
         self.wbt = wb_track
         self.wbl = None
         self.kernel_regression = kernel_regression
@@ -594,6 +594,9 @@ class TigerBrain():
                 test_zda_labels=test_zda_labels)
 
 
+    def preds_to_mask(self, zda_predictions):
+        return zda_predictions > 0.5
+
     def online_inference(
             self, 
             online_batch):
@@ -626,25 +629,42 @@ class TigerBrain():
             merged_batch,
             query_mask=merged_query_mask)
 
+
         one_hot_labels = self.get_oh_labels(merged_batch, logits)
         # known class horizonal mask:
-        known_class_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
+        known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
 
-        _, predicted_clusters, kr_precision = self.kernel_regression_step(
-            predicted_kernel, 
-            one_hot_labels,
-            INFERENCE)
+        # separate between candidate known traffic and unknown traffic.
+        zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
         
         _, ad_acc = self.zda_classification_step(
             zda_labels=merged_batch.zda_labels[merged_query_mask], 
-            preds=logits[:, known_class_mask], 
+            zda_predictions=zda_predictions,
+            accuracy_mask=accuracy_mask,
             mode=INFERENCE)
         
-        _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+        predicted_zda_mask = self.preds_to_mask(zda_predictions)
+
+        # clusterise only the unknowns 
+        _, predicted_clusters, kr_precision = self.kernel_regression_step(
+            predicted_kernel[predicted_zda_mask], 
+            one_hot_labels[predicted_zda_mask],
+            INFERENCE)
+        
+        # decide if blocking or accepting each unknown... 
+        blocking_signals = self.block(
+            hidden_vectors[predicted_zda_mask], 
+            predicted_clusters[predicted_zda_mask])
+
+        _, mit_acc = self.reward_computation(
+            merged_batch.class_labels[predicted_zda_mask], 
+            blocking_signals, 
+            INFERENCE, 
+            merged_query_mask[predicted_zda_mask])
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
-                                    f'Online {INFERENCE}  CS accuracy: {cs_acc.item()}')
+                                    f'Online {INFERENCE}  mitigation accuracy: {mit_acc.item()}')
             self.logger_instance.info(f'Online {INFERENCE} KR accuracy: {kr_precision}')
         
         self.classifier.train()
@@ -656,7 +676,7 @@ class TigerBrain():
     def process_input(self, flows, node_feats: dict = None):
         """
         """
-        #  self.logger_instance.info(f'Encoder state mapping: {self.encoder.get_mapping()}')
+        self.step_counter += 1
         flows_to_block = []
 
         if len(flows) > 0:
@@ -684,7 +704,7 @@ class TigerBrain():
 
             if self.experience_learning_allowed:
                 self.experience_learning()
-                self.backprop_counter += 1
+                
 
         return flows_to_block        
 
@@ -821,7 +841,8 @@ class TigerBrain():
     def zda_classification_step(
             self,
             zda_labels,  
-            preds, 
+            zda_predictions,
+            accuracy_mask,
             mode):
         """
         Params:
@@ -835,12 +856,9 @@ class TigerBrain():
                 can be TRAINING or INFERENCE, helps to differentiate the number of classes in play...
         """
 
-        # Binary outcomes guessing if the sample is a Zda or a sample from a known class. 
-        zda_predictions = self.confidence_decoder(scores=preds)
-
         os_loss = self.os_criterion(
-            input=zda_predictions,
-            target=zda_labels)
+            input=zda_predictions[accuracy_mask],
+            target=zda_labels[accuracy_mask])
         
         # one-hot binary labels have two positions. 
         # [1,0] -> Zda
@@ -862,9 +880,9 @@ class TigerBrain():
 
         
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.backprop_counter})
+            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.step_counter})
 
         """
         if self.AI_DEBUG: 
@@ -901,10 +919,10 @@ class TigerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt:
-                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.backprop_counter})
-                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.backprop_counter})
+                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.step_counter})
+                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.step_counter})
 
-                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.backprop_counter})
+                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.step_counter})
             """
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
@@ -925,82 +943,15 @@ class TigerBrain():
     def experience_learning(self):
         """
         This method performs learning. (It is the only one who does so). 
-        Other methods may use the neural networks, but just for inference. 
+        # TODO implement 
         """
-
-        training_batch = self.sample_from_replay_buffers(
-                samples_per_class=self.replay_buff_batch_size,
-                mode=TRAINING)
+        print('fake experience replay...')
         
-        query_mask = self.get_canonical_query_mask(TRAINING)
-
-        logits, hidden_vectors, predicted_kernel = self.infer(
-            batch=training_batch,
-            query_mask=query_mask)
-        
-        one_hot_labels = self.get_oh_labels(training_batch, logits)
-        known_class_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
-        
-        loss = 0
- 
-        kr_loss, predicted_clusters, _ = self.kernel_regression_step(
-            predicted_kernel, 
-            one_hot_labels, 
-            TRAINING)
-        
-        if CLUSTERING_LOSS_BACKPROP: loss += kr_loss
-        
-        if self.multi_class:
-            # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
-            # if instead we are on a binary attack/non attack classification setting, 
-            # we do not care if the detected attacks are known or unknown.. 
-            zda_detection_loss, _ = self.zda_classification_step(
-                zda_labels=training_batch.zda_labels[query_mask], 
-                preds=logits[:, known_class_mask], # take only the known-class logit scores  
-                mode=TRAINING)
-            loss += zda_detection_loss
-
-        classification_loss, cs_acc = self.class_classification_step(
-            training_batch.class_labels, 
-            logits, 
-            TRAINING, 
-            query_mask)
-        
-        self.training_cs_cm += efficient_cm(
-        preds=logits.detach(),
-        targets_onehot=one_hot_labels[query_mask])      
-        
-        loss += classification_loss
-            
-        # Only during training we learn from feedback errors.  
-        # backward pass
-        self.optimizer.zero_grad()
-        loss.backward()
-        # update weights
-        self.optimizer.step()
-
-
-        if self.AI_DEBUG: 
-            # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
-            # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
-            self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
-
-
-        if self.backprop_counter % self.report_step_freq == 0:
-            self.report(
-                preds=logits[:,known_class_mask],  
-                hiddens=hidden_vectors.detach(), 
-                labels=training_batch.class_labels,
-                predicted_clusters=predicted_clusters, 
-                query_mask=query_mask,
-                phase=TRAINING)
-
-            if self.eval_allowed:
-                self.evaluate_models()
 
 
     def evaluate_models(self):
 
+        # these fellas may be actualy frozen... 
         self.classifier.eval()
         self.confidence_decoder.eval()
         
@@ -1014,61 +965,7 @@ class TigerBrain():
                                     samples_per_class=self.replay_buff_batch_size,
                                     mode=INFERENCE)
             
-            query_mask = self.get_canonical_query_mask(INFERENCE)
-
-            assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
-
-            logits, hidden_vectors, predicted_kernel = self.infer(
-                eval_batch,
-                query_mask=query_mask)
-
-            one_hot_labels = self.get_oh_labels(eval_batch, logits)
-            known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
-
-            _, predicted_clusters, kr_precision = self.kernel_regression_step(
-            predicted_kernel, 
-            one_hot_labels,
-            INFERENCE)
-
-            _, ad_acc = self.zda_classification_step(
-                zda_labels=eval_batch.zda_labels[query_mask], 
-                preds=logits[:, known_class_h_mask], 
-                mode=INFERENCE)
-
-            self.eval_cs_cm += efficient_cm(
-            preds=logits.detach(),
-            targets_onehot=one_hot_labels[query_mask])
-            
-            _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
-
-            mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
-            mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
-            mean_eval_kr_ari += (kr_precision / EVALUATION_ROUNDS)
-
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} '+\
-                                    f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f}')
-            self.logger_instance.info(f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
-        if self.wbt:
-            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.backprop_counter})
-
-        if not self.eval:
-            self.check_kr_progress(curr_kr_acc=mean_eval_kr_ari)
-            self.check_cs_progress(curr_cs_acc=mean_eval_cs_acc.item())
-            self.check_AD_progress(curr_ad_acc=mean_eval_ad_acc.item())
-
-        self.report(
-                preds=logits[:,known_class_h_mask], 
-                hiddens=hidden_vectors.detach(), 
-                labels=eval_batch.class_labels,
-                predicted_clusters=predicted_clusters, 
-                query_mask=query_mask,
-                phase=INFERENCE)
-
-        self.classifier.train()
-        self.confidence_decoder.train()
+        print('fake evaluation...')
 
 
     def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase):
@@ -1143,10 +1040,11 @@ class TigerBrain():
             self.save_ad_model(postfix='coupled')
 
 
-    def class_classification_step(
+
+    def reward_computation(
             self, 
             class_labels, 
-            class_predictions, 
+            blocking_signals, 
             mode, 
             query_mask):
         """
@@ -1157,23 +1055,21 @@ class TigerBrain():
             This is epistemically legal, in the sense that train zdas are fake zdas.
             During testing instead, everythong is legal because we are not learning anymore, just evaluating.
         """
-        cs_loss = self.cs_criterion(
-            input=class_predictions,
-            target=class_labels[query_mask].squeeze(1))
+        #TODO compute blocking reward
+        print(f'{mode} blocked flows: {class_labels[blocking_signals][query_mask]}')
 
-        # compute accuracy (inclue zda class labels for computing accuracy)
-        acc = self.get_accuracy(
-            logits_preds=class_predictions,
-            decimal_labels=class_labels,
-            query_mask=query_mask)
+        blocking_reward = 100
 
         # report progress
         if self.wbt:
-            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.backprop_counter})
+            self.wbl.log({
+                'blocking_reward': blocking_reward.item(), 
+                STEP_LABEL:self.step_counter})
 
-        return cs_loss, acc
+        return blocking_reward
     
+
+
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
         """
@@ -1314,7 +1210,7 @@ class TigerBrain():
         plt.title(f'{phase} Confusion Matrix')
         
         if self.wbl is not None:
-            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt), STEP_LABEL:self.backprop_counter})
+            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt), STEP_LABEL:self.step_counter})
 
         plt.cla()
         plt.close()
