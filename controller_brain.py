@@ -305,11 +305,7 @@ class ControllerBrain():
     def add_replay_buffer(self, class_name):
         self.inference_allowed = False
         self.experience_learning_allowed = False
-        self.eval_allowed = False
-        
-        if self.AI_DEBUG:
-            self.logger_instance.info(f'Encoder state mapping: {self.encoder.get_mapping()}')
-        
+        self.eval_allowed = False 
         
         if not 'G2' in class_name:
             self.replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
@@ -550,18 +546,24 @@ class ControllerBrain():
                     zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
                     test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
 
-        if mode == TRAINING and not self.experience_learning_allowed:
-            buff_lengths = [len(replay_buff) for replay_buff in buffers.values()]
-            if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
-            self.experience_learning_allowed = torch.all(
-                torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in buff_lengths]))        
+        if not self.experience_learning_allowed or not self.inference_allowed or not self.eval_allowed:
 
-        if mode == INFERENCE and (not self.inference_allowed or not self.eval_allowed):
-            test_buff_lengths = [len(replay_buff) for replay_buff in buffers.values()]
-            if self.AI_DEBUG: self.logger_instance.info(f'Test Buffer lengths: {test_buff_lengths}')
+            buff_lengths = []
+            for class_label, class_idx in self.encoder.get_mapping().items():
 
-            self.inference_allowed = self.eval_allowed = torch.all(
-                torch.Tensor([buff_len  > self.replay_buff_batch_size for buff_len in test_buff_lengths]))
+                if class_idx in buffers.keys():
+                    curr_buff_len = len(buffers[class_idx]) 
+                    buff_lengths.append((class_label, curr_buff_len))
+
+            if self.AI_DEBUG: self.logger_instance.info(f'{mode} Buffer lengths: {buff_lengths}')
+
+            if mode == TRAINING:
+                self.experience_learning_allowed = torch.all(
+                    torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
+
+            if mode == INFERENCE:
+                self.inference_allowed = self.eval_allowed = torch.all(
+                    torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))
 
 
 
