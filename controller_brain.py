@@ -306,20 +306,25 @@ class ControllerBrain():
         self.inference_allowed = False
         self.experience_learning_allowed = False
         self.eval_allowed = False
+        
         if self.AI_DEBUG:
-            self.logger_instance.info(f'Adding a replay buffer with code {self.current_known_classes_count-1}')
             self.logger_instance.info(f'Encoder state mapping: {self.encoder.get_mapping()}')
+        
         
         if not 'G2' in class_name:
             self.replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
                 capacity=REPLAY_BUFFER_MAX_CAPACITY,
                 batch_size=self.replay_buff_batch_size,
                 seed=self.seed)
+            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1}' +\
+                                        ' in the training replay buffers')
         if not 'G1' in class_name:
             self.test_replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
                         capacity=REPLAY_BUFFER_MAX_CAPACITY,
                         batch_size=self.replay_buff_batch_size,
                         seed=self.seed)
+            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1}' +\
+                                      ' in the test replay buffers')
 
 
     def add_class_to_knowledge_base(self, new_class):
@@ -544,7 +549,7 @@ class ControllerBrain():
                     label=batch_labels[mask][sample_idx].unsqueeze(0),
                     zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
                     test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
-                
+
         if mode == TRAINING and not self.experience_learning_allowed:
             buff_lengths = [len(replay_buff) for replay_buff in buffers.values()]
             if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
