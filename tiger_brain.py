@@ -648,34 +648,31 @@ class TigerBrain():
             self, 
             online_batch):
         
-        flows_to_block = []
-
         self.classifier.eval()
         self.confidence_decoder.eval()
 
-        support_batch = self.sample_from_replay_buffers(
+        aux_batch = self.sample_from_replay_buffers(
                                 samples_per_class=self.replay_buff_batch_size,
                                 mode=INFERENCE)
         
-        support_query_mask = self.get_canonical_query_mask(INFERENCE)
+        aux_query_mask = self.get_canonical_query_mask(INFERENCE)
         online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
 
         merged_query_mask = torch.cat([
-                                support_query_mask, 
+                                aux_query_mask, 
                                 online_query_mask
                                 ])
         
         accuracy_mask = torch.cat([
-                                torch.zeros_like(support_query_mask), 
+                                torch.zeros_like(aux_query_mask), 
                                 online_query_mask
                                 ])
 
-        merged_batch = self.merge_batches(support_batch, online_batch)
+        merged_batch = self.merge_batches(aux_batch, online_batch)
 
         logits, hidden_vectors, predicted_kernel = self.infer(
             merged_batch,
             query_mask=merged_query_mask)
-
 
         one_hot_labels = self.get_oh_labels(merged_batch, logits)
         # known class horizonal mask:
@@ -690,9 +687,8 @@ class TigerBrain():
             accuracy_mask=accuracy_mask[merged_query_mask],
             mode=INFERENCE)
 
-        # not working quite well now...     
-        # predicted_zda_mask = self.preds_to_mask(zda_predictions)
-        # assuming a perfect anomaly detector: TODO understand whats happening...
+        predicted_zda_mask = self.preds_to_mask(zda_predictions)
+        # assuming a perfect anomaly detector (just for fun now)
         predicted_zda_mask = merged_batch.zda_labels[merged_query_mask].to(torch.bool).squeeze(-1) 
 
         # clusterise only the unknowns 
@@ -713,16 +709,50 @@ class TigerBrain():
             sample_blocking_mask,
             merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
 
+        # only for sfizio 
+        _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
-                                    f'Online {INFERENCE}  batch reward: {mean_batch_reward.item()}')
-            self.logger_instance.info(f'Online {INFERENCE} KR accuracy: {kr_precision}')
+            self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
+                                        f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
+                                        f'Online {INFERENCE} batch reward: {mean_batch_reward.item()} \n'+\
+                                        f'Online {INFERENCE} KR accuracy: {kr_precision}')
         
         self.classifier.train()
         self.confidence_decoder.train()
 
-        return flows_to_block
 
+    def class_classification_step(
+            self, 
+            class_labels, 
+            class_predictions, 
+            mode, 
+            query_mask):
+        """
+        Class classification:
+        It obviously computes the error  signal taking into account only query samples,
+        Note:  
+            This learning signal includes the qeury samples of train zdas and their corresponding class labels.
+            This is epistemically legal, in the sense that train zdas are fake zdas.
+            During testing instead, everythong is legal because we are not learning anymore, just evaluating.
+        """
+        cs_loss = self.cs_criterion(
+            input=class_predictions,
+            target=class_labels[query_mask].squeeze(1))
+
+        # compute accuracy (inclue zda class labels for computing accuracy)
+        acc = self.get_accuracy(
+            logits_preds=class_predictions,
+            decimal_labels=class_labels,
+            query_mask=query_mask)
+
+        # report progress
+        if self.wbt:
+            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.step_counter})
+
+        return cs_loss, acc
+    
 
     def one_hot_encode(self, decimal_label_predictions):
 
@@ -828,7 +858,7 @@ class TigerBrain():
             
             batch = self.assembly_input_tensor(flows, node_feats)
             
-            mode=(TRAINING if random.random() > 0.9 else INFERENCE)
+            mode=(TRAINING if random.random() > 0.3 else INFERENCE)
 
             to_push_mask = self.get_pushing_mask(
                 batch.zda_labels, 
@@ -1088,15 +1118,89 @@ class TigerBrain():
     def experience_learning(self):
         """
         This method performs learning. (It is the only one who does so). 
-        # TODO implement 
+        Other methods may use the neural networks, but just for inference. 
         """
-        print('fake experience replay...')
+
+        training_batch = self.sample_from_replay_buffers(
+                samples_per_class=self.replay_buff_batch_size,
+                mode=TRAINING)
         
+        query_mask = self.get_canonical_query_mask(TRAINING)
+
+        logits, hidden_vectors, predicted_kernel = self.infer(
+            batch=training_batch,
+            query_mask=query_mask)
+        
+        one_hot_labels = self.get_oh_labels(training_batch, logits)
+        # known class horizonal mask:
+        known_class_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
+        
+        loss = 0
+
+        # separate between candidate known traffic and unknown traffic.
+        zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+        
+        if self.multi_class:
+            # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
+            # if instead we are on a binary attack/non attack classification setting, 
+            # we do not care if the detected attacks are known or unknown.. 
+            zda_detection_loss, _ = self.zda_classification_step(
+                zda_labels=training_batch.zda_labels[query_mask], 
+                zda_predictions=zda_predictions,
+                accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
+                mode=TRAINING)
+            loss += zda_detection_loss
+
+        # clusterise everything you have labels about. 
+        kr_loss, predicted_clusters, _ = self.kernel_regression_step(
+            predicted_kernel, 
+            one_hot_labels, 
+            TRAINING)
+        
+        if CLUSTERING_LOSS_BACKPROP: loss += kr_loss
+        
+        # This helps to converge 
+        classification_loss, cs_acc = self.class_classification_step(
+            training_batch.class_labels, 
+            logits, 
+            TRAINING, 
+            query_mask)
+        
+        self.training_cs_cm += efficient_cm(
+        preds=logits.detach(),
+        targets_onehot=one_hot_labels[query_mask])      
+        
+        loss += classification_loss
+            
+        # Only during training we learn from feedback errors.  
+        # backward pass
+        self.optimizer.zero_grad()
+        loss.backward()
+        # update weights
+        self.optimizer.step()
+
+
+        if self.AI_DEBUG: 
+            # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
+            # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
+            self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
+
+
+        if self.step_counter % self.report_step_freq == 0:
+            self.report(
+                preds=logits[:,known_class_h_mask],  
+                hiddens=hidden_vectors.detach(), 
+                labels=training_batch.class_labels,
+                predicted_clusters=predicted_clusters, 
+                query_mask=query_mask,
+                phase=TRAINING)
+
+            if self.eval_allowed:
+                self.evaluate_models()
 
 
     def evaluate_models(self):
 
-        # these fellas may be actualy frozen... 
         self.classifier.eval()
         self.confidence_decoder.eval()
         
@@ -1110,7 +1214,66 @@ class TigerBrain():
                                     samples_per_class=self.replay_buff_batch_size,
                                     mode=INFERENCE)
             
-        print('fake evaluation...')
+            query_mask = self.get_canonical_query_mask(INFERENCE)
+
+            assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
+
+            logits, hidden_vectors, predicted_kernel = self.infer(
+                eval_batch,
+                query_mask=query_mask)
+
+            one_hot_labels = self.get_oh_labels(eval_batch, logits)
+            # known class horizonal mask:
+            known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
+
+            # separate between candidate known traffic and unknown traffic.
+            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+
+            _, ad_acc = self.zda_classification_step(
+                zda_labels=eval_batch.zda_labels[query_mask], 
+                zda_predictions=zda_predictions,
+                accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
+                mode=INFERENCE)
+            
+            _, predicted_clusters, kr_precision = self.kernel_regression_step(
+            predicted_kernel, 
+            one_hot_labels,
+            INFERENCE)         
+
+            self.eval_cs_cm += efficient_cm(
+            preds=logits.detach(),
+            targets_onehot=one_hot_labels[query_mask])
+            
+            _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
+
+            mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
+            mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
+            mean_eval_kr_ari += (kr_precision / EVALUATION_ROUNDS)
+
+        if self.AI_DEBUG: 
+            self.logger_instance.info(f'EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\
+                                        f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
+                                        f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
+        if self.wbt:
+            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.step_counter})
+
+        if not self.eval:
+            self.check_kr_progress(curr_kr_acc=mean_eval_kr_ari)
+            self.check_cs_progress(curr_cs_acc=mean_eval_cs_acc.item())
+            self.check_AD_progress(curr_ad_acc=mean_eval_ad_acc.item())
+
+        self.report(
+                preds=logits[:,known_class_h_mask], 
+                hiddens=hidden_vectors.detach(), 
+                labels=eval_batch.class_labels,
+                predicted_clusters=predicted_clusters, 
+                query_mask=query_mask,
+                phase=INFERENCE)
+
+        self.classifier.train()
+        self.confidence_decoder.train()
 
 
     def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase):
