@@ -595,7 +595,10 @@ class TigerBrain():
 
 
     def preds_to_mask(self, zda_predictions):
-        return zda_predictions > 0.5
+        """
+        Confidence stuff comes into play here...
+        """ 
+        return zda_predictions > 0.75
 
     def online_inference(
             self, 
@@ -640,7 +643,7 @@ class TigerBrain():
         _, ad_acc = self.zda_classification_step(
             zda_labels=merged_batch.zda_labels[merged_query_mask], 
             zda_predictions=zda_predictions,
-            accuracy_mask=accuracy_mask,
+            accuracy_mask=accuracy_mask[merged_query_mask],
             mode=INFERENCE)
         
         predicted_zda_mask = self.preds_to_mask(zda_predictions)
