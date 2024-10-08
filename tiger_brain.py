@@ -115,6 +115,23 @@ ANOMALY_DETECTION = 'AD'
 lock = threading.Lock()
 
 
+# TODO get this from the server...
+traffic_incomes_dict = {
+    'Echo (Bening G2)': 10, 
+    'Hakai': -10,
+    'Mirai (ZdA G2)': -20,
+    'Hajime (ZdA G2)': -13,
+    'Doorlock (Bening G2)': 40,
+    'Gafgyt (ZdA G2)': -25,
+    'Muhstik (ZdA G2)': -36,
+    'H_Scan (ZdA G2)': -17,
+    'Okiru (ZdA G1)': -48,
+    'Gen_DDoS (ZdA G1)': -29, 
+    'Torii': -21, 
+    'CC_HeartBeat (ZdA G1)': -31,
+    'Hue (Bening)': 52}
+
+
 def efficient_cm(preds, targets_onehot):
 
     predictions_decimal = preds.argmax(dim=1).to(torch.int64)
@@ -151,24 +168,64 @@ def get_balanced_accuracy(os_cm, negative_weight):
 
 
 def get_clusters(predicted_kernel):
+    """
+    Convert a predicted adjacency matrix (predicted_kernel) into discrete clusters by assigning
+    each node to a specific cluster based on the binary adjacency matrix.
+    
+    The function takes a predicted kernel, which is essentially a regression or a probabilistic 
+    prediction of an adjacency matrix, and performs the following steps:
+    
+    1. Binarizes the predicted kernel by applying a threshold of 0.5, converting it into 
+       a discrete adjacency matrix.
+    2. Iterates over each node and checks whether it has already been assigned to a cluster.
+    3. For unassigned nodes, creates a new cluster by assigning connected nodes to the same cluster.
+    4. Returns a tensor with cluster labels for each node.
+    
+    Args:
+    predicted_kernel (torch.Tensor): A 2D tensor representing a predicted or probabilistic adjacency 
+                                     matrix of size (N, N), where N is the number of nodes.
+    
+    Returns:
+    torch.Tensor: A 1D tensor of cluster labels, where each unique label represents a different cluster. 
+                  The label values range from 0 to (num_clusters - 1).
+    """
         
-        discrete_predicted_kernel = (predicted_kernel > 0.5).long()
+    # Binarize the predicted kernel to create a discrete adjacency matrix (0 or 1)
+    discrete_predicted_kernel = (predicted_kernel > 0.5).long()
+    
+    # Initialize a mask to keep track of which nodes have already been assigned to clusters
+    assigned_mask = torch.zeros_like(discrete_predicted_kernel.diag())
+    
+    # Initialize a tensor to store cluster assignments for each node
+    clusters = torch.zeros_like(discrete_predicted_kernel.diag())
+    
+    # Cluster index starts at 1 (0 is reserved for unassigned nodes)
+    curr_cluster = 1
+
+    # Iterate over each node in the adjacency matrix
+    for idx in range(discrete_predicted_kernel.shape[0]):
+        # Skip nodes that have already been assigned to a cluster
+        if assigned_mask[idx] > 0:
+            continue
+
+        # Create a mask for the current node's connections (its cluster)
+        new_cluster_mask = discrete_predicted_kernel[idx]
         
-        assigned_mask = torch.zeros_like(discrete_predicted_kernel.diag())
-        clusters = torch.zeros_like(discrete_predicted_kernel.diag())
-        curr_cluster = 1
+        # Remove nodes that have already been assigned to other clusters
+        new_cluster_mask = torch.relu(new_cluster_mask - assigned_mask)
+        
+        # Mark the nodes in the current cluster as assigned
+        assigned_mask += new_cluster_mask
+    
+        # Assign the current cluster index to all nodes in the new cluster
+        clusters += new_cluster_mask*curr_cluster
 
-        for idx in range(discrete_predicted_kernel.shape[0]):
-            if assigned_mask[idx] > 0:
-                continue
-            new_cluster_mask = discrete_predicted_kernel[idx]
-            new_cluster_mask = torch.relu(new_cluster_mask - assigned_mask)
-            assigned_mask += new_cluster_mask
-            clusters += new_cluster_mask*curr_cluster
-            if new_cluster_mask.sum() > 0:
-                curr_cluster += 1
+        # If any node was assigned to the new cluster, increment the cluster index
+        if new_cluster_mask.sum() > 0:
+            curr_cluster += 1
 
-        return clusters -1 
+    # Subtract 1 from cluster labels to make cluster labels start from 0
+    return clusters -1 
     
 
 class DynamicLabelEncoder:
@@ -234,6 +291,9 @@ class TigerBrain():
                  wb_run_name='',
                  report_step_freq=50,
                  **kwargs):
+        
+        # random is used to store observations either in the training or the testing buffers... 
+        random.seed(777) 
         
         self.eval = eval
         self.use_packet_feats = use_packet_feats
@@ -598,7 +658,9 @@ class TigerBrain():
         """
         Confidence stuff comes into play here...
         """ 
-        return zda_predictions > 0.75
+        # it turns out it wont work well if not boolean type!
+        mask = (zda_predictions > 0.75).to(torch.bool)
+        return mask   
 
     def online_inference(
             self, 
@@ -645,35 +707,133 @@ class TigerBrain():
             zda_predictions=zda_predictions,
             accuracy_mask=accuracy_mask[merged_query_mask],
             mode=INFERENCE)
-        
-        predicted_zda_mask = self.preds_to_mask(zda_predictions)
+
+        # not working quite well now...     
+        # predicted_zda_mask = self.preds_to_mask(zda_predictions)
+        # assuming a perfect anomaly detector: TODO understand whats happening...
+        predicted_zda_mask = merged_batch.zda_labels[merged_query_mask].to(torch.bool).squeeze(-1) 
 
         # clusterise only the unknowns 
-        _, predicted_clusters, kr_precision = self.kernel_regression_step(
-            predicted_kernel[predicted_zda_mask], 
-            one_hot_labels[predicted_zda_mask],
+        _, predicted_decimal_clusters, kr_precision = self.kernel_regression_step(
+            predicted_kernel[merged_query_mask][:,merged_query_mask][predicted_zda_mask][:, predicted_zda_mask], 
+            one_hot_labels[merged_query_mask][predicted_zda_mask],
             INFERENCE)
+        # assume a perfect clusterer for now TODO what is happening here?
+        predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
         
+        predicted_clusters_one_hot = self.one_hot_encode(predicted_decimal_clusters)
         # decide if blocking or accepting each unknown... 
-        blocking_signals = self.block(
-            hidden_vectors[predicted_zda_mask], 
-            predicted_clusters[predicted_zda_mask])
-
-        _, mit_acc = self.reward_computation(
-            merged_batch.class_labels[predicted_zda_mask], 
-            blocking_signals, 
-            INFERENCE, 
-            merged_query_mask[predicted_zda_mask])
+        centroid_q_values, sample_blocking_mask = self.block( 
+            hidden_vectors[merged_query_mask][predicted_zda_mask],
+            predicted_clusters_one_hot)
+ 
+        sample_rewards, mean_batch_reward = self.reward_computation(
+            sample_blocking_mask,
+            merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} AD accuracy: {ad_acc.item()} '+\
-                                    f'Online {INFERENCE}  mitigation accuracy: {mit_acc.item()}')
+                                    f'Online {INFERENCE}  batch reward: {mean_batch_reward.item()}')
             self.logger_instance.info(f'Online {INFERENCE} KR accuracy: {kr_precision}')
         
         self.classifier.train()
         self.confidence_decoder.train()
 
         return flows_to_block
+
+
+    def one_hot_encode(self, decimal_label_predictions):
+
+        # the decimal label predictions could have many less or more classes than that of the current 
+        # knowledge base... so we do N + 1 as the number of classes:  
+        num_classes  = decimal_label_predictions.max() + 1
+        
+        # Create a tensor of zeros with shape (num_labels, num_classes)
+        one_hot = torch.zeros(
+            decimal_label_predictions.size(0),
+            num_classes,
+            device=decimal_label_predictions.device)
+        
+        # Scatter 1s at the indices specified by the labels
+        one_hot.scatter_(1, decimal_label_predictions, 1)
+        
+        return one_hot
+
+
+    def get_centroids(
+            self,
+            hidden_vectors,
+            onehot_labels):
+        """
+        Compute the centroids (cluster centers) for a set of hidden representation vectors, 
+        based on their one-hot encoded class assignments. This method handles cases where 
+        some clusters may not have any samples in the batch (missing clusters).
+        
+        Args:
+        hidden_vectors (torch.Tensor): A 2D tensor of shape (N, D), where N is the number 
+                                    of samples and D is the dimensionality of the hidden representations.
+        onehot_labels (torch.Tensor): A 2D tensor of shape (N, K), where N is the number 
+                                    of samples and K is the number of classes. Each row is 
+                                    a one-hot encoded label indicating the class assignment 
+                                    for each sample.
+        
+        Returns:
+        tuple: A tuple containing:
+            - centroids (torch.Tensor): A 2D tensor of shape (K, D) representing the centroids 
+                                        for each class. If a class has no samples in the batch, 
+                                        its centroid will remain as zeros.
+            - missing_clusters (torch.Tensor): A 1D boolean tensor of length K, where True 
+                                            indicates that a class is missing (i.e., has 
+                                            no samples in the batch), and False means that 
+                                            the class has at least one sample.
+        """
+        
+        # Perform matrix multiplication to aggregate hidden vectors by class (onehot_labels.T @ hidden_vectors)
+        # This step sums the hidden_vectors for all samples belonging to each class.
+        cluster_agg = onehot_labels.T @ hidden_vectors
+
+        # Compute the number of samples for each class by summing over the one-hot encoded labels.
+        samples_per_cluster = onehot_labels.sum(0)
+        
+        # Initialize centroids as a zero tensor of the same shape as the aggregated hidden vectors.
+        centroids = torch.zeros_like(cluster_agg, device=self.device)
+        
+        # Identify missing clusters, i.e., classes with zero samples.
+        missing_clusters = samples_per_cluster == 0
+
+        # For the clusters that have samples, compute the centroid by dividing the summed hidden vectors
+        # by the number of samples in each cluster.
+        existent_centroids = cluster_agg[~missing_clusters] / samples_per_cluster[~missing_clusters].unsqueeze(-1)
+        
+        # Assign the computed centroids to their corresponding positions in the centroids tensor.
+        centroids[~missing_clusters] = existent_centroids
+
+        return centroids, missing_clusters
+    
+
+    def block(self, hidden_vectors, predicted_cluster_assignations):
+        """
+        TODO Implement DQN agent, for each centroid, the options are to block or not to block
+        """
+
+        centroids, _ = self.get_centroids(
+            hidden_vectors, 
+            predicted_cluster_assignations.to(torch.float32))
+
+        # (Q-value of blocking, Q.vale of lettting pass)  
+        # generating values from -1 to 1  
+        rand_q_vals = (torch.rand(centroids.shape[0]) * 2) - 1
+        
+        # assuming a symmetric value of letting pass or blocking: 
+        predicted_q_values = torch.cat((rand_q_vals.unsqueeze(0), -rand_q_vals.unsqueeze(0)))
+        
+        # a mask that tells us what cluster to block:  
+        clusters_to_block = predicted_q_values.max(0)[1]
+
+        # per-sample blocking signal (for reward computation) 
+        samples_to_block = (predicted_cluster_assignations @ clusters_to_block.to(torch.float))
+
+        return predicted_q_values, samples_to_block 
 
 
     def process_input(self, flows, node_feats: dict = None):
@@ -686,7 +846,7 @@ class TigerBrain():
             
             batch = self.assembly_input_tensor(flows, node_feats)
             
-            mode=(TRAINING if random.random() > 0.3 else INFERENCE)
+            mode=(TRAINING if random.random() > 0.9 else INFERENCE)
 
             to_push_mask = self.get_pushing_mask(
                 batch.zda_labels, 
@@ -1045,31 +1205,31 @@ class TigerBrain():
 
 
     def reward_computation(
-            self, 
-            class_labels, 
-            blocking_signals, 
-            mode, 
-            query_mask):
-        """
-        Class classification:
-        It obviously computes the error  signal taking into account only query samples,
-        Note:  
-            This learning signal includes the qeury samples of train zdas and their corresponding class labels.
-            This is epistemically legal, in the sense that train zdas are fake zdas.
-            During testing instead, everythong is legal because we are not learning anymore, just evaluating.
-        """
-        #TODO compute blocking reward
-        print(f'{mode} blocked flows: {class_labels[blocking_signals][query_mask]}')
+            self,
+            sample_blocking_mask,  # binary mask 
+            sample_class_labels  # decimal labels
+            ):
 
-        blocking_reward = 100
+        
+
+        # get only the samples you did not block
+        passed_samples = sample_class_labels[~sample_blocking_mask.to(torch.long)] 
+
+        # get natural-language labels    
+        nl_labels = self.encoder.inverse_transform(passed_samples)
+
+        # get the associated reward per sample 
+        sample_rewards = torch.Tensor([traffic_incomes_dict[label] for label in nl_labels])  
+
+        batch_reward = sample_rewards.sum()
 
         # report progress
         if self.wbt:
             self.wbl.log({
-                'blocking_reward': blocking_reward.item(), 
+                'batch_reward': batch_reward.item(), 
                 STEP_LABEL:self.step_counter})
 
-        return blocking_reward
+        return sample_rewards, batch_reward
     
 
 
