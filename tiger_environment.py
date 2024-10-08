@@ -8,20 +8,20 @@ class TigerEnvironment:
         host_ip_addr = kwargs['host_ip_addr'] 
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 100)
-        self.init_prices = self.get_init_TCI_prices()
-        self.samples_to_acquire = {key: 0 for key in self.init_prices}
+        self.flow_rewards_dict = self.get_flow_rewards()
+        self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
 
 
-    def get_init_TCI_prices(self):
+    def get_flow_rewards(self):
         try:
-            response = requests.get(self.container_manager_ep+'init_prices')
+            response = requests.get(self.container_manager_ep+'flow_rewards')
 
             # Check if the request was successful
             if response.status_code == 200:
                 # Parse the JSON response into a Python dictionary
                 data = response.json()
                 # Print the received dictionary
-                print("Received prices from container maganer server:", data)
+                print("Received flow rewards from container maganer server:", data)
                 return data
             else:
                 print(f"Error: Received status code {response.status_code}")

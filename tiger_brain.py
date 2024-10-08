@@ -114,24 +114,6 @@ ANOMALY_DETECTION = 'AD'
 # Create a lock object
 lock = threading.Lock()
 
-
-# TODO get this from the server...
-traffic_incomes_dict = {
-    'Echo (Bening G2)': 10, 
-    'Hakai': -10,
-    'Mirai (ZdA G2)': -20,
-    'Hajime (ZdA G2)': -13,
-    'Doorlock (Bening G2)': 40,
-    'Gafgyt (ZdA G2)': -25,
-    'Muhstik (ZdA G2)': -36,
-    'H_Scan (ZdA G2)': -17,
-    'Okiru (ZdA G1)': -48,
-    'Gen_DDoS (ZdA G1)': -29, 
-    'Torii': -21, 
-    'CC_HeartBeat (ZdA G1)': -31,
-    'Hue (Bening)': 52}
-
-
 def efficient_cm(preds, targets_onehot):
 
     predictions_decimal = preds.argmax(dim=1).to(torch.int64)
@@ -1219,7 +1201,7 @@ class TigerBrain():
         nl_labels = self.encoder.inverse_transform(passed_samples)
 
         # get the associated reward per sample 
-        sample_rewards = torch.Tensor([traffic_incomes_dict[label] for label in nl_labels])  
+        sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
 
         batch_reward = sample_rewards.sum()
 
