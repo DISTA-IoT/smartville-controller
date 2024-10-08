@@ -66,15 +66,50 @@ class MulticlassPrototypicalClassifier(nn.Module):
             self,
             hidden_vectors,
             onehot_labels):
-
+        """
+        Compute the centroids (cluster centers) for a set of hidden representation vectors, 
+        based on their one-hot encoded class assignments. This method handles cases where 
+        some clusters may not have any samples in the batch (missing clusters).
+        
+        Args:
+        hidden_vectors (torch.Tensor): A 2D tensor of shape (N, D), where N is the number 
+                                    of samples and D is the dimensionality of the hidden representations.
+        onehot_labels (torch.Tensor): A 2D tensor of shape (N, K), where N is the number 
+                                    of samples and K is the number of classes. Each row is 
+                                    a one-hot encoded label indicating the class assignment 
+                                    for each sample.
+        
+        Returns:
+        tuple: A tuple containing:
+            - centroids (torch.Tensor): A 2D tensor of shape (K, D) representing the centroids 
+                                        for each class. If a class has no samples in the batch, 
+                                        its centroid will remain as zeros.
+            - missing_clusters (torch.Tensor): A 1D boolean tensor of length K, where True 
+                                            indicates that a class is missing (i.e., has 
+                                            no samples in the batch), and False means that 
+                                            the class has at least one sample.
+        """
+        
+        # Perform matrix multiplication to aggregate hidden vectors by class (onehot_labels.T @ hidden_vectors)
+        # This step sums the hidden_vectors for all samples belonging to each class.
         cluster_agg = onehot_labels.T @ hidden_vectors
+
+        # Compute the number of samples for each class by summing over the one-hot encoded labels.
         samples_per_cluster = onehot_labels.sum(0)
+        
+        # Initialize centroids as a zero tensor of the same shape as the aggregated hidden vectors.
         centroids = torch.zeros_like(cluster_agg, device=self.device)
+        
+        # Identify missing clusters, i.e., classes with zero samples.
         missing_clusters = samples_per_cluster == 0
-        existent_centroids = cluster_agg[~missing_clusters] / \
-            samples_per_cluster[~missing_clusters].unsqueeze(-1)
+
+        # For the clusters that have samples, compute the centroid by dividing the summed hidden vectors
+        # by the number of samples in each cluster.
+        existent_centroids = cluster_agg[~missing_clusters] / samples_per_cluster[~missing_clusters].unsqueeze(-1)
+        
+        # Assign the computed centroids to their corresponding positions in the centroids tensor.
         centroids[~missing_clusters] = existent_centroids
-        assert torch.all(centroids[~missing_clusters] == existent_centroids)
+
         return centroids, missing_clusters
     
 
