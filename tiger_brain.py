@@ -309,7 +309,8 @@ class TigerBrain():
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, seed)
         self.report_step_freq = report_step_freq 
-
+        self.use_neural_AD = True
+        self.use_neural_KR = True
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
 
@@ -641,7 +642,7 @@ class TigerBrain():
         Confidence stuff comes into play here...
         """ 
         # it turns out it wont work well if not boolean type!
-        mask = (zda_predictions > 0.75).to(torch.bool)
+        mask = (zda_predictions > 0.5).to(torch.bool)
         return mask   
 
     def online_inference(
@@ -681,45 +682,65 @@ class TigerBrain():
         # separate between candidate known traffic and unknown traffic.
         zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
         
-        _, ad_acc = self.zda_classification_step(
-            zda_labels=merged_batch.zda_labels[merged_query_mask], 
-            zda_predictions=zda_predictions,
-            accuracy_mask=accuracy_mask[merged_query_mask],
-            mode=INFERENCE)
-
-        predicted_zda_mask = self.preds_to_mask(zda_predictions)
-        # assuming a perfect anomaly detector (just for fun now)
-        predicted_zda_mask = merged_batch.zda_labels[merged_query_mask].to(torch.bool).squeeze(-1) 
-
-        # clusterise only the unknowns 
-        _, predicted_decimal_clusters, kr_precision = self.kernel_regression_step(
-            predicted_kernel[merged_query_mask][:,merged_query_mask][predicted_zda_mask][:, predicted_zda_mask], 
-            one_hot_labels[merged_query_mask][predicted_zda_mask],
-            INFERENCE)
-        # assume a perfect clusterer for now TODO what is happening here?
-        predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
         
-        predicted_clusters_one_hot = self.one_hot_encode(predicted_decimal_clusters)
-        # decide if blocking or accepting each unknown... 
-        centroid_q_values, sample_blocking_mask = self.block( 
-            hidden_vectors[merged_query_mask][predicted_zda_mask],
-            predicted_clusters_one_hot)
- 
-        sample_rewards, mean_batch_reward = self.reward_computation(
-            sample_blocking_mask,
-            merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
 
-        # only for sfizio 
-        _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
 
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
-                                        f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
-                                        f'Online {INFERENCE} batch reward: {mean_batch_reward.item()} \n'+\
-                                        f'Online {INFERENCE} KR accuracy: {kr_precision}')
-        
-        self.classifier.train()
-        self.confidence_decoder.train()
+        if self.use_neural_AD:
+
+            _, ad_acc = self.zda_classification_step(
+                zda_labels=merged_batch.zda_labels[merged_query_mask], 
+                zda_predictions=zda_predictions,
+                accuracy_mask=accuracy_mask[merged_query_mask],
+                mode=INFERENCE)
+
+            predicted_zda_mask = self.preds_to_mask(zda_predictions).squeeze(-1)
+        else:
+            # assuming a perfect anomaly detector (just for eval purposes, not learning from this experience tuple)
+            predicted_zda_mask = merged_batch.zda_labels[merged_query_mask].to(torch.bool).squeeze(-1) 
+            ad_acc = torch.zeros(1)
+
+        # is there any zda? 
+        if predicted_zda_mask.any():
+
+            if self.use_neural_KR:
+                
+                # clusterise
+                _, predicted_decimal_clusters, kr_precision = self.kernel_regression_step(
+                    predicted_kernel[merged_query_mask][:,merged_query_mask], 
+                    one_hot_labels[merged_query_mask],
+                    INFERENCE)
+                
+                # take only the clusters of predicted zdas...
+                predicted_decimal_clusters = predicted_decimal_clusters[predicted_zda_mask] 
+                    
+            else:
+                # assume a perfect clusterer for now TODO what is happening here?
+                predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
+                kr_precision = torch.zeros(1)
+
+            # get one-hot labels 
+            predicted_clusters_one_hot = self.one_hot_encode(predicted_decimal_clusters)
+
+            # decide if blocking or accepting each unknown... 
+            centroid_q_values, sample_blocking_mask = self.block( 
+                hidden_vectors[merged_query_mask][predicted_zda_mask],
+                predicted_clusters_one_hot)
+    
+            sample_rewards, mean_batch_reward = self.reward_computation(
+                sample_blocking_mask,
+                merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
+
+            # only for sfizio 
+            _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+
+            if self.AI_DEBUG: 
+                self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
+                                            f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
+                                            f'Online {INFERENCE} batch reward: {mean_batch_reward.item()} \n'+\
+                                            f'Online {INFERENCE} KR accuracy: {kr_precision}')
+            
+            self.classifier.train()
+            self.confidence_decoder.train()
 
 
     def class_classification_step(
@@ -767,7 +788,7 @@ class TigerBrain():
             device=decimal_label_predictions.device)
         
         # Scatter 1s at the indices specified by the labels
-        one_hot.scatter_(1, decimal_label_predictions, 1)
+        one_hot.scatter_(1, decimal_label_predictions.unsqueeze(-1), 1)
         
         return one_hot
 
@@ -858,7 +879,7 @@ class TigerBrain():
             
             batch = self.assembly_input_tensor(flows, node_feats)
             
-            mode=(TRAINING if random.random() > 0.3 else INFERENCE)
+            mode=(TRAINING if random.random() > 0.9 else INFERENCE)
 
             to_push_mask = self.get_pushing_mask(
                 batch.zda_labels, 
@@ -1251,7 +1272,7 @@ class TigerBrain():
             mean_eval_kr_ari += (kr_precision / EVALUATION_ROUNDS)
 
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\
+            self.logger_instance.info(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\
                                         f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
                                         f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
