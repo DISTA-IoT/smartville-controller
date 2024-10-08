@@ -665,7 +665,7 @@ def launch(**kwargs):
           assert 1 == 0
 
     else:
-        
+        """
         TRAINING_LABELS_DICT["192.168.1.7"] = "Attack"
         TRAINING_LABELS_DICT["192.168.1.8"] = "Attack"
         TRAINING_LABELS_DICT["192.168.1.9"] = "Attack"
@@ -678,6 +678,9 @@ def launch(**kwargs):
         TRAINING_LABELS_DICT["192.168.1.14"] = "Attack"
         TRAINING_LABELS_DICT["192.168.1.15"] = "Attack"
         TRAINING_LABELS_DICT["192.168.1.16"] = "Attack"
+        """
+        print("binary classification not implemented yet!")
+        assert 1 == 0
     
     ########################### END OF LABELING
 
