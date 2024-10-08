@@ -1185,15 +1185,13 @@ class TigerBrain():
             self.save_ad_model(postfix='coupled')
 
 
-
     def reward_computation(
             self,
             sample_blocking_mask,  # binary mask 
             sample_class_labels  # decimal labels
             ):
-
-        
-
+        # TODO can we make this more efficient?
+         
         # get only the samples you did not block
         passed_samples = sample_class_labels[~sample_blocking_mask.to(torch.long)] 
 
@@ -1213,8 +1211,6 @@ class TigerBrain():
 
         return sample_rewards, batch_reward
     
-
-
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
         """
