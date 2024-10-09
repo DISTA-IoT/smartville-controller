@@ -602,13 +602,15 @@ def launch(**kwargs):
     """
     global FLOWSTATS_FREQ_SECS
 
+    kwargs['use_packet_feats']  = str_to_bool(kwargs.get('use_packet_feats', True))
+    kwargs['node_features'] = str_to_bool(kwargs.get('node_features', False))
+
     eval = str_to_bool(kwargs.get('eval', False))
     device = kwargs.get('device', 'cpu')
     seed = int(kwargs.get('seed', 777))
     ai_debug = str_to_bool(kwargs.get('ai_debug', False))
 
     multi_class = str_to_bool(kwargs.get('multi_class', True))
-    use_packet_feats = str_to_bool(kwargs.get('use_packet_feats', True))
     packet_buffer_len = int(kwargs.get('packet_buffer_len', 1))
     packet_feat_dim = int(kwargs.get('packet_feat_dim', 64))
     dropout = float(kwargs.get('dropout', 0.6))
@@ -616,7 +618,6 @@ def launch(**kwargs):
     batch_size = int(kwargs.get('batch_size', 20))
     anonymize_transport_ports = str_to_bool(kwargs.get('anonym_ports', True))
     flow_buff_len = int(kwargs.get('flow_buff_len', 10))
-    node_features = str_to_bool(kwargs.get('node_features', False))
     metric_buffer_len = int(kwargs.get('metric_buffer_len', 10))
     grafana_user = kwargs.get('grafana_user', 'admin')
     grafana_password = kwargs.get('grafana_password', 'admin')
@@ -702,7 +703,7 @@ def launch(**kwargs):
 
     metrics_logger=None
 
-    if node_features:
+    if kwargs['node_features']:
       metrics_logger = MetricsLogger(
         server_addr = "192.168.1.1:9092",
         max_conn_retries = max_kafka_conn_retries,
@@ -714,8 +715,6 @@ def launch(**kwargs):
     # The controllerBrain holds the ML functionalities.
     controller_brain = TigerBrain(
         eval=eval,
-        use_packet_feats=use_packet_feats,
-        use_node_feats=node_features,
         flow_feat_dim=4,
         packet_feat_dim=packet_feat_dim,
         dropout=dropout,
@@ -741,7 +740,7 @@ def launch(**kwargs):
       class_labels=TRAINING_LABELS_DICT,
       zda_labels=ZDA_DICT,
       test_zda_labels=TEST_ZDA_DICT,
-      use_node_feats=node_features,
+      use_node_feats=kwargs['node_features'],
       **switching_args
       )
     

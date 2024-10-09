@@ -33,6 +33,7 @@ from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment import TigerEnvironment
+from smartController.tiger_agents import DDQNAgent
 
 
 # List of colors
@@ -255,8 +256,6 @@ class TigerBrain():
 
     def __init__(self,
                  eval,
-                 use_packet_feats,
-                 use_node_feats,
                  flow_feat_dim,
                  packet_feat_dim,
                  dropout,
@@ -278,8 +277,8 @@ class TigerBrain():
         random.seed(777) 
         
         self.eval = eval
-        self.use_packet_feats = use_packet_feats
-        self.use_node_feats = use_node_feats
+        self.use_packet_feats = kwargs['use_packet_feats'] 
+        self.use_node_feats = kwargs['node_features'] 
         self.flow_feat_dim = flow_feat_dim
         self.packet_feat_dim = packet_feat_dim
         self.h_dim = kwargs['h_dim']
@@ -313,6 +312,8 @@ class TigerBrain():
         self.use_neural_KR = True
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
+        
+        self.init_agent(kwargs)
 
         if self.wbt:
 
@@ -334,6 +335,20 @@ class TigerBrain():
 
         # start an episode  
         self.env.reset()
+
+
+    def init_agent(self, kwargs):
+        
+        self.state_space_dim = kwargs['h_dim']
+        if self.use_node_feats:
+            self.state_space_dim += kwargs['h_dim']
+        if self.use_packet_feats:
+            self.state_space_dim += kwargs['h_dim'] 
+        
+        self.agent = DDQNAgent(
+            state_size=self.state_space_dim + 1, # the "current_budget" scalar is part of the state space  
+            action_size=2, 
+            kwargs=kwargs)
 
 
     def add_replay_buffer(self, class_name):
@@ -682,9 +697,6 @@ class TigerBrain():
         # separate between candidate known traffic and unknown traffic.
         zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
         
-        
-
-
         if self.use_neural_AD:
 
             _, ad_acc = self.zda_classification_step(
@@ -718,17 +730,38 @@ class TigerBrain():
                 predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
                 kr_precision = torch.zeros(1)
 
-            # get one-hot labels 
-            predicted_clusters_one_hot = self.one_hot_encode(predicted_decimal_clusters)
-
             # decide if blocking or accepting each unknown... 
-            centroid_q_values, sample_blocking_mask = self.block( 
+            cluster_blocking_signals, state_vecs = self.block( 
                 hidden_vectors[merged_query_mask][predicted_zda_mask],
-                predicted_clusters_one_hot)
+                self.env.current_budget,
+                predicted_decimal_clusters
+                )
     
-            sample_rewards, mean_batch_reward = self.reward_computation(
-                sample_blocking_mask,
+            # get a reward for each blocking decision (for each predicted cluster)  
+            rewards_per_signal = self.compute_rewards(
+                cluster_blocking_signals,
+                predicted_decimal_clusters,
                 merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
+            
+            
+            next_budgets = self.env.current_budget + rewards_per_signal
+            
+            
+            ended_signals = next_budgets < 0
+
+
+            next_states = torch.hstack(
+                [state_vecs[:, :-1], 
+                    next_budgets.unsqueeze(-1)]
+                    )
+
+
+            self.agent.remember(
+                state_vecs, 
+                cluster_blocking_signals,
+                rewards_per_signal,
+                next_states,
+                ended_signals)
 
             # only for sfizio 
             _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
@@ -736,7 +769,7 @@ class TigerBrain():
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
                                             f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
-                                            f'Online {INFERENCE} batch reward: {mean_batch_reward.item()} \n'+\
+                                            f'Online {INFERENCE} batch reward: {rewards_per_signal.sum().item()} \n'+\
                                             f'Online {INFERENCE} KR accuracy: {kr_precision}')
             
             self.classifier.train()
@@ -844,30 +877,82 @@ class TigerBrain():
         return centroids, missing_clusters
     
 
-    def block(self, hidden_vectors, predicted_cluster_assignations):
+    def block(self, hidden_vectors, curr_budget, predicted_clusters):
         """
         TODO Implement DQN agent, for each centroid, the options are to block or not to block
         """
 
+        num_of_predicted_clusters = predicted_clusters.max() + 1
+
+        # the state vectors are gonna be composed of the hidden centroids + the current budget.
+        # So we boradcast the current butget value to concatenate it with the hidden clusters. 
+        broadcasted_budget = torch.Tensor([curr_budget] * num_of_predicted_clusters)
+
+
+        predicted_clusters_oh = torch.nn.functional.one_hot(
+            predicted_clusters,
+            num_classes=num_of_predicted_clusters
+        )
+
         centroids, _ = self.get_centroids(
             hidden_vectors, 
-            predicted_cluster_assignations.to(torch.float32))
+            predicted_clusters_oh.to(torch.float32))
 
-        # (Q-value of blocking, Q.vale of lettting pass)  
-        # generating values from -1 to 1  
-        rand_q_vals = (torch.rand(centroids.shape[0]) * 2) - 1
+        state_vecs = torch.hstack(
+           [centroids, 
+            broadcasted_budget.unsqueeze(-1)]
+            )
+
+        clusters_to_block = [] 
+        for state_vec in state_vecs:
+            clusters_to_block.append(self.agent.act(state_vec))
+
+        return torch.Tensor(clusters_to_block).to(torch.long), state_vecs.detach()
+
+
+    def compute_rewards(
+            self,
+            cluster_blocking_signals,
+            predicted_clusters,
+            class_labels):
         
-        # assuming a symmetric value of letting pass or blocking: 
-        predicted_q_values = torch.cat((rand_q_vals.unsqueeze(0), -rand_q_vals.unsqueeze(0)))
+        # get one-hot labels 
+        predicted_clusters_oh = torch.nn.functional.one_hot(
+            predicted_clusters, 
+            num_classes=predicted_clusters.max()+1)
         
-        # a mask that tells us what cluster to block:  
-        clusters_to_block = predicted_q_values.max(0)[1]
+        # per-sample blocking signal
+        samples_to_block = (predicted_clusters_oh @ cluster_blocking_signals.unsqueeze(1))
 
-        # per-sample blocking signal (for reward computation) 
-        samples_to_block = (predicted_cluster_assignations @ clusters_to_block.to(torch.float))
+        # get only the samples you did not block
+        passed_samples = class_labels[~samples_to_block.to(torch.long)] 
 
-        return predicted_q_values, samples_to_block 
+        # get natural-language labels    
+        nl_labels = self.encoder.inverse_transform(passed_samples)
 
+        # get the associated reward per sample 
+        sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
+
+        passed_clusters_oh = predicted_clusters_oh[passed_samples.squeeze()]
+
+        cluster_rewards = self.get_cluster_rewards(
+            passed_clusters_oh, sample_rewards)
+        
+        return cluster_rewards 
+
+
+    def get_cluster_rewards(self, cluster_oh_labels, sample_rewards):
+
+        transposed_labels = cluster_oh_labels.T
+
+        rewards_on_cluster_row = sample_rewards * transposed_labels
+
+        rewards_on_cluster_col = rewards_on_cluster_row.T
+
+        rewards_per_cluster = rewards_on_cluster_col.sum(0)
+
+        return rewards_per_cluster
+    
 
     def process_input(self, flows, node_feats: dict = None):
         """
@@ -1374,18 +1459,6 @@ class TigerBrain():
             sample_blocking_mask,  # binary mask 
             sample_class_labels  # decimal labels
             ):
-        # TODO can we make this more efficient?
-         
-        # get only the samples you did not block
-        passed_samples = sample_class_labels[~sample_blocking_mask.to(torch.long)] 
-
-        # get natural-language labels    
-        nl_labels = self.encoder.inverse_transform(passed_samples)
-
-        # get the associated reward per sample 
-        sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
-
-        batch_reward = sample_rewards.sum()
 
         # report progress
         if self.wbt:
@@ -1393,7 +1466,6 @@ class TigerBrain():
                 'batch_reward': batch_reward.item(), 
                 STEP_LABEL:self.step_counter})
 
-        return sample_rewards, batch_reward
     
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
