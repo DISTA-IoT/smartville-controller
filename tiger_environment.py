@@ -13,6 +13,8 @@ class TigerEnvironment:
         self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
+        self.current_budget = self.init_budget
+        self.intelligence_budget_snapshot = self.init_budget
 
     def has_episode_ended(self):
         if self.current_budget > self.max_budget:
@@ -20,6 +22,10 @@ class TigerEnvironment:
         else:
             return self.current_budget < self.min_budget
     
+    def has_intelligence_episode_ended(self):
+        # TODO do we need to frame these episodes to converge?
+        return False
+        
 
     def get_flow_rewards(self):
         try:
@@ -45,7 +51,21 @@ class TigerEnvironment:
         self.restart_budget()
 
 
+    def perform_epistemic_action(self):
+        """
+        TODO implement: i.e. change the curriculum!!
+        """
+        print("Fake epistemic action taking place. Implement this!")
+
     def restart_budget(self):
+        
+        # we are now going to reset the budget, how much are we gaining by restarting the budget?
+        gaining = self.init_budget - self.current_budget
+
+        # we subtract such gaining from the intelligence budget snapshot to keep counts fair
+        self.intelligence_budget_snapshot -= gaining
+
+        # now we can restart the budget
         self.current_budget = self.init_budget
 
 

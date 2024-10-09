@@ -313,7 +313,7 @@ class TigerBrain():
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
         
-        self.init_agent(kwargs)
+        self.init_agents(kwargs)
 
         if self.wbt:
 
@@ -337,7 +337,7 @@ class TigerBrain():
         self.env.reset()
 
 
-    def init_agent(self, kwargs):
+    def init_agents(self, kwargs):
         
         self.state_space_dim = kwargs['h_dim']
         if self.use_node_feats:
@@ -345,10 +345,16 @@ class TigerBrain():
         if self.use_packet_feats:
             self.state_space_dim += kwargs['h_dim'] 
         
-        self.agent = DDQNAgent(
+        self.mitigation_agent = DDQNAgent(
             state_size=self.state_space_dim + 1, # the "current_budget" scalar is part of the state space  
             action_size=2, 
             kwargs=kwargs)
+        
+        self.intelligence_agent = DDQNAgent(
+            state_size=6,  # we will have a list of 5 different available prices and the current budget
+            action_size=6, # he can opt to buy one from 5 different labels, or not to but at all.
+            kwargs=kwargs
+        )
 
 
     def add_replay_buffer(self, class_name):
@@ -767,10 +773,10 @@ class TigerBrain():
                     rewards_per_signal,
                     next_states,
                     broadcasted_end_signal):
-                self.agent.remember(*experience_tuple)
+                self.mitigation_agent.remember(*experience_tuple)
 
             # train!
-            self.agent.replay()
+            self.mitigation_agent.replay()
 
             # only for the sake of monitoring progress (no backpropring this...) 
             _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits.detach(), INFERENCE, merged_query_mask)
@@ -904,7 +910,7 @@ class TigerBrain():
 
         clusters_to_block = [] 
         for state_vec in state_vecs:
-            clusters_to_block.append(self.agent.act(state_vec))
+            clusters_to_block.append(self.mitigation_agent.act(state_vec))
 
         return torch.Tensor(clusters_to_block).to(torch.long), state_vecs.detach()
 
@@ -1081,22 +1087,6 @@ class TigerBrain():
         # and then we flatten the di-dimensional mask to get a one-dimensional one that works for us! 
         query_mask = query_mask.view(-1)
         return query_mask
-
-
-    def update_k_shot(self):
-        """
-        As an AI to get the k_shot
-        """
-
-        # action = self.dealer(self.current_accs, self.current_costs)
-        action = 0
-
-        self.k_shot = self.k_shot + action
-
-        if self.k_shot < self.min_k_shot:
-            self.k_shot = self.min_k_shot
-        if self.k_shot > self.max_k_shot:
-            self.k_shot = self.max_k_shot
 
 
     def get_oh_labels(self, batch, logits):
@@ -1300,8 +1290,50 @@ class TigerBrain():
                 query_mask=query_mask,
                 phase=TRAINING)
 
+            self.intelligence_step()
+
+            """
             if self.eval_allowed:
                 self.evaluate_models()
+            """
+            
+    def intelligence_step(self):
+
+        # what was the budget at the time of our last intelligence decision?
+        prev_intelligence_budget_snapshot = self.env.intelligence_budget_snapshot
+
+        # what is our current budget?
+        self.env.intelligence_budget_snapshot = self.env.current_budget
+
+        # get the reward of the last action:
+        prev_reward = self.env.intelligence_budget_snapshot - prev_intelligence_budget_snapshot
+
+        # for now this is fixed to False... TODO do we need to modify this?
+        done_signal = self.env.has_intelligence_episode_ended()
+
+        # get state: (for now fixed)
+        current_state = torch.Tensor([1,0.5,0.5,1,-1,self.env.intelligence_budget_snapshot])
+
+        # now that we have the reward, we can store the previous experience replay tuple
+        self.intelligence_agent.remember(
+            self.env.prev_intelligence_state, 
+            self.env.prev_intelligence_action, 
+            prev_reward, 
+            current_state, # current_state is the previous next state ;)
+            done_signal)
+        
+        # take an action
+        current_action = self.intelligence_agent.act(current_state)
+
+        # TODO implement
+        self.env.perform_epistemic_action(current_action)
+
+        # save the current values for the next step
+        self.env.prev_intelligence_action = current_action
+        self.env.prev_intelligence_state = current_state
+        
+        # train the intelligence agent
+        self.intelligence_agent.replay()
 
 
     def evaluate_models(self):
@@ -1341,13 +1373,13 @@ class TigerBrain():
                 mode=INFERENCE)
             
             _, predicted_clusters, kr_precision = self.kernel_regression_step(
-            predicted_kernel, 
-            one_hot_labels,
-            INFERENCE)         
+                predicted_kernel, 
+                one_hot_labels,
+                INFERENCE)         
 
             self.eval_cs_cm += efficient_cm(
-            preds=logits.detach(),
-            targets_onehot=one_hot_labels[query_mask])
+                preds=logits.detach(),
+                targets_onehot=one_hot_labels[query_mask])
             
             _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
 
