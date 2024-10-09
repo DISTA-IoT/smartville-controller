@@ -35,9 +35,8 @@ class DDQNAgent:
         if torch.rand(1).item() <= self.epsilon:
             return random.randrange(self.action_size)
         
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        q_values = self.model(state_tensor)
-        return q_values.detach().max(0)[1] 
+        q_values = self.model(state)
+        return q_values.max(0)[1].item()
 
 
     def replay(self):
@@ -49,15 +48,14 @@ class DDQNAgent:
         for state, action, reward, next_state, done in minibatch:
             target = reward
             
-            if not done:
-                next_state_tensor = torch.FloatTensor(next_state).unsqueeze(0)
-                target += self.gamma * torch.max(self.target_model(next_state_tensor)).item()
+            if not done:  
+                target += self.gamma * torch.max(self.target_model(next_state)).item()
             
-            target_f = self.model(torch.FloatTensor(state).unsqueeze(0))
-            target_f[0][action] = target
+            target_f = self.model(state).detach()
+            target_f[action] = target
             
             self.optimizer.zero_grad()
-            loss = nn.MSELoss()(self.model(torch.FloatTensor(state).unsqueeze(0)), target_f)
+            loss = nn.MSELoss()(self.model(state), target_f)
             loss.backward()
             self.optimizer.step()
 

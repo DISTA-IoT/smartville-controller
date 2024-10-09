@@ -615,7 +615,6 @@ class TigerBrain():
                     torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))
 
 
-
     def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
         """
         The pushing mask is a vertical mask (i.e. a binary mask taht assings 1 or 0 to each 
@@ -659,6 +658,7 @@ class TigerBrain():
         # it turns out it wont work well if not boolean type!
         mask = (zda_predictions > 0.5).to(torch.bool)
         return mask   
+
 
     def online_inference(
             self, 
@@ -743,28 +743,31 @@ class TigerBrain():
                 predicted_decimal_clusters,
                 merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
             
-            
+            # compute new budgets: 
             next_budgets = self.env.current_budget + rewards_per_signal
             
-            
+            # an episode ends if the budget ends... 
             ended_signals = next_budgets < 0
 
-
+            # we can approximate the new state with the previous one, but changing the budget. 
             next_states = torch.hstack(
                 [state_vecs[:, :-1], 
                     next_budgets.unsqueeze(-1)]
                     )
 
+            # collect experience tuples for training: 
+            for experience_tuple in zip(state_vecs, 
+                    cluster_blocking_signals,
+                    rewards_per_signal,
+                    next_states,
+                    ended_signals):
+                self.agent.remember(*experience_tuple)
 
-            self.agent.remember(
-                state_vecs, 
-                cluster_blocking_signals,
-                rewards_per_signal,
-                next_states,
-                ended_signals)
+            # train!
+            self.agent.replay()
 
-            # only for sfizio 
-            _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits, INFERENCE, merged_query_mask)
+            # only for the sake of monitoring progress (no backpropring this...) 
+            _, cs_acc = self.class_classification_step(merged_batch.class_labels, logits.detach(), INFERENCE, merged_query_mask)
 
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
@@ -879,7 +882,7 @@ class TigerBrain():
 
     def block(self, hidden_vectors, curr_budget, predicted_clusters):
         """
-        TODO Implement DQN agent, for each centroid, the options are to block or not to block
+        TODO for each centroid, the options are to block or not to block
         """
 
         num_of_predicted_clusters = predicted_clusters.max() + 1
