@@ -11,6 +11,15 @@ class TigerEnvironment:
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
         self.flow_rewards_dict = self.get_flow_rewards()
         self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
+        self.min_budget = kwargs['min_budget']
+        self.max_budget = kwargs['max_budget'] 
+
+    def has_episode_ended(self):
+        if self.current_budget > self.max_budget:
+            return True
+        else:
+            return self.current_budget < self.min_budget
+    
 
     def get_flow_rewards(self):
         try:
@@ -31,7 +40,8 @@ class TigerEnvironment:
 
 
     def reset(self):
-        self.restart_traffic()
+        print('TIGER ENV: restarting episode!')
+        # self.restart_traffic()
         self.restart_budget()
 
 

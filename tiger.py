@@ -599,6 +599,9 @@ def launch(**kwargs):
         - 'init_k_shot' (int, optional): Initial value for k_shot in k_shot learning. Default is 5. 
         - 'report_step_freq' (int, optional): Evaluation, reporting and action taking is done each report_step_freq inference steps.
         - 'host_ip_addr' (string ip_addr): The host's IP address with wich the switch communicates to control the traffic generation. Default: 192.168.122.1
+        - 'min_budget' (int, optional): The minimum budget that the agent can reach, after reaching this budget, the episode will restart. (Default -5)
+        - 'max_budget' (int, optional): The maximum budget that the agent can reach, after reaching this budget, the episode will restart. (Default 10) 
+ 
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -632,6 +635,8 @@ def launch(**kwargs):
     
     kwargs['replay_batch_size'] = kwargs.get('replay_batch_size', 32)
     kwargs['h_dim'] = int(kwargs.get('h_dim', 800))
+    kwargs['min_budget'] = int(kwargs.get('min_budget', -5))
+    kwargs['max_budget'] = int(kwargs.get('max_budget', 10))
     wb_run_name = kwargs.get('wb_run_name', f"my_run")
 
     # Switching arguments:

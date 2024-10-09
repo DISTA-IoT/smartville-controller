@@ -79,7 +79,7 @@ CPU = 'CPU'
 IN_TRAFFIC = 'IN_TRAFFIC'
 OUT_TRAFFIC = 'OUT_TRAFFIC'
 DELAY = 'DELAY'
-
+AGENT = 'AGENT'
 
 
 PRETRAINED_MODELS_DIR = '/pox/pox/smartController/tiger_models/'
@@ -744,14 +744,15 @@ class TigerBrain():
                 merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
             
             # compute new budget: 
-            self.env.current_budget += rewards_per_signal.sum().item()
+            batch_reward = rewards_per_signal.sum().item()
+            self.env.current_budget += batch_reward
             
             # broadcast it to append it to the state vectors 
             num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
             broadcasted_budget = torch.Tensor([self.env.current_budget] * num_of_predicted_clusters)
 
             # an episode ends if the budget ends... 
-            end_signal = self.env.current_budget < 0
+            end_signal = self.env.has_episode_ended()
             broadcasted_end_signal = torch.Tensor([end_signal] * num_of_predicted_clusters)
 
             # we can approximate the new state with the previous one, but changing the budget. 
@@ -777,12 +778,19 @@ class TigerBrain():
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
                                             f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
-                                            f'Online {INFERENCE} batch reward: {rewards_per_signal.sum().item()} \n'+\
+                                            f'Online {INFERENCE} batch reward: {batch_reward} \n'+\
                                             f'Online {INFERENCE} current budget: {self.env.current_budget} \n'+\
                                             f'Online {INFERENCE} KR accuracy: {kr_precision}')
             
+            if self.wbt:
+                self.wbl.log({AGENT+'_'+'reward': batch_reward, STEP_LABEL:self.step_counter})
+                self.wbl.log({AGENT+'_'+'budget': self.env.current_budget, STEP_LABEL:self.step_counter})
+
             self.classifier.train()
             self.confidence_decoder.train()
+
+            if end_signal:
+                self.env.reset()
 
 
     def class_classification_step(
