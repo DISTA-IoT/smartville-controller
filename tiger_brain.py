@@ -34,6 +34,7 @@ import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment import TigerEnvironment
 
+
 # List of colors
 colors = [
     'red', 'blue', 'green', 'purple', 'orange', 'pink', 'cyan',  'brown', 'yellow',
@@ -258,7 +259,6 @@ class TigerBrain():
                  use_node_feats,
                  flow_feat_dim,
                  packet_feat_dim,
-                 h_dim,
                  dropout,
                  multi_class,
                  init_k_shot,
@@ -272,7 +272,7 @@ class TigerBrain():
                  wb_project_name='',
                  wb_run_name='',
                  report_step_freq=50,
-                 **kwargs):
+                 kwargs={}):
         
         # random is used to store observations either in the training or the testing buffers... 
         random.seed(777) 
@@ -282,7 +282,7 @@ class TigerBrain():
         self.use_node_feats = use_node_feats
         self.flow_feat_dim = flow_feat_dim
         self.packet_feat_dim = packet_feat_dim
-        self.h_dim = h_dim
+        self.h_dim = kwargs['h_dim']
         self.dropout = dropout
         self.multi_class = multi_class
         self.AI_DEBUG = debug

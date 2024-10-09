@@ -611,7 +611,6 @@ def launch(**kwargs):
     use_packet_feats = str_to_bool(kwargs.get('use_packet_feats', True))
     packet_buffer_len = int(kwargs.get('packet_buffer_len', 1))
     packet_feat_dim = int(kwargs.get('packet_feat_dim', 64))
-    h_dim = int(kwargs.get('h_dim', 800))
     dropout = float(kwargs.get('dropout', 0.6))
     init_k_shot = int(kwargs.get('init_k_shot', 5))
     batch_size = int(kwargs.get('batch_size', 20))
@@ -626,11 +625,14 @@ def launch(**kwargs):
     report_step_freq = int(kwargs.get('report_step_freq',50))
     wb_tracking = str_to_bool(kwargs.get('wb_tracking', False))
     wb_project_name = kwargs.get('wb_project_name', 'SmartVille')
-    wb_run_name = kwargs.get('wb_run_name', f"AC{curriculum}|DROP {dropout}|H_DIM {h_dim}|{packet_buffer_len}-PKT|{flow_buff_len}TS")
     FLOWSTATS_FREQ_SECS = int(kwargs.get('flowstats_freq_secs', 5))
     PORTSTATS_FREQ_SECS = int(kwargs.get('portstats_freq_secs', 5))
     host_ip_addr  = kwargs.get('host_ip_addr', '192.168.122.1')
     
+    kwargs['replay_batch_size'] = kwargs.get('replay_batch_size', 32)
+    kwargs['h_dim'] = int(kwargs.get('h_dim', 800))
+    wb_run_name = kwargs.get('wb_run_name', f"my_run")
+
     # Switching arguments:
     switching_args = {}
     switching_args['flow_idle_timeout'] = int(kwargs.get('flow_idle_timeout', 10))
@@ -716,7 +718,6 @@ def launch(**kwargs):
         use_node_feats=node_features,
         flow_feat_dim=4,
         packet_feat_dim=packet_feat_dim,
-        h_dim=h_dim,
         dropout=dropout,
         multi_class=multi_class, 
         init_k_shot=init_k_shot,
@@ -730,7 +731,7 @@ def launch(**kwargs):
         wb_project_name=wb_project_name,
         wb_run_name=wb_run_name,
         report_step_freq=report_step_freq,
-        wb_config_dict=kwargs)
+        kwargs=kwargs)
       
     # Registering Switch component:
     smart_switch = SmartSwitch(

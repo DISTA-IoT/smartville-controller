@@ -1,5 +1,7 @@
 import time
 import requests
+from smartController.tiger_agents import DDQNAgent
+
 
 class TigerEnvironment:
 
@@ -10,7 +12,7 @@ class TigerEnvironment:
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 100)
         self.flow_rewards_dict = self.get_flow_rewards()
         self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
-
+        self.agent = DDQNAgent(state_size=kwargs['h_dim'], action_size=2, kwargs=kwargs)
 
     def get_flow_rewards(self):
         try:
