@@ -743,16 +743,21 @@ class TigerBrain():
                 predicted_decimal_clusters,
                 merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
             
-            # compute new budgets: 
-            next_budgets = self.env.current_budget + rewards_per_signal
+            # compute new budget: 
+            self.env.current_budget += rewards_per_signal.sum().item()
             
+            # broadcast it to append it to the state vectors 
+            num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
+            broadcasted_budget = torch.Tensor([self.env.current_budget] * num_of_predicted_clusters)
+
             # an episode ends if the budget ends... 
-            ended_signals = next_budgets < 0
+            end_signal = self.env.current_budget < 0
+            broadcasted_end_signal = torch.Tensor([end_signal] * num_of_predicted_clusters)
 
             # we can approximate the new state with the previous one, but changing the budget. 
             next_states = torch.hstack(
                 [state_vecs[:, :-1], 
-                    next_budgets.unsqueeze(-1)]
+                    broadcasted_budget.unsqueeze(-1)]
                     )
 
             # collect experience tuples for training: 
@@ -760,7 +765,7 @@ class TigerBrain():
                     cluster_blocking_signals,
                     rewards_per_signal,
                     next_states,
-                    ended_signals):
+                    broadcasted_end_signal):
                 self.agent.remember(*experience_tuple)
 
             # train!
@@ -773,6 +778,7 @@ class TigerBrain():
                 self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
                                             f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
                                             f'Online {INFERENCE} batch reward: {rewards_per_signal.sum().item()} \n'+\
+                                            f'Online {INFERENCE} current budget: {self.env.current_budget} \n'+\
                                             f'Online {INFERENCE} KR accuracy: {kr_precision}')
             
             self.classifier.train()
@@ -809,24 +815,6 @@ class TigerBrain():
             self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.step_counter})
 
         return cs_loss, acc
-    
-
-    def one_hot_encode(self, decimal_label_predictions):
-
-        # the decimal label predictions could have many less or more classes than that of the current 
-        # knowledge base... so we do N + 1 as the number of classes:  
-        num_classes  = decimal_label_predictions.max() + 1
-        
-        # Create a tensor of zeros with shape (num_labels, num_classes)
-        one_hot = torch.zeros(
-            decimal_label_predictions.size(0),
-            num_classes,
-            device=decimal_label_predictions.device)
-        
-        # Scatter 1s at the indices specified by the labels
-        one_hot.scatter_(1, decimal_label_predictions.unsqueeze(-1), 1)
-        
-        return one_hot
 
 
     def get_centroids(

@@ -8,7 +8,7 @@ class TigerEnvironment:
         """Initialize the attributes of the Car class."""
         host_ip_addr = kwargs['host_ip_addr'] 
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
-        self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 100)
+        self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
         self.flow_rewards_dict = self.get_flow_rewards()
         self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
 
