@@ -1290,7 +1290,7 @@ class TigerBrain():
                 query_mask=query_mask,
                 phase=TRAINING)
 
-            self.intelligence_step()
+            # self.intelligence_step()
             self.mitigation_agent.update_target_model()
             
             if self.eval_allowed:
@@ -1334,8 +1334,6 @@ class TigerBrain():
         
         # train the intelligence agent
         self.intelligence_agent.replay()
-
-            self.agent.update_target_model()
 
 
     def evaluate_models(self):
