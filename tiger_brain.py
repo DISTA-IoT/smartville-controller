@@ -94,8 +94,6 @@ ATTRACTIVE_WEIGHT = 1
 
 KERNEL_REGRESSOR_HEADS = 2
 
-EVALUATION_ROUNDS = 50
-
 CLUSTERING_LOSS_BACKPROP = True
 
 # Constants for wandb monitoring:
@@ -273,9 +271,6 @@ class TigerBrain():
                  report_step_freq=50,
                  kwargs={}):
         
-        # random is used to store observations either in the training or the testing buffers... 
-        random.seed(777) 
-        
         self.eval = eval
         self.use_packet_feats = kwargs['use_packet_feats'] 
         self.use_node_feats = kwargs['node_features'] 
@@ -285,9 +280,6 @@ class TigerBrain():
         self.dropout = dropout
         self.multi_class = multi_class
         self.AI_DEBUG = debug
-        self.best_cs_accuracy = 0
-        self.best_AD_accuracy = 0
-        self.best_KR_accuracy = 0
         self.step_counter = 0
         self.wbt = wb_track
         self.wbl = None
@@ -296,23 +288,16 @@ class TigerBrain():
         self.device=device
         self.seed = seed
         random.seed(seed)
-        self.current_known_classes_count = 0
-        self.current_training_known_classes_count = 0
-        self.current_test_known_classes_count = 0
-        self.reset_train_cms()
-        self.reset_test_cms()
         self.k_shot = init_k_shot
         self.replay_buff_batch_size = replay_buffer_batch_size
-        self.encoder = DynamicLabelEncoder()
-        self.replay_buffers = {}
-        self.test_replay_buffers = {}
-        self.init_neural_modules(LEARNING_RATE, seed)
         self.report_step_freq = report_step_freq 
         self.use_neural_AD = True
         self.use_neural_KR = True
+        self.online_eval_rounds = kwargs['online_evaluation_rounds']
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
-        
+        self.intelligence_episode_steps = kwargs['intelligence_episode_steps']
+        self.reset_intelligence()
         self.init_agents(kwargs)
 
         if self.wbt:
@@ -335,8 +320,33 @@ class TigerBrain():
 
         # start an episode  
         self.env.reset()
+        
 
+    def reset_intelligence(self):
+        """
+        Intelligence is reset every intelligence episode...
+        """
+        self.current_intelligence_steps = 0
+        self.best_cs_accuracy = 0
+        self.best_AD_accuracy = 0
+        self.best_KR_accuracy = 0
+        self.current_known_classes_count = 0
+        self.current_training_known_classes_count = 0
+        self.current_test_known_classes_count = 0
+        self.reset_train_cms()
+        self.reset_test_cms()
+        # reseting the label encoder should not be a problem for prototypical classification...
+        self.encoder = DynamicLabelEncoder()
+        self.replay_buffers = {}
+        self.test_replay_buffers = {}
+        self.init_neural_modules(LEARNING_RATE, self.seed)
+        self.env.reset()
+        self.env.prev_intelligence_state = torch.zeros(6)
+        self.env.prev_intelligence_state[-1] = self.env.current_budget
+        self.env.prev_intelligence_action = torch.zeros(6)
+        self.env.prev_intelligence_action[-1] = 1
 
+        
     def init_agents(self, kwargs):
         
         self.state_space_dim = kwargs['h_dim']
@@ -1290,16 +1300,22 @@ class TigerBrain():
                 query_mask=query_mask,
                 phase=TRAINING)
 
-            # self.intelligence_step()
-
             # Update the target Q Network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
             
             if self.eval_allowed:
                 self.evaluate_models()
             
+            self.intelligence_step()
+
+            if self.current_intelligence_steps >= self.intelligence_episode_steps:
+                print('Restarting the intelligence episode')
+                self.reset_intelligence()
+
             
     def intelligence_step(self):
+
+        self.current_intelligence_steps += 1
 
         # what was the budget at the time of our last intelligence decision?
         prev_intelligence_budget_snapshot = self.env.intelligence_budget_snapshot
@@ -1347,7 +1363,7 @@ class TigerBrain():
         mean_eval_cs_acc = 0
         mean_eval_kr_ari = 0
 
-        for _ in range(EVALUATION_ROUNDS):
+        for _ in range(self.online_eval_rounds):
                 
             eval_batch = self.sample_from_replay_buffers(
                                     samples_per_class=self.replay_buff_batch_size,
@@ -1385,9 +1401,9 @@ class TigerBrain():
             
             _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
 
-            mean_eval_ad_acc += (ad_acc / EVALUATION_ROUNDS)
-            mean_eval_cs_acc += (cs_acc / EVALUATION_ROUNDS)
-            mean_eval_kr_ari += (kr_precision / EVALUATION_ROUNDS)
+            mean_eval_ad_acc += (ad_acc / self.online_eval_rounds)
+            mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
+            mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\

@@ -48,7 +48,7 @@ class TigerEnvironment:
 
 
     def reset(self):
-        print('TIGER ENV: restarting episode!')
+        print('TIGER ENV: restarting mitigation episode!')
         # self.restart_traffic()
         self.restart_budget()
 

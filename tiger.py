@@ -601,7 +601,8 @@ def launch(**kwargs):
         - 'host_ip_addr' (string ip_addr): The host's IP address with wich the switch communicates to control the traffic generation. Default: 192.168.122.1
         - 'min_budget' (int, optional): The minimum budget that the agent can reach, after reaching this budget, the episode will restart. (Default -5)
         - 'max_budget' (int, optional): The maximum budget that the agent can reach, after reaching this budget, the episode will restart. (Default 10) 
- 
+        - 'intelligence_episode_steps' (int, optional): The number of steps that the intelligence episode will last. (Default 50)
+        - 'online_evaluation_rounds' (int, optional): The number of batches for online evaluation. (Default 50)
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -637,6 +638,8 @@ def launch(**kwargs):
     kwargs['h_dim'] = int(kwargs.get('h_dim', 800))
     kwargs['min_budget'] = int(kwargs.get('min_budget', -5))
     kwargs['max_budget'] = int(kwargs.get('max_budget', 10))
+    kwargs['intelligence_episode_steps'] = int(kwargs.get('intelligence_episode_steps', 50))
+    kwargs['online_evaluation_rounds'] = int(kwargs.get('online_evaluation_rounds', 50))
     wb_run_name = kwargs.get('wb_run_name', f"my_run")
 
     # Switching arguments:
@@ -689,6 +692,10 @@ def launch(**kwargs):
         """
         print("binary classification not implemented yet!")
         assert 1 == 0
+    
+    kwargs['ZDA_DICT'] = ZDA_DICT
+    kwargs['TEST_ZDA_DICT'] = TEST_ZDA_DICT
+    kwargs['TRAINING_LABELS_DICT'] = TRAINING_LABELS_DICT
     
     ########################### END OF LABELING
 
