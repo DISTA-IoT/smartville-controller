@@ -7,7 +7,7 @@ import torch.nn as nn
 
 class DDQNAgent:
 
-    def __init__(self, state_size, action_size, kwargs):
+    def __init__(self, state_size, action_size, replay_batch_size, kwargs):
 
         self.state_size = state_size
         self.action_size = action_size
@@ -20,7 +20,7 @@ class DDQNAgent:
         self.target_model = DQN(state_size, action_size)
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
-        self.replay_batch_size = kwargs['replay_batch_size'] 
+        self.replay_batch_size = replay_batch_size 
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -52,8 +52,11 @@ class DDQNAgent:
                 target += self.gamma * torch.max(self.target_model(next_state)).item()
             
             target_f = self.model(state).detach()
-            target_f[action] = target
-            
+            try:
+                target_f[action] = target
+            except:
+                print('hello')
+
             self.optimizer.zero_grad()
             loss = nn.MSELoss()(self.model(state), target_f)
             loss.backward()

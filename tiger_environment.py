@@ -30,8 +30,7 @@ class TigerEnvironment:
         self.update_cti_options()
         self.prev_intelligence_state = torch.zeros(6)
         self.prev_intelligence_state[-1] = self.current_budget
-        self.prev_intelligence_action = torch.zeros(6)
-        self.prev_intelligence_action[-1] = 5
+        self.prev_intelligence_action = 5
 
         return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                 'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,

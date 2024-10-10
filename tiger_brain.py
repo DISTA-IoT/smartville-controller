@@ -364,12 +364,14 @@ class TigerBrain():
         
         self.mitigation_agent = DDQNAgent(
             state_size=self.state_space_dim + 1, # the "current_budget" scalar is part of the state space  
-            action_size=2, 
+            action_size=2,
+            replay_batch_size=kwargs['replay_batch_size'],  
             kwargs=kwargs)
         
         self.intelligence_agent = DDQNAgent(
             state_size=6,  # we will have a list of 5 different available prices and the current budget
             action_size=6, # he can opt to buy one from 5 different labels, or not to but at all.
+            replay_batch_size=5,
             kwargs=kwargs
         )
 
@@ -1363,9 +1365,10 @@ class TigerBrain():
         self.env.prev_intelligence_action = current_action
         self.env.prev_intelligence_state = current_state
         
-        # train the intelligence agent
+        # train the intelligence agent 
         self.intelligence_agent.replay()
 
+        # for epistemic updates  
         return updates_dict
 
 
@@ -1442,10 +1445,12 @@ class TigerBrain():
             self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.step_counter})
             self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.step_counter})
 
+        """
         if not self.eval:
             self.check_kr_progress(curr_kr_acc=mean_eval_kr_ari)
             self.check_cs_progress(curr_cs_acc=mean_eval_cs_acc.item())
             self.check_AD_progress(curr_ad_acc=mean_eval_ad_acc.item())
+        """
 
         self.report(
                 preds=logits[:,known_class_h_mask], 
