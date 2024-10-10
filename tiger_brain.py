@@ -1291,6 +1291,8 @@ class TigerBrain():
                 phase=TRAINING)
 
             # self.intelligence_step()
+
+            # Update the target Q Network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
             
             if self.eval_allowed:
