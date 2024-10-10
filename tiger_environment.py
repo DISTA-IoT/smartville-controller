@@ -12,7 +12,8 @@ class TigerEnvironment:
         self.flow_rewards_dict = self.get_flow_rewards()
         self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
         self.min_budget = kwargs['min_budget']
-        self.max_budget = kwargs['max_budget'] 
+        self.max_budget = kwargs['max_budget']
+        self.restart_traffic()
 
     def has_episode_ended(self):
         if self.current_budget > self.max_budget:
