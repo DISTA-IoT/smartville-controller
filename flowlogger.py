@@ -28,9 +28,6 @@ class FlowLogger(object):
 
     def __init__(
       self,
-      training_labels_dict,
-      zda_dict,
-      test_zda_dict,
       multi_class,
       packet_buffer_len,
       packet_feat_dim,
@@ -45,9 +42,6 @@ class FlowLogger(object):
       self.flows_dict = {}
       self.packet_cache = {}
       self.logger_instance = core.getLogger()
-      self.training_labels_dict = training_labels_dict
-      self.zda_dict = zda_dict
-      self.test_zda_dict = test_zda_dict
       self.multi_class = multi_class
       self.packet_buffer_len = packet_buffer_len
       self.packet_feat_dim = packet_feat_dim
