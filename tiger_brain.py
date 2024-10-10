@@ -291,6 +291,7 @@ class TigerBrain():
         self.multi_class = multi_class
         self.AI_DEBUG = debug
         self.step_counter = 0
+        self.current_intelligence_steps = 0
         self.wbt = wb_track
         self.wbl = None
         self.kernel_regression = kernel_regression
@@ -336,7 +337,6 @@ class TigerBrain():
         """
         Intelligence is reset every intelligence episode...
         """
-        self.current_intelligence_steps = 0
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
@@ -1315,10 +1315,14 @@ class TigerBrain():
             
             updates_dict = self.intelligence_step()
 
-            if self.current_intelligence_steps >= self.intelligence_episode_steps:
+            if self.current_intelligence_steps % self.intelligence_episode_steps == 0:
                 print('Restarting the intelligence episode')
                 updates_dict = self.reset_intelligence()
 
+                # Every five mitigation episodes we will update the correspondent target model 
+                if self.current_intelligence_steps % 5*self.intelligence_episode_steps == 0:
+                    self.intelligence_agent.update_target_model()
+                    
             return updates_dict
         
 
