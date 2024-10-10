@@ -696,9 +696,6 @@ def launch(**kwargs):
 
     # Registering PacketLogger component:
     flow_logger = FlowLogger(
-      training_labels_dict=TRAINING_LABELS_DICT,
-      zda_dict=ZDA_DICT,
-      test_zda_dict=TEST_ZDA_DICT,
       multi_class=multi_class,
       packet_buffer_len=packet_buffer_len,
       packet_feat_dim=packet_feat_dim,
