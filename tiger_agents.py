@@ -52,10 +52,8 @@ class DDQNAgent:
                 target += self.gamma * torch.max(self.target_model(next_state)).item()
             
             target_f = self.model(state).detach()
-            try:
-                target_f[action] = target
-            except:
-                print('hello')
+            target_f[action] = target
+
 
             self.optimizer.zero_grad()
             loss = nn.MSELoss()(self.model(state), target_f)
