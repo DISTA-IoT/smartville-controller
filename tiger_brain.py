@@ -1303,6 +1303,8 @@ class TigerBrain():
             if self.eval_allowed:
                 self.evaluate_models()
 
+            self.agent.update_target_model()
+
 
     def evaluate_models(self):
 
