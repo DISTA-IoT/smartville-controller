@@ -371,7 +371,7 @@ class TigerBrain():
         self.intelligence_agent = DDQNAgent(
             state_size=6,  # we will have a list of 5 different available prices and the current budget
             action_size=6, # he can opt to buy one from 5 different labels, or not to but at all.
-            replay_batch_size=5,
+            replay_batch_size=12,
             kwargs=kwargs
         )
 
