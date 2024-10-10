@@ -128,10 +128,20 @@ class SmartSwitch(EventMixin):
 
 
   def smart_check(self):
-    self.brain.process_input(
+
+    epistemic_updates = self.brain.process_input(
       flows=list(self.flow_logger.flows_dict.values()),
       node_feats=(self.metrics_logger.metrics_dict if self.use_node_feats else None))
-      
+    
+    if epistemic_updates is not None:
+        self.class_labels = epistemic_updates['NEW_TRAINING_LABELS_DICT']
+        self.zda_labels = epistemic_updates['NEW_ZDA_DICT']
+        self.test_zda_labels = epistemic_updates['NEW_TEST_ZDA_DICT']   
+        discovered_attack = epistemic_updates['new_label']
+        if 'reset' in epistemic_updates:
+            log.info(f'Curricula reset taken out')
+        else:
+            log.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
 
 
   def _handle_expiration(self):

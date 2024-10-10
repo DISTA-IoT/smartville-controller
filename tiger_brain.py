@@ -248,6 +248,13 @@ class DynamicLabelEncoder:
 
     def get_labels(self):
         return list(self.label_to_int.keys())
+    
+
+    def update_label(self, old_label, new_label):
+        current_val = self.label_to_int[old_label]
+        del self.label_to_int[old_label]
+        self.label_to_int[new_label] = current_val 
+
 
 
 class TigerBrain():
@@ -297,7 +304,7 @@ class TigerBrain():
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
         self.intelligence_episode_steps = kwargs['intelligence_episode_steps']
-        self.reset_intelligence()
+        _ = self.reset_intelligence()
         self.init_agents(kwargs)
 
         if self.wbt:
@@ -341,12 +348,9 @@ class TigerBrain():
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, self.seed)
         self.env.reset()
-        self.env.prev_intelligence_state = torch.zeros(6)
-        self.env.prev_intelligence_state[-1] = self.env.current_budget
-        self.env.prev_intelligence_action = torch.zeros(6)
-        self.env.prev_intelligence_action[-1] = 1
+        updates_dict = self.env.reset_intelligence()
+        return updates_dict
 
-        
     def init_agents(self, kwargs):
         
         self.state_space_dim = kwargs['h_dim']
@@ -973,13 +977,13 @@ class TigerBrain():
         """
         """
         self.step_counter += 1
-        flows_to_block = []
+        updates_dict = None
 
         if len(flows) > 0:
             
             batch = self.assembly_input_tensor(flows, node_feats)
             
-            mode=(TRAINING if random.random() > 0.9 else INFERENCE)
+            mode=(TRAINING if random.random() > 0.4 else INFERENCE)
 
             to_push_mask = self.get_pushing_mask(
                 batch.zda_labels, 
@@ -996,13 +1000,13 @@ class TigerBrain():
                 mode=mode)
             
             if self.inference_allowed:
-                flows_to_block = self.online_inference(batch)
+                self.online_inference(batch)
 
             if self.experience_learning_allowed:
-                self.experience_learning()
+                updates_dict = self.experience_learning()
                 
 
-        return flows_to_block        
+        return updates_dict        
 
 
     def sample_from_replay_buffers(self, samples_per_class, mode):
@@ -1306,13 +1310,15 @@ class TigerBrain():
             if self.eval_allowed:
                 self.evaluate_models()
             
-            self.intelligence_step()
+            updates_dict = self.intelligence_step()
 
             if self.current_intelligence_steps >= self.intelligence_episode_steps:
                 print('Restarting the intelligence episode')
-                self.reset_intelligence()
+                updates_dict = self.reset_intelligence()
 
-            
+            return updates_dict
+        
+
     def intelligence_step(self):
 
         self.current_intelligence_steps += 1
@@ -1330,7 +1336,7 @@ class TigerBrain():
         done_signal = self.env.has_intelligence_episode_ended()
 
         # get state: (for now fixed)
-        current_state = torch.Tensor([1,0.5,0.5,1,-1,self.env.intelligence_budget_snapshot])
+        current_state = torch.Tensor([*self.env.get_intelligence_options(),self.env.intelligence_budget_snapshot])
 
         # now that we have the reward, we can store the previous experience replay tuple
         self.intelligence_agent.remember(
@@ -1343,8 +1349,8 @@ class TigerBrain():
         # take an action
         current_action = self.intelligence_agent.act(current_state)
 
-        # TODO implement
-        self.env.perform_epistemic_action(current_action)
+        # performing the action to change  
+        updates_dict = self.perform_epistemic_action(current_action)
 
         # save the current values for the next step
         self.env.prev_intelligence_action = current_action
@@ -1353,6 +1359,25 @@ class TigerBrain():
         # train the intelligence agent
         self.intelligence_agent.replay()
 
+        return updates_dict
+
+
+    def perform_epistemic_action(self, current_action):
+
+        updates_dict = None
+
+        # if action == 5 it means that we do not want to purchase CTIs... 
+        if current_action < 5: 
+        
+            updates_dict = self.env.perform_epistemic_action(current_action)
+            updated_label = updates_dict['updated_label'] 
+            self.encoder.update_label(
+                old_label=updated_label,
+                new_label=updates_dict['new_label'] 
+            )
+        
+        return updates_dict
+    
 
     def evaluate_models(self):
 
