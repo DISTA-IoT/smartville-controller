@@ -251,10 +251,13 @@ class DynamicLabelEncoder:
     
 
     def update_label(self, old_label, new_label):
-        current_val = self.label_to_int[old_label]
-        del self.label_to_int[old_label]
-        self.label_to_int[new_label] = current_val 
 
+        if old_label in self.label_to_int:
+            current_val = self.label_to_int[old_label]
+            del self.label_to_int[old_label]
+            self.label_to_int[new_label] = current_val 
+        else:
+            print(f'Wanted to update a {old_label} but the encoder does not know it so far...')
 
 
 class TigerBrain():
@@ -1362,17 +1365,13 @@ class TigerBrain():
         return updates_dict
 
 
-    def perform_epistemic_action(self, current_action):
-
-        updates_dict = None
-
-        # if action == 5 it means that we do not want to purchase CTIs... 
-        if current_action < 5: 
+    def perform_epistemic_action(self, current_action):      
         
-            updates_dict = self.env.perform_epistemic_action(current_action)
-            updated_label = updates_dict['updated_label'] 
+        updates_dict = self.env.perform_epistemic_action(current_action)
+
+        if updates_dict['updated_label'] is not None:
             self.encoder.update_label(
-                old_label=updated_label,
+                old_label=updates_dict['updated_label'],
                 new_label=updates_dict['new_label'] 
             )
         

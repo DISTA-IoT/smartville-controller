@@ -113,25 +113,37 @@ class TigerEnvironment:
         was a type2 ZDA in a known attack.
         """
         
-        # get the label corresponding to the attack we want to purchase info about 
-        acquired_cti = list(self.current_cti_options.keys())[current_action] 
+        new_label = None
+        updated_label = None
+        changed_ip = None
 
-        # turn the corresponding ip address as not a Zda nor a test Zda and 
-        # TAKE OUT THE G2 SUBSTRING FROM THE LABEL 
-        for ip, label in self.current_TRAINING_LABELS_DICT.items():
 
-            if label == acquired_cti:
+        # if action == 5 it means that we do not want to purchase CTIs... 
+        if current_action < 5:
+        
+            # get the label corresponding to the attack we want to purchase info about 
+            acquired_cti = list(self.current_cti_options.keys())[current_action]
 
-                self.current_ZDA_DICT[ip] = False
-                self.current_TEST_ZDA_DICT[ip]  = False 
-                new_label = str(label).replace('G2', '')
-                self.current_TRAINING_LABELS_DICT[ip] = new_label
-                updated_label = label
-                changed_ip = ip
+            # if the action corresponds to a placeholder, it means we did not buy anything. 
+            if 'placeholder' not in acquired_cti:
 
-        # update our options vector:
-        self.update_cti_options()
+                # turn the corresponding ip address as not a Zda nor a test Zda and 
+                # TAKE OUT THE G2 SUBSTRING FROM THE LABEL 
+                for ip, label in self.current_TRAINING_LABELS_DICT.items():
 
+                    if label == acquired_cti:
+
+                        self.current_ZDA_DICT[ip] = False
+                        self.current_TEST_ZDA_DICT[ip]  = False 
+                        new_label = str(label).replace('G2', '')
+                        self.current_TRAINING_LABELS_DICT[ip] = new_label
+                        updated_label = label
+                        changed_ip = ip
+
+                # update our options vector:
+                self.update_cti_options()
+
+        
         return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                 'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
                 'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
