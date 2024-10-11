@@ -216,24 +216,42 @@ class DynamicLabelEncoder:
         self.label_to_int = {}
         self.int_to_label = {}
         self.current_code = 0
-
+        # keep track of changed labels for eventually handling sychronization mistakes. 
+        # (packets sent to the router during epistemic updates) 
+        self.old_labels = {}
 
     def fit(self, labels):
         """
         returns the number of new classes found!
         """
-        new_labels = set(labels) - set(self.label_to_int.keys())
 
+        # get the new labels found in the batch  
+        # batch_labels  - changed labels - current labels 
+        new_labels = set(labels) - (self.old_labels.keys()) - set(self.label_to_int.keys())
+  
         for label in new_labels:
-            self.label_to_int[label] = self.current_code
-            self.int_to_label[self.current_code] = label
-            self.current_code += 1
+
+                self.label_to_int[label] = self.current_code
+                self.int_to_label[self.current_code] = label
+                self.current_code += 1
 
         return new_labels
 
 
     def transform(self, labels):
-        encoded_labels = [self.label_to_int[label] for label in labels]
+        
+        encoded_labels = []
+
+        for label in labels:
+            
+            # Managing eventual labelling synchronisatio errors. 
+            if label in self.label_to_int.keys():
+                correct_label = label
+            else:
+                correct_label = self.old_labels[label]
+
+            encoded_labels.append(self.label_to_int[correct_label])
+
         return torch.tensor(encoded_labels)
 
 
@@ -250,14 +268,16 @@ class DynamicLabelEncoder:
         return list(self.label_to_int.keys())
     
 
-    def update_label(self, old_label, new_label):
+    def update_label(self, old_label, new_label, logger):
 
         if old_label in self.label_to_int:
             current_val = self.label_to_int[old_label]
             del self.label_to_int[old_label]
-            self.label_to_int[new_label] = current_val 
+            self.label_to_int[new_label] = current_val
+            logger.info(f'ENCODER: Changing  {old_label} to {new_label} for value {current_val}')
+            self.old_labels[old_label] = new_label 
         else:
-            print(f'Wanted to update a {old_label} but the encoder does not know it so far...')
+            logger.info(f'ENCODER:  Attempt to update {old_label} but  it is unknown so far.')
 
 
 class TigerBrain():
@@ -1379,7 +1399,8 @@ class TigerBrain():
         if updates_dict['updated_label'] is not None:
             self.encoder.update_label(
                 old_label=updates_dict['updated_label'],
-                new_label=updates_dict['new_label'] 
+                new_label=updates_dict['new_label'],
+                logger=self.logger_instance
             )
         
         return updates_dict
@@ -1473,6 +1494,7 @@ class TigerBrain():
             cs_cm_to_plot = self.eval_cs_cm
             os_cm_to_plot = self.eval_os_cm
 
+        """
         if self.wbt:
             self.plot_confusion_matrix(
                 mod=CLOSED_SET,
@@ -1488,6 +1510,7 @@ class TigerBrain():
                 classes=['Known', 'ZdA'])
             self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
             self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
+        """
 
         if self.AI_DEBUG:
             self.logger_instance.info(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
