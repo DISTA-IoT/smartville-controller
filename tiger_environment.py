@@ -21,7 +21,7 @@ class TigerEnvironment:
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
         self.reset_intelligence()
-
+        
 
     def reset_intelligence(self):
         with self.lock:
@@ -145,14 +145,13 @@ class TigerEnvironment:
                     price_payed = self.cti_prices[label]
 
                     with self.lock:
-                        # update also the rewards  and prices dictionary:
+                        # update also the rewards dictionary:
                         reward = self.flow_rewards_dict[label]    
                         del self.flow_rewards_dict[label]
                         self.flow_rewards_dict[new_label] = reward
 
-                        
-            # update our options vector:
-            self.update_cti_options()
+                # update our options vector:
+                self.update_cti_options()
 
         
         return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
