@@ -1012,10 +1012,6 @@ class TigerBrain():
         # get natural-language labels    
         nl_labels = self.encoder.inverse_transform(passed_samples)
 
-        for label in nl_labels:
-            if label not in self.env.flow_rewards_dict.keys():
-                assert 1 == 0
-
         # get the associated reward per sample 
         sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
 
