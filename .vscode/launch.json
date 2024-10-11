@@ -53,13 +53,14 @@
                 "--wb_tracking=False",
                 "--ai_debug=True",
                 "--multi_class=True",
-                "--init_k_shot=5",
+                "--init_k_shot=3",
                 "--batch_size=8",
                 "--node_features=False",
                 "--wb_project_name=TIGER",
-                "--wb_run_name=base",
-                "--report_step_freq=10"
-                //"--curriculum=custom"
+                "--wb_run_name=Mitigation",
+                "--report_step_freq=5",
+                "--inference_freq_secs=1",
+                "--online_evaluation_rounds=10"
             ],
             "justMyCode": true
         },
