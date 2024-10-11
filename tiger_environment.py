@@ -1,6 +1,7 @@
 import time
 import requests
 import torch
+import threading
 
 class TigerEnvironment:
 
@@ -15,7 +16,7 @@ class TigerEnvironment:
         self.current_budget = self.init_budget
         self.intelligence_budget_snapshot = self.init_budget
         self.restart_traffic()
-
+        self.lock = threading.Lock()
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
@@ -23,24 +24,25 @@ class TigerEnvironment:
 
 
     def reset_intelligence(self):
-        self.current_ZDA_DICT = self.init_ZDA_DICT
-        self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
-        self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
-        self.update_cti_options()
-        self.prev_intelligence_state = torch.zeros(6)
-        self.prev_intelligence_state[-1] = self.current_budget
-        self.prev_intelligence_action = 5
-        self.flow_rewards_dict = self.get_flow_rewards()
-        
-        return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
-                'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
-                'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
-                'updated_label': None,
-                'new_label': None,
-                'reset' : True}
+        with self.lock:
+            self.current_ZDA_DICT = self.init_ZDA_DICT
+            self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
+            self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
+            self.update_cti_options()
+            self.prev_intelligence_state = torch.zeros(6)
+            self.prev_intelligence_state[-1] = self.current_budget
+            self.prev_intelligence_action = 5
+            self.flow_rewards_dict = self.get_flow_rewards()
+            
+            return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
+                    'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
+                    'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
+                    'updated_label': None,
+                    'new_label': None,
+                    'reset' : True}
 
 
-    def update_cti_options(self, n_options=5):
+    def update_cti_options(self, n_options=1):
         """
         This method updates the CTI agent state vector, i.e., according to available labels to buy.
         """
@@ -109,7 +111,7 @@ class TigerEnvironment:
         self.restart_budget()
 
 
-    def perform_epistemic_action(self, current_action):
+    def perform_epistemic_action(self, current_action=0):
         """
         This method changes the curriculum by turning an attack that
         was a type2 ZDA in a known attack.
@@ -117,40 +119,40 @@ class TigerEnvironment:
         
         new_label = None
         updated_label = None
-        changed_ip = None
+        changed_ip = None      
+        price_payed = 0
 
+        # get the label corresponding to the attack we want to purchase info about 
+        acquired_cti = list(self.current_cti_options.keys())[current_action]
 
-        # if action == 5 it means that we do not want to purchase CTIs... 
-        if current_action < 5:
-        
-            # get the label corresponding to the attack we want to purchase info about 
-            acquired_cti = list(self.current_cti_options.keys())[current_action]
+        # if the action corresponds to a placeholder, it means we did not buy anything. 
+        if 'placeholder' not in acquired_cti:
 
-            # if the action corresponds to a placeholder, it means we did not buy anything. 
-            if 'placeholder' not in acquired_cti:
+            # turn the corresponding ip address as not a Zda nor a test Zda and 
+            # TAKE OUT THE G2 SUBSTRING FROM THE LABEL 
+            for ip, label in self.current_TRAINING_LABELS_DICT.items():
 
-                # turn the corresponding ip address as not a Zda nor a test Zda and 
-                # TAKE OUT THE G2 SUBSTRING FROM THE LABEL 
-                for ip, label in self.current_TRAINING_LABELS_DICT.items():
+                if label == acquired_cti:
+                    
+                    # Take out the indicators of ZDA from the curriculum dicts.  
+                    self.current_ZDA_DICT[ip] = False
+                    self.current_TEST_ZDA_DICT[ip]  = False 
+                    new_label = str(label).replace('G2', '')
+                    self.current_TRAINING_LABELS_DICT[ip] = new_label
+                    # This will be used for changing the encoder values in the brain class  
+                    updated_label = label
+                    changed_ip = ip
+                    price_payed = self.cti_prices[label]
 
-                    if label == acquired_cti:
-                        
-                        # Take out the indicators of ZDA from the curriculum dicts.  
-                        self.current_ZDA_DICT[ip] = False
-                        self.current_TEST_ZDA_DICT[ip]  = False 
-                        new_label = str(label).replace('G2', '')
-                        self.current_TRAINING_LABELS_DICT[ip] = new_label
-                        # This will be used for changing the encoder values in the brain class  
-                        updated_label = label
-                        changed_ip = ip
-
-                        # update also the rewards dictionary:
+                    with self.lock:
+                        # update also the rewards  and prices dictionary:
                         reward = self.flow_rewards_dict[label]    
                         del self.flow_rewards_dict[label]
                         self.flow_rewards_dict[new_label] = reward
 
-                # update our options vector:
-                self.update_cti_options()
+                        
+            # update our options vector:
+            self.update_cti_options()
 
         
         return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
@@ -158,7 +160,8 @@ class TigerEnvironment:
                 'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
                 'updated_label': updated_label,
                 'new_label': new_label,
-                'changed_ip':changed_ip}
+                'changed_ip':changed_ip,
+                'price_payed': price_payed}
 
 
     def restart_budget(self):

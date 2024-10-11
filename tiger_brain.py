@@ -248,10 +248,15 @@ class DynamicLabelEncoder:
         # batch_labels  - changed labels - current labels 
         new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
+        # This line also handles sync erros, notice that ex G2 labels, that contain the '(ZdA )' substring
+        # are by no means new via fitting functions but must be introduced only via the update function.  
+        new_labels =[new_label.replace('(ZdA )', '(ZdA G2)') for new_label in new_labels] 
+        
         for label in new_labels:
             self.add_class(label)
 
         return new_labels
+
 
     def add_class(self, label):
 
@@ -417,16 +422,17 @@ class TigerBrain():
         
         self.mitigation_agent = DDQNAgent(
             state_size=self.state_space_dim + 1, # the "current_budget" scalar is part of the state space  
-            action_size=2,
+            action_size=3, # block, pass or TCI acquisition
             replay_batch_size=kwargs['replay_batch_size'],  
             kwargs=kwargs)
-        
+        """
         self.intelligence_agent = DDQNAgent(
             state_size=6,  # we will have a list of 5 different available prices and the current budget
             action_size=6, # he can opt to buy one from 5 different labels, or not to but at all.
             replay_batch_size=12,
             kwargs=kwargs
         )
+        """
 
 
     def add_replay_buffer(self, class_name):
@@ -741,10 +747,24 @@ class TigerBrain():
     def online_inference(
             self, 
             online_batch):
+        """
+        Does online inference with the given online batch.
+        It uses some support samples from the replay buffers to aid in prototpical learning
+        After the known-unknown class inferences and the clustering of unknowns, the agent has 
+        performs three different actions for each cluster:
+        1. block it             (usegul action)
+        2. let it pass          (useful action)
+        3. acquire a TCI label  (epistemic action)
+        """
         
+        # do not run gradients on the inference modules, this is unlabelled traffic!
         self.classifier.eval()
         self.confidence_decoder.eval()
 
+        # updates_dict helps managing eventual epistemic actions
+        updates_dict  = None
+        
+        # sample from the replay buffers
         aux_batch = self.sample_from_replay_buffers(
                                 samples_per_class=self.replay_buff_batch_size,
                                 mode=INFERENCE)
@@ -757,6 +777,7 @@ class TigerBrain():
                                 online_query_mask
                                 ])
         
+        # we report accuracy only over online samples
         accuracy_mask = torch.cat([
                                 torch.zeros_like(aux_query_mask), 
                                 online_query_mask
@@ -764,6 +785,7 @@ class TigerBrain():
 
         merged_batch = self.merge_batches(aux_batch, online_batch)
 
+        # inference
         logits, hidden_vectors, predicted_kernel = self.infer(
             merged_batch,
             query_mask=merged_query_mask)
@@ -808,16 +830,18 @@ class TigerBrain():
                 predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
                 kr_precision = torch.zeros(1)
 
+            ### agentic process:
+
             # decide if blocking or accepting each unknown... 
-            cluster_blocking_signals, state_vecs = self.block( 
+            cluster_action_signals, state_vecs = self.act( 
                 hidden_vectors[merged_query_mask][predicted_zda_mask],
                 self.env.current_budget,
                 predicted_decimal_clusters
                 )
     
             # get a reward for each blocking decision (for each predicted cluster)  
-            rewards_per_signal = self.compute_rewards(
-                cluster_blocking_signals,
+            rewards_per_signal, updates_dict = self.compute_rewards(
+                cluster_action_signals,
                 predicted_decimal_clusters,
                 merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
             
@@ -841,7 +865,7 @@ class TigerBrain():
 
             # collect experience tuples for training: 
             for experience_tuple in zip(state_vecs, 
-                    cluster_blocking_signals,
+                    cluster_action_signals,
                     rewards_per_signal,
                     next_states,
                     broadcasted_end_signal):
@@ -870,6 +894,7 @@ class TigerBrain():
             if end_signal:
                 self.env.reset()
 
+            return updates_dict
 
     def class_classification_step(
             self, 
@@ -954,75 +979,105 @@ class TigerBrain():
         return centroids, missing_clusters
     
 
-    def block(self, hidden_vectors, curr_budget, predicted_clusters):
-        """
-        TODO for each centroid, the options are to block or not to block
-        """
-
+    def act(self, hidden_vectors, curr_budget, predicted_clusters):
+        
         num_of_predicted_clusters = predicted_clusters.max() + 1
 
         # the state vectors are gonna be composed of the hidden centroids + the current budget.
         # So we boradcast the current butget value to concatenate it with the hidden clusters. 
         broadcasted_budget = torch.Tensor([curr_budget] * num_of_predicted_clusters)
 
-
+        # one-hot encode the predicted clusters
         predicted_clusters_oh = torch.nn.functional.one_hot(
             predicted_clusters,
             num_classes=num_of_predicted_clusters
         )
 
+        # get latent centroids
         centroids, _ = self.get_centroids(
             hidden_vectors, 
             predicted_clusters_oh.to(torch.float32))
 
+        # get state vectors
         state_vecs = torch.hstack(
            [centroids, 
             broadcasted_budget.unsqueeze(-1)]
             )
 
-        clusters_to_block = [] 
+        action_per_cluster = [] 
         for state_vec in state_vecs:
-            clusters_to_block.append(self.mitigation_agent.act(state_vec))
+            action_per_cluster.append(self.mitigation_agent.act(state_vec))
 
-        return torch.Tensor(clusters_to_block).to(torch.long), state_vecs.detach()
+        return torch.Tensor(action_per_cluster).to(torch.long), state_vecs.detach()
 
 
     def compute_rewards(
             self,
-            cluster_blocking_signals,
+            cluster_action_signals,
             predicted_clusters,
             class_labels):
         
+        # updates_dict helps managing eventual epistemic actions
+        updates_dict = None
+
         # get one-hot labels 
         predicted_clusters_oh = torch.nn.functional.one_hot(
             predicted_clusters, 
             num_classes=predicted_clusters.max()+1)
         
-        # per-sample blocking signal
-        samples_to_block = (predicted_clusters_oh @ cluster_blocking_signals.unsqueeze(1))
+        # first see if a label has been acquired:
+        purchased_mask = cluster_action_signals == 2
 
-        # get only the samples you did not block
-        passed_samples = class_labels[~samples_to_block.to(torch.long)] 
+        if purchased_mask.any():
+
+            # if you take the epistemic action, you let all traffic in the batch to pass
+            passed_mask = torch.ones_like(cluster_action_signals)
+
+        else:
+
+            # if the cluster_action_signal is not zero, then the cluster was accepted 
+            passed_mask = cluster_action_signals != 0
+
+
+        passed_samples = (predicted_clusters_oh @ passed_mask.unsqueeze(1))
+
+        # get the labels of the samples you did not block
+        passed_sample_classes = class_labels[passed_samples.to(torch.long)] 
 
         # get natural-language labels    
-        nl_labels = self.encoder.inverse_transform(passed_samples)
-
-        for label in nl_labels:
-            if label not in self.env.flow_rewards_dict.keys():
-                assert 1 == 0
+        nl_labels = self.encoder.inverse_transform(passed_sample_classes)
 
         # get the associated reward per sample 
-        sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
+        passed_sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
 
-        passed_clusters_oh = predicted_clusters_oh[passed_samples.squeeze()]
+        passed_clusters_oh = predicted_clusters_oh[passed_sample_classes.squeeze()]
 
         cluster_rewards = self.get_cluster_rewards(
-            passed_clusters_oh, sample_rewards)
+            passed_clusters_oh, passed_sample_rewards)
         
-        return cluster_rewards 
+        
+        if purchased_mask.any():
+            # get information about the change in the curriculum
+            updates_dict = self.perform_epistemic_action()
+            # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
+            # in each cluster reward (this helps computing the current budget)
+            cluster_rewards -= (updates_dict['price_payed'] / len(cluster_rewards))
+            
+        return cluster_rewards, updates_dict 
 
 
     def get_cluster_rewards(self, cluster_oh_labels, sample_rewards):
+        """
+        Compute the reward per cluster by summing the rewards of the samples 
+        within each cluster.
+
+        Args:
+        cluster_oh_labels (torch.Tensor): One-hot encoded cluster labels
+        sample_rewards (torch.Tensor): Rewards associated with each sample
+
+        Returns:
+        rewards_per_cluster (torch.Tensor): Total reward per cluster
+        """
 
         transposed_labels = cluster_oh_labels.T
 
@@ -1062,10 +1117,10 @@ class TigerBrain():
                 mode=mode)
             
             if self.inference_allowed:
-                self.online_inference(batch)
+                updates_dict = self.online_inference(batch)
 
             if self.experience_learning_allowed:
-                updates_dict = self.experience_learning()
+                self.experience_learning()
                 
 
         return updates_dict        
@@ -1372,6 +1427,7 @@ class TigerBrain():
             if self.eval_allowed:
                 self.evaluate_models()
             
+            """
             updates_dict = self.intelligence_step()
 
             if self.current_intelligence_steps % self.intelligence_episode_steps == 0:
@@ -1381,10 +1437,10 @@ class TigerBrain():
                 # Every five mitigation episodes we will update the correspondent target model 
                 if self.current_intelligence_steps % 5*self.intelligence_episode_steps == 0:
                     self.intelligence_agent.update_target_model()
-                    
-            return updates_dict
-        
+            """
 
+
+    """
     def intelligence_step(self):
 
         self.current_intelligence_steps += 1
@@ -1427,9 +1483,9 @@ class TigerBrain():
 
         # for epistemic updates  
         return updates_dict
+    """    
 
-
-    def perform_epistemic_action(self, current_action):      
+    def perform_epistemic_action(self, current_action=0):      
         
         updates_dict = self.env.perform_epistemic_action(current_action)
 
