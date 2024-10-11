@@ -34,7 +34,7 @@ import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment import TigerEnvironment
 from smartController.tiger_agents import DDQNAgent
-
+from functools import wraps
 
 # List of colors
 colors = [
@@ -111,8 +111,14 @@ ANOMALY_BALANCE = 'ANOMALY_BALANCE'
 CLOSED_SET = 'CS'
 ANOMALY_DETECTION = 'AD'
 
-# Create a lock object
-lock = threading.Lock()
+
+def thread_safe(method):
+    @wraps(method)
+    def _impl(self, *method_args, **method_kwargs):
+        with self._lock:
+            return method(self, *method_args, **method_kwargs)
+    return _impl
+
 
 def efficient_cm(preds, targets_onehot):
 
@@ -211,14 +217,27 @@ def get_clusters(predicted_kernel):
     
 
 class DynamicLabelEncoder:
-
+    """
+    Thread-safe dynamic label encoder.
+    
+    This class is fully thread-safe. All methods are mutually exclusive,
+    meaning no two methods can execute concurrently. This ensures data
+    consistency when used by multiple threads.
+    
+    Warning:
+        All access to this class's data should be done through its methods.
+        Direct dictionary access is not thread-safe.
+    """
+    
     def __init__(self):
-        self.label_to_int = {}
-        self.int_to_label = {}
-        self.current_code = 0
+        self._label_to_int = {}
+        self._int_to_label = {}
+        self._current_code = 0
         # keep track of changed labels for eventually handling sychronization mistakes. 
         # (packets sent to the router during epistemic updates) 
-        self.old_labels = {}
+        self._old_labels = {}
+        self._lock = threading.Lock()
+
 
     def fit(self, labels):
         """
@@ -227,15 +246,18 @@ class DynamicLabelEncoder:
 
         # get the new labels found in the batch  
         # batch_labels  - changed labels - current labels 
-        new_labels = set(labels) - (self.old_labels.keys()) - set(self.label_to_int.keys())
+        new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
         for label in new_labels:
-
-                self.label_to_int[label] = self.current_code
-                self.int_to_label[self.current_code] = label
-                self.current_code += 1
+            self.add_class(label)
 
         return new_labels
+
+    def add_class(self, label):
+
+        self._label_to_int[label] = self._current_code
+        self._int_to_label[self._current_code] = label
+        self._current_code += 1
 
 
     def transform(self, labels):
@@ -245,49 +267,50 @@ class DynamicLabelEncoder:
         for label in labels:
             
             # Managing eventual labelling synchronisation errors. 
-            if label in self.label_to_int.keys():
+            if label in self._label_to_int.keys():
                 correct_label = label
             else:
-                correct_label = self.old_labels[label]
+                correct_label = self._old_labels[label]
 
-            encoded_labels.append(self.label_to_int[correct_label])
+            encoded_labels.append(self._label_to_int[correct_label])
 
         return torch.tensor(encoded_labels)
 
-
     def inverse_transform(self, encoded_labels):
-        decoded_labels = [self.int_to_label[code.item()] for code in encoded_labels]
+        decoded_labels = [self._int_to_label[code.item()] for code in encoded_labels]
         return decoded_labels
 
 
     def get_mapping(self):
-        return self.label_to_int
+        return self._label_to_int
 
 
     def get_labels(self):
-        return list(self.label_to_int.keys())
+        return list(self._label_to_int.keys())
     
-
+    @thread_safe
     def update_label(self, old_label, new_label, logger):
 
-        if old_label in self.label_to_int:
+        logger.info(f'ENCODER: Changing  {old_label} to {new_label}')
+
+        if old_label in self._label_to_int:
 
             # get the numeric mapping: 
-            current_val = self.label_to_int[old_label]
+            current_val = self._label_to_int[old_label]
             
             # update the transformation dict:  
-            del self.label_to_int[old_label]
-            self.label_to_int[new_label] = current_val
+            del self._label_to_int[old_label]
+            self._label_to_int[new_label] = current_val
 
             # update the inversr transformation dict:
-            self.int_to_label[current_val] = new_label
-    
-            logger.info(f'ENCODER: Changing  {old_label} to {new_label} for value {current_val}')
-            
-            # this dictionary helps handling eventual sync errors  
-            self.old_labels[old_label] = new_label 
+            self._int_to_label[current_val] = new_label
+        
         else:
-            logger.info(f'ENCODER:  Attempt to update {old_label} but  it is unknown so far.')
+            logger.info(f'ENCODER:  Added {new_label} because {old_label} was not found')
+            self.add_class(new_label)
+
+        # this dictionary helps handling eventual sync errors  
+        self._old_labels[old_label] = new_label 
 
 
 class TigerBrain():
@@ -416,14 +439,14 @@ class TigerBrain():
                 capacity=REPLAY_BUFFER_MAX_CAPACITY,
                 batch_size=self.replay_buff_batch_size,
                 seed=self.seed)
-            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1}' +\
+            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
                                         ' in the training replay buffers')
         if not 'G1' in class_name:
             self.test_replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
                         capacity=REPLAY_BUFFER_MAX_CAPACITY,
                         batch_size=self.replay_buff_batch_size,
                         seed=self.seed)
-            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1}' +\
+            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name}' +\
                                       ' in the test replay buffers')
 
 
@@ -986,7 +1009,7 @@ class TigerBrain():
 
         for label in nl_labels:
             if label not in self.env.flow_rewards_dict.keys():
-                print('hello')
+                assert 1 == 0
 
         # get the associated reward per sample 
         sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
