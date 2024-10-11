@@ -244,7 +244,7 @@ class DynamicLabelEncoder:
 
         for label in labels:
             
-            # Managing eventual labelling synchronisatio errors. 
+            # Managing eventual labelling synchronisation errors. 
             if label in self.label_to_int.keys():
                 correct_label = label
             else:
@@ -271,10 +271,20 @@ class DynamicLabelEncoder:
     def update_label(self, old_label, new_label, logger):
 
         if old_label in self.label_to_int:
+
+            # get the numeric mapping: 
             current_val = self.label_to_int[old_label]
+            
+            # update the transformation dict:  
             del self.label_to_int[old_label]
             self.label_to_int[new_label] = current_val
+
+            # update the inversr transformation dict:
+            self.int_to_label[current_val] = new_label
+    
             logger.info(f'ENCODER: Changing  {old_label} to {new_label} for value {current_val}')
+            
+            # this dictionary helps handling eventual sync errors  
             self.old_labels[old_label] = new_label 
         else:
             logger.info(f'ENCODER:  Attempt to update {old_label} but  it is unknown so far.')
@@ -973,6 +983,10 @@ class TigerBrain():
 
         # get natural-language labels    
         nl_labels = self.encoder.inverse_transform(passed_samples)
+
+        for label in nl_labels:
+            if label not in self.env.flow_rewards_dict.keys():
+                print('hello')
 
         # get the associated reward per sample 
         sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
