@@ -248,10 +248,15 @@ class DynamicLabelEncoder:
         # batch_labels  - changed labels - current labels 
         new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
+        # This line also handles sync erros, notice that ex G2 labels, that contain the '(ZdA )' substring
+        # are by no means new via fitting functions but must be introduced only via the update function.  
+        new_labels =[new_label.replace('(ZdA )', '(ZdA G2)') for new_label in new_labels] 
+        
         for label in new_labels:
             self.add_class(label)
 
         return new_labels
+
 
     def add_class(self, label):
 

@@ -1,6 +1,7 @@
 import time
 import requests
 import torch
+import threading
 
 class TigerEnvironment:
 
@@ -15,29 +16,30 @@ class TigerEnvironment:
         self.current_budget = self.init_budget
         self.intelligence_budget_snapshot = self.init_budget
         self.restart_traffic()
-
+        self.lock = threading.Lock()
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
         self.reset_intelligence()
-
+        
 
     def reset_intelligence(self):
-        self.current_ZDA_DICT = self.init_ZDA_DICT
-        self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
-        self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
-        self.update_cti_options()
-        self.prev_intelligence_state = torch.zeros(6)
-        self.prev_intelligence_state[-1] = self.current_budget
-        self.prev_intelligence_action = 5
-        self.flow_rewards_dict = self.get_flow_rewards()
-        
-        return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
-                'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
-                'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
-                'updated_label': None,
-                'new_label': None,
-                'reset' : True}
+        with self.lock:
+            self.current_ZDA_DICT = self.init_ZDA_DICT
+            self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
+            self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
+            self.update_cti_options()
+            self.prev_intelligence_state = torch.zeros(6)
+            self.prev_intelligence_state[-1] = self.current_budget
+            self.prev_intelligence_action = 5
+            self.flow_rewards_dict = self.get_flow_rewards()
+            
+            return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
+                    'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
+                    'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
+                    'updated_label': None,
+                    'new_label': None,
+                    'reset' : True}
 
 
     def update_cti_options(self, n_options=5):
@@ -144,10 +146,11 @@ class TigerEnvironment:
                         updated_label = label
                         changed_ip = ip
 
-                        # update also the rewards dictionary:
-                        reward = self.flow_rewards_dict[label]    
-                        del self.flow_rewards_dict[label]
-                        self.flow_rewards_dict[new_label] = reward
+                        with self.lock:
+                            # update also the rewards dictionary:
+                            reward = self.flow_rewards_dict[label]    
+                            del self.flow_rewards_dict[label]
+                            self.flow_rewards_dict[new_label] = reward
 
                 # update our options vector:
                 self.update_cti_options()
