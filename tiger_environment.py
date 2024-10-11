@@ -10,7 +10,6 @@ class TigerEnvironment:
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
         self.flow_rewards_dict = self.get_flow_rewards()
-        self.samples_to_acquire = {key: 0 for key in self.flow_rewards_dict}
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
@@ -31,7 +30,8 @@ class TigerEnvironment:
         self.prev_intelligence_state = torch.zeros(6)
         self.prev_intelligence_state[-1] = self.current_budget
         self.prev_intelligence_action = 5
-
+        self.flow_rewards_dict = self.get_flow_rewards()
+        
         return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                 'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
                 'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
@@ -41,6 +41,9 @@ class TigerEnvironment:
 
 
     def update_cti_options(self, n_options=5):
+        """
+        This method updates the CTI agent state vector, i.e., according to available labels to buy.
+        """
         
         # current unknowns according to the dict 
         self.unknowns = [label for label in self.current_TRAINING_LABELS_DICT.values() if 'G2' in label]
@@ -131,13 +134,20 @@ class TigerEnvironment:
                 for ip, label in self.current_TRAINING_LABELS_DICT.items():
 
                     if label == acquired_cti:
-
+                        
+                        # Take out the indicators of ZDA from the curriculum dicts.  
                         self.current_ZDA_DICT[ip] = False
                         self.current_TEST_ZDA_DICT[ip]  = False 
                         new_label = str(label).replace('G2', '')
                         self.current_TRAINING_LABELS_DICT[ip] = new_label
+                        # This will be used for changing the encoder values in the brain class  
                         updated_label = label
                         changed_ip = ip
+
+                        # update also the rewards dictionary:
+                        reward = self.flow_rewards_dict[label]    
+                        del self.flow_rewards_dict[label]
+                        self.flow_rewards_dict[new_label] = reward
 
                 # update our options vector:
                 self.update_cti_options()
