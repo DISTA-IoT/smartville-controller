@@ -386,9 +386,6 @@ class TigerBrain():
                 wanb_project_name=wb_project_name,
                 run_name=wb_run_name,
                 config_dict=kwargs).wb_logger        
-
-        # start an episode  
-        self.env.reset()
         
 
     def reset_intelligence(self):
@@ -1432,11 +1429,11 @@ class TigerBrain():
             updates_dict = self.intelligence_step()
 
             if self.current_intelligence_steps % self.intelligence_episode_steps == 0:
-                print('Restarting the intelligence episode')
+                self.logger_instance.info('Restarting the intelligence episode')
                 updates_dict = self.reset_intelligence()
 
-                # Every five mitigation episodes we will update the correspondent target model 
-                if self.current_intelligence_steps % 5*self.intelligence_episode_steps == 0:
+                # Every 20 mitigation episodes we will update the correspondent target model 
+                if self.current_intelligence_steps % (20 *self.intelligence_episode_steps) == 0:
                     self.intelligence_agent.update_target_model()
             """
 
@@ -1455,8 +1452,7 @@ class TigerBrain():
         # get the reward of the last action:
         prev_reward = self.env.intelligence_budget_snapshot - prev_intelligence_budget_snapshot
 
-        # for now this is fixed to False... TODO do we need to modify this?
-        done_signal = self.env.has_intelligence_episode_ended()
+        done_signal = self.current_intelligence_steps % self.intelligence_episode_steps == 0
 
         # get state: (for now fixed)
         current_state = torch.Tensor([*self.env.get_intelligence_options(),self.env.intelligence_budget_snapshot])
