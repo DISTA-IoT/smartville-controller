@@ -693,13 +693,17 @@ class TigerBrain():
             mask = batch_labels == label
             
             for sample_idx in range(flow_input_batch[mask].shape[0]):
-                buffers[label.item()].push(
-                    flow_state=flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                    packet_state=(packet_input_batch[mask][sample_idx].unsqueeze(0) if self.use_packet_feats else None),
-                    node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
-                    label=batch_labels[mask][sample_idx].unsqueeze(0),
-                    zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                    test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
+                try:
+                    buffers[label.item()].push(
+                        flow_state=flow_input_batch[mask][sample_idx].unsqueeze(0), 
+                        packet_state=(packet_input_batch[mask][sample_idx].unsqueeze(0) if self.use_packet_feats else None),
+                        node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
+                        label=batch_labels[mask][sample_idx].unsqueeze(0),
+                        zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
+                        test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
+                except:
+                    print('something went wrong')
+                    assert 1 == 0
 
         if not self.experience_learning_allowed or not self.inference_allowed or not self.eval_allowed:
 
@@ -731,6 +735,7 @@ class TigerBrain():
         """
         if mode==TRAINING:
             return ~test_zda_labels.bool()
+            
         else:
             known_mask = ~zda_labels.bool()
             return torch.logical_or(test_zda_labels.bool(), known_mask)
