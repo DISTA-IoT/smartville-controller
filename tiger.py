@@ -648,8 +648,8 @@ def launch(**kwargs):
     
     kwargs['replay_batch_size'] = kwargs.get('replay_batch_size', 32)
     kwargs['h_dim'] = int(kwargs.get('h_dim', 800))
-    kwargs['min_budget'] = int(kwargs.get('min_budget', -5))
-    kwargs['max_budget'] = int(kwargs.get('max_budget', 10))
+    kwargs['min_budget'] = int(kwargs.get('min_budget', -10))
+    kwargs['max_budget'] = int(kwargs.get('max_budget', 20))
     kwargs['intelligence_episode_steps'] = int(kwargs.get('intelligence_episode_steps', 50))
     kwargs['online_evaluation_rounds'] = int(kwargs.get('online_evaluation_rounds', 50))
     wb_run_name = kwargs.get('wb_run_name', f"my_run")
