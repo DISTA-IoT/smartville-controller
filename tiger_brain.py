@@ -248,10 +248,15 @@ class DynamicLabelEncoder:
         # batch_labels  - changed labels - current labels 
         new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
-        # This line also handles sync erros, notice that ex G2 labels, that contain the '(ZdA )' substring
-        # are by no means new via fitting functions but must be introduced only via the update function.  
-        new_labels =[new_label.replace('(ZdA )', '(ZdA G2)') for new_label in new_labels] 
+        # Handling sync erros:
+        # notice that ex-G2 labels, that contain the '(ZdA )' or '(Bening )' substring
         
+        # ex-G2 must be introduced only via the update function.  
+        modified_new_labels =[new_label.replace('(ZdA )', '(ZdA G2)').replace('(Bening )', '(Bening G2)') for new_label in new_labels] 
+        
+        # ex non-G2 may not be new: 
+        new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
+
         for label in new_labels:
             self.add_class(label)
 
@@ -279,15 +284,18 @@ class DynamicLabelEncoder:
             if label not in self._label_to_int.keys():
 
                 # A label that has just-changed in the encoder from G2 to non-G2:  
-                if label in self._old_labels:
+                if label in self._old_labels.keys():
                     correct_label = self._old_labels[label]
 
-                # A label that was non-G2 in the prev episode and now sould be G2 again: 
+                # A label that was non-G2 in the prev episode and now should be G2 again: 
                 else:
-                    correct_label.replace('(ZdA )', '(ZdA G2)')
+                    correct_label = correct_label.replace('(ZdA )', '(ZdA G2)').replace('(Bening )', '(Bening G2)')
 
-
-            encoded_labels.append(self._label_to_int[correct_label])
+            try:
+                encoded_labels.append(self._label_to_int[correct_label])
+            except:
+                # something went wrong here... 
+                assert 1 == 0
 
         return torch.tensor(encoded_labels)
 
