@@ -270,16 +270,27 @@ class DynamicLabelEncoder:
         encoded_labels = []
 
         for label in labels:
-            
             # Managing eventual labelling synchronisation errors. 
-            if label in self._label_to_int.keys():
-                correct_label = label
-            else:
-                correct_label = self._old_labels[label]
+        
+            # A label synchronised with the encoder: 
+            correct_label = label
+            
+            # Otherwise: 
+            if label not in self._label_to_int.keys():
+
+                # A label that has just-changed in the encoder from G2 to non-G2:  
+                if label in self._old_labels:
+                    correct_label = self._old_labels[label]
+
+                # A label that was non-G2 in the prev episode and now sould be G2 again: 
+                else:
+                    correct_label.replace('(ZdA )', '(ZdA G2)')
+
 
             encoded_labels.append(self._label_to_int[correct_label])
 
         return torch.tensor(encoded_labels)
+
 
     def inverse_transform(self, encoded_labels):
         decoded_labels = [self._int_to_label[code.item()] for code in encoded_labels]
