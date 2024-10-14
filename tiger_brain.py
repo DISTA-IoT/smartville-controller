@@ -323,6 +323,8 @@ class DynamicLabelEncoder:
 
         return add_replay_buffer_signal
 
+
+
 class TigerBrain():
 
     def __init__(self,
@@ -354,7 +356,6 @@ class TigerBrain():
         self.multi_class = multi_class
         self.AI_DEBUG = debug
         self.step_counter = 0
-        self.current_intelligence_steps = 0
         self.wbt = wb_track
         self.wbl = None
         self.kernel_regression = kernel_regression
@@ -370,8 +371,7 @@ class TigerBrain():
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
-        self.intelligence_episode_steps = kwargs['intelligence_episode_steps']
-        self.reset_intelligence()
+        self.reset_environment()
         self.init_agents(kwargs)
 
         if self.wbt:
@@ -393,8 +393,10 @@ class TigerBrain():
                 config_dict=kwargs).wb_logger        
 
     
-    def reset_intelligence(self):
-
+    def reset_environment(self):
+        self.inference_allowed = False
+        self.experience_learning_allowed = False
+        self.eval_allowed = False 
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
@@ -459,6 +461,7 @@ class TigerBrain():
     def add_class_to_knowledge_base(self, new_class):
         if self.AI_DEBUG:
             self.logger_instance.info(f'New class found: {new_class}')
+
         self.current_known_classes_count += 1
         if not 'G2' in new_class:
             self.current_training_known_classes_count += 1 
@@ -891,10 +894,10 @@ class TigerBrain():
             self.classifier.train()
             self.confidence_decoder.train()
 
-            if end_signal:
-                self.env.reset()
+            if end_signal: self.reset_environment()
 
             return updates_dict
+
 
     def class_classification_step(
             self, 
@@ -1057,12 +1060,13 @@ class TigerBrain():
             passed_clusters_oh, passed_sample_rewards)
         
         
-        if purchased_mask.any():
+        for epistemic_action_index in purchased_mask.nonzero():
+            
             # get information about the change in the curriculum
             updates_dict = self.perform_epistemic_action()
             # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
             # in each cluster reward (this helps computing the current budget)
-            cluster_rewards -= (updates_dict['price_payed'] / len(cluster_rewards))
+            cluster_rewards[epistemic_action_index]  = cluster_rewards[epistemic_action_index] - updates_dict['price_payed']
             
         return cluster_rewards, updates_dict 
 
