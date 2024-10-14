@@ -296,6 +296,9 @@ class DynamicLabelEncoder:
     @thread_safe
     def update_label(self, old_label, new_label, logger):
 
+        # the caller needs to know if he should add a replay buffer 
+        add_replay_buffer_signal = False
+
         logger.info(f'ENCODER: Changing  {old_label} to {new_label}')
 
         if old_label in self._label_to_int:
@@ -313,10 +316,12 @@ class DynamicLabelEncoder:
         else:
             logger.info(f'ENCODER:  Added {new_label} because {old_label} was not found')
             self.add_class(new_label)
+            add_replay_buffer_signal = True
 
         # this dictionary helps handling eventual sync errors  
         self._old_labels[old_label] = new_label 
 
+        return add_replay_buffer_signal
 
 class TigerBrain():
 
@@ -338,7 +343,7 @@ class TigerBrain():
                  wb_run_name='',
                  report_step_freq=50,
                  kwargs={}):
-        
+        self._lock = threading.Lock()
         self.eval = eval
         self.use_packet_feats = kwargs['use_packet_feats'] 
         self.use_node_feats = kwargs['node_features'] 
@@ -366,7 +371,7 @@ class TigerBrain():
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
         self.intelligence_episode_steps = kwargs['intelligence_episode_steps']
-        _ = self.reset_intelligence()
+        self.reset_intelligence()
         self.init_agents(kwargs)
 
         if self.wbt:
@@ -386,12 +391,10 @@ class TigerBrain():
                 wanb_project_name=wb_project_name,
                 run_name=wb_run_name,
                 config_dict=kwargs).wb_logger        
-        
 
+    
     def reset_intelligence(self):
-        """
-        Intelligence is reset every intelligence episode...
-        """
+
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
@@ -406,8 +409,7 @@ class TigerBrain():
         self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, self.seed)
         self.env.reset()
-        updates_dict = self.env.reset_intelligence()
-        return updates_dict
+
 
     def init_agents(self, kwargs):
         
@@ -431,7 +433,7 @@ class TigerBrain():
         )
         """
 
-
+    
     def add_replay_buffer(self, class_name):
         self.inference_allowed = False
         self.experience_learning_allowed = False
@@ -453,6 +455,7 @@ class TigerBrain():
                                       ' in the test replay buffers')
 
 
+    @thread_safe
     def add_class_to_knowledge_base(self, new_class):
         if self.AI_DEBUG:
             self.logger_instance.info(f'New class found: {new_class}')
@@ -1034,7 +1037,7 @@ class TigerBrain():
         else:
 
             # if the cluster_action_signal is not zero, then the cluster was accepted 
-            passed_mask = cluster_action_signals != 0
+            passed_mask = (cluster_action_signals != 0).to(torch.long)
 
 
         passed_samples = (predicted_clusters_oh @ passed_mask.unsqueeze(1))
@@ -1487,11 +1490,15 @@ class TigerBrain():
         updates_dict = self.env.perform_epistemic_action(current_action)
 
         if updates_dict['updated_label'] is not None:
-            self.encoder.update_label(
+            
+            add_replay_buff = self.encoder.update_label(
                 old_label=updates_dict['updated_label'],
                 new_label=updates_dict['new_label'],
                 logger=self.logger_instance
             )
+
+            if add_replay_buff:
+                self.add_class_to_knowledge_base(updates_dict['new_label'])
         
         return updates_dict
     

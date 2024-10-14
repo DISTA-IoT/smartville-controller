@@ -142,9 +142,7 @@ class SmartSwitch(EventMixin):
 
         if 'reset' in epistemic_updates:
             log.info(f'Curricula reset taken out')
-        elif discovered_attack is None:
-            log.info(f'Useless epistemic action taken')
-        else:
+        elif discovered_attack is not None:
             log.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
 
 
