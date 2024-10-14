@@ -10,7 +10,7 @@ class TigerEnvironment:
         host_ip_addr = kwargs['host_ip_addr'] 
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.flow_rewards_dict = self.get_flow_rewards()
+        self.flow_rewards_dict = self.get_init_flow_rewards()
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
@@ -20,7 +20,7 @@ class TigerEnvironment:
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
-        self.reset_intelligence()
+        self.reset()
         
 
     def reset_intelligence(self):
@@ -29,10 +29,7 @@ class TigerEnvironment:
             self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
             self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
             self.update_cti_options()
-            self.prev_intelligence_state = torch.zeros(6)
-            self.prev_intelligence_state[-1] = self.current_budget
-            self.prev_intelligence_action = 5
-            self.flow_rewards_dict = self.get_flow_rewards()
+            self.flow_rewards_dict = self.get_init_flow_rewards()
             
             return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                     'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
@@ -87,10 +84,9 @@ class TigerEnvironment:
         return False
         
 
-    def get_flow_rewards(self):
+    def get_init_flow_rewards(self):
         try:
             response = requests.get(self.container_manager_ep+'flow_rewards')
-
             # Check if the request was successful
             if response.status_code == 200:
                 # Parse the JSON response into a Python dictionary
@@ -107,8 +103,8 @@ class TigerEnvironment:
 
     def reset(self):
         print('TIGER ENV: restarting mitigation episode!')
-        # self.restart_traffic()
         self.restart_budget()
+        self.reset_intelligence()
 
 
     def perform_epistemic_action(self, current_action=0):
