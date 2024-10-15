@@ -912,7 +912,7 @@ class TigerBrain():
                                             f'Online {INFERENCE} KR accuracy: {kr_precision}')
             
             if self.wbt:
-                self.wbl.log({AGENT+'_'+'reward': batch_reward, STEP_LABEL:self.step_counter})
+                self.wbl.log({AGENT+'_'+'reward': batch_reward, STEP_LABEL:self.step_counter}, commit=False)
                 self.wbl.log({AGENT+'_'+'budget': self.env.current_budget, STEP_LABEL:self.step_counter})
 
             self.classifier.train()
@@ -949,7 +949,7 @@ class TigerBrain():
 
         # report progress
         if self.wbt:
-            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.step_counter}, commit=False)
             self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.step_counter})
 
         return cs_loss, acc
@@ -1310,8 +1310,8 @@ class TigerBrain():
 
         
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.step_counter}, commit=False)
+            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.step_counter}, commit=False)
             self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.step_counter})
 
         """
@@ -1349,9 +1349,8 @@ class TigerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt:
-                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.step_counter})
-                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.step_counter})
-
+                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.step_counter}, commit=False)
+                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.step_counter}, commit=False)
                 self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.step_counter})
             """
             if self.AI_DEBUG: 
@@ -1587,8 +1586,8 @@ class TigerBrain():
                                         f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
                                         f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
-            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.step_counter}, commit=False)
+            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.step_counter}, commit=False)
             self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.step_counter})
 
         """
@@ -1682,20 +1681,6 @@ class TigerBrain():
         self.save_cs_model(postfix='coupled')
         if self.multi_class:
             self.save_ad_model(postfix='coupled')
-
-
-    def reward_computation(
-            self,
-            sample_blocking_mask,  # binary mask 
-            sample_class_labels  # decimal labels
-            ):
-
-        # report progress
-        if self.wbt:
-            self.wbl.log({
-                'batch_reward': batch_reward.item(), 
-                STEP_LABEL:self.step_counter})
-
     
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
