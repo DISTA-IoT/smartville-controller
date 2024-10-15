@@ -17,7 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 from smartController.neural_modules import  MultiClassFlowClassifier, ThreeStreamMulticlassFlowClassifier, \
         TwoStreamMulticlassFlowClassifier, KernelRegressionLoss, ConfidenceDecoder
-from smartController.replay_buffer import ReplayBuffer, Batch
+from smartController.replay_buffer import RawReplayBuffer, Batch
 import os
 import torch
 import torch.optim as optim
@@ -427,7 +427,6 @@ class TigerBrain():
         # reseting the label encoder should not be a problem for prototypical classification...
         self.encoder = DynamicLabelEncoder()
         self.replay_buffers = {}
-        self.test_replay_buffers = {}
         self.init_neural_modules(LEARNING_RATE, self.seed)
         self.env.reset()
 
@@ -459,22 +458,14 @@ class TigerBrain():
         self.inference_allowed = False
         self.experience_learning_allowed = False
         self.eval_allowed = False 
-        
-        if not 'G2' in class_name:
-            self.replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
-                capacity=REPLAY_BUFFER_MAX_CAPACITY,
-                batch_size=self.replay_buff_batch_size,
-                seed=self.seed)
-            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
-                                        ' in the training replay buffers')
-        if not 'G1' in class_name:
-            self.test_replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
-                        capacity=REPLAY_BUFFER_MAX_CAPACITY,
-                        batch_size=self.replay_buff_batch_size,
-                        seed=self.seed)
-            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name}' +\
-                                      ' in the test replay buffers')
-
+                
+        self.replay_buffers[self.current_known_classes_count-1] = RawReplayBuffer(
+            capacity=REPLAY_BUFFER_MAX_CAPACITY,
+            batch_size=self.replay_buff_batch_size,
+            seed=self.seed)
+        self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
+                                    ' in the replay buffers')
+    
 
     @thread_safe
     def add_class_to_knowledge_base(self, new_class):
@@ -673,8 +664,6 @@ class TigerBrain():
             packet_input_batch,
             node_feat_input_batch,
             batch_labels,
-            zda_batch_labels,
-            test_zda_batch_labels,
             mode):
         """
         Don't know why, but you can have more than one sample
@@ -684,9 +673,9 @@ class TigerBrain():
         Otherwise we will have bad surprises when sampling from them!!!
         (i.e. sampling more elements than those requested!)
         """
-        buffers = (self.replay_buffers if mode == TRAINING else self.test_replay_buffers)
-
         unique_labels = torch.unique(batch_labels)
+
+        buffers = self.replay_buffers
 
         for label in unique_labels:
 
@@ -698,9 +687,7 @@ class TigerBrain():
                         flow_state=flow_input_batch[mask][sample_idx].unsqueeze(0), 
                         packet_state=(packet_input_batch[mask][sample_idx].unsqueeze(0) if self.use_packet_feats else None),
                         node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
-                        label=batch_labels[mask][sample_idx].unsqueeze(0),
-                        zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                        test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
+                        label=batch_labels[mask][sample_idx].unsqueeze(0))
                 except:
                     print('something went wrong')
                     assert 1 == 0
@@ -709,13 +696,12 @@ class TigerBrain():
 
             buff_lengths = []
             for class_label, class_idx in self.encoder.get_mapping().items():
-
+                if mode==TRAINING and 'G2' in class_label: continue
+                if mode==INFERENCE and 'G1' in class_label: continue
                 if class_idx in buffers.keys():
                     curr_buff_len = len(buffers[class_idx]) 
                     buff_lengths.append((class_label, curr_buff_len))
-
-            if self.AI_DEBUG: self.logger_instance.info(f'{mode} Buffer lengths: {buff_lengths}')
-
+      
             if mode == TRAINING:
                 self.experience_learning_allowed = torch.all(
                     torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
@@ -723,6 +709,8 @@ class TigerBrain():
             if mode == INFERENCE:
                 self.inference_allowed = self.eval_allowed = torch.all(
                     torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))
+
+            if self.AI_DEBUG: self.logger_instance.info(f'{mode} Buffer lengths: {buff_lengths}')
 
 
     def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
@@ -750,8 +738,8 @@ class TigerBrain():
         node_features = (torch.vstack([left_batch.node_features, rigth_batch.node_features]) if self.use_node_feats else None)
 
         class_labels = torch.cat([left_batch.class_labels.squeeze(1), rigth_batch.class_labels]).unsqueeze(1)
-        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), rigth_batch.zda_labels]).unsqueeze(1)
-        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), rigth_batch.test_zda_labels]).unsqueeze(1)
+        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), rigth_batch.zda_labels.squeeze(1)]).unsqueeze(1)
+        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), rigth_batch.test_zda_labels.squeeze(1)]).unsqueeze(1)
 
         return Batch(
                 flow_features=flow_features,
@@ -769,6 +757,13 @@ class TigerBrain():
         # it turns out it wont work well if not boolean type!
         mask = (zda_predictions > 0.5).to(torch.bool)
         return mask   
+
+
+    def get_zda_labels(self, batch):
+        nl_labels = self.encoder.inverse_transform(batch.class_labels)
+        zda_labels = torch.Tensor(['G1' in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        test_zda_labels = torch.Tensor(['G2' in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        return zda_labels, test_zda_labels
 
 
     def online_inference(
@@ -790,7 +785,11 @@ class TigerBrain():
 
         # updates_dict helps managing eventual epistemic actions
         updates_dict  = None
-        
+
+        # get zda labels for the online batch
+        online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch)
+
+
         # sample from the replay buffers
         aux_batch = self.sample_from_replay_buffers(
                                 samples_per_class=self.replay_buff_batch_size,
@@ -817,7 +816,8 @@ class TigerBrain():
             merged_batch,
             query_mask=merged_query_mask)
 
-        one_hot_labels = self.get_oh_labels(merged_batch, logits)
+        one_hot_labels = self.get_oh_labels(merged_batch, logits)       
+
         # known class horizonal mask:
         known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
 
@@ -1010,10 +1010,6 @@ class TigerBrain():
         
         num_of_predicted_clusters = predicted_clusters.max() + 1
 
-        # the state vectors are gonna be composed of the hidden centroids + the current budget.
-        # So we boradcast the current butget value to concatenate it with the hidden clusters. 
-        broadcasted_budget = torch.Tensor([curr_budget] * num_of_predicted_clusters)
-
         # one-hot encode the predicted clusters
         predicted_clusters_oh = torch.nn.functional.one_hot(
             predicted_clusters,
@@ -1021,13 +1017,20 @@ class TigerBrain():
         )
 
         # get latent centroids
-        centroids, _ = self.get_centroids(
+        centroids, missing_clusters = self.get_centroids(
             hidden_vectors, 
             predicted_clusters_oh.to(torch.float32))
 
+        # the state vectors are gonna be composed of the hidden centroids + the current budget.
+        # So we boradcast the current butget value to concatenate it with the hidden clusters. 
+        
+        num_of_predicted_centroids = centroids[~missing_clusters].shape[0]
+
+        broadcasted_budget = torch.Tensor([curr_budget] * num_of_predicted_centroids)
+
         # get state vectors
         state_vecs = torch.hstack(
-           [centroids, 
+           [centroids[~missing_clusters], 
             broadcasted_budget.unsqueeze(-1)]
             )
 
@@ -1128,21 +1131,13 @@ class TigerBrain():
         if len(flows) > 0:
             
             batch = self.assembly_input_tensor(flows, node_feats)
-            
             mode=(TRAINING if random.random() > 0.4 else INFERENCE)
-
-            to_push_mask = self.get_pushing_mask(
-                batch.zda_labels, 
-                batch.test_zda_labels, 
-                mode)
-
+  
             self.push_to_replay_buffers(
-                batch.flow_features[to_push_mask], 
-                (batch.packet_features[to_push_mask] if self.use_packet_feats else None),
-                (batch.node_features[to_push_mask] if self.use_node_feats else None),  
-                batch_labels=batch.class_labels[to_push_mask],
-                zda_batch_labels=batch.zda_labels[to_push_mask],
-                test_zda_batch_labels=batch.test_zda_labels[to_push_mask],
+                batch.flow_features, 
+                (batch.packet_features if self.use_packet_feats else None),
+                (batch.node_features if self.use_node_feats else None),  
+                batch_labels=batch.class_labels,
                 mode=mode)
             
             if self.inference_allowed:
@@ -1160,19 +1155,33 @@ class TigerBrain():
         balanced_node_feat_batch = None
 
         init = True
-        if mode == TRAINING:
-            buffers_dict = self.replay_buffers
-        elif mode == INFERENCE:
-            buffers_dict = self.test_replay_buffers
 
-        for replay_buff in buffers_dict.values():
+        classes_decimal_tensor = torch.Tensor(list(self.replay_buffers.keys())).to(torch.long)
+        nl_labels = self.encoder.inverse_transform(classes_decimal_tensor)
+        
+        for replay_buff, class_nl_label  in zip(self.replay_buffers.values(), nl_labels):
+
+            test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
+
+            if mode== TRAINING:
+                if 'G2' in class_nl_label:
+                    continue
+                if 'G1' in class_nl_label:
+                    zda_batch_labels = torch.ones(samples_per_class, 1)
+                
+            if mode == INFERENCE:
+                if 'G1' in class_nl_label:
+                    continue
+                if 'G2' in class_nl_label:
+                    test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
+            
             flow_batch, \
                 packet_batch, \
                     node_feat_batch, \
-                        batch_labels, \
-                            zda_batch_labels, \
-                                test_zda_batch_labels = replay_buff.sample(samples_per_class)
+                        batch_labels = replay_buff.sample(samples_per_class)
             
+             
+
             if init:
                 balanced_flow_batch = flow_batch
                 balanced_labels = batch_labels
@@ -1379,6 +1388,9 @@ class TigerBrain():
         training_batch = self.sample_from_replay_buffers(
                 samples_per_class=self.replay_buff_batch_size,
                 mode=TRAINING)
+        
+        # get zda labels for the online batch
+        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch)
         
         query_mask = self.get_canonical_query_mask(TRAINING)
 
@@ -1714,10 +1726,8 @@ class TigerBrain():
             self.add_class_to_knowledge_base(new_class)
 
         encoded_labels = self.encoder.transform(string_labels)
-        zda_labels = torch.Tensor([flow.zda for flow in flows])
-        test_zda_labels = torch.Tensor([flow.test_zda for flow in flows])
 
-        return encoded_labels.to(torch.long), zda_labels, test_zda_labels
+        return encoded_labels.to(torch.long)
     
 
     def assembly_input_tensor(
@@ -1782,17 +1792,13 @@ class TigerBrain():
                             dim=0)
                         
 
-        batch_labels, \
-                    zda_labels, \
-                        test_zda_labels = self.get_labels(flows)
+        batch_labels = self.get_labels(flows)
         
         return Batch(
             flow_features=flow_input_batch, 
             packet_features=packet_input_batch, 
             node_features=node_feat_input_batch,
-            class_labels=batch_labels,
-            zda_labels=zda_labels,
-            test_zda_labels=test_zda_labels)
+            class_labels=batch_labels)
          
     
 
