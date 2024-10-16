@@ -10,7 +10,7 @@ class TigerEnvironment:
         host_ip_addr = kwargs['host_ip_addr'] 
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.flow_rewards_dict = self.get_init_flow_rewards()
+        self.init_flow_rewards_dict = self.flow_rewards_dict = self.get_init_flow_rewards()
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
@@ -28,7 +28,7 @@ class TigerEnvironment:
             self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
             self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
             self.update_cti_options()
-            self.flow_rewards_dict = self.get_init_flow_rewards()
+            self.flow_rewards_dict = self.init_flow_rewards_dict
             
             return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                     'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
