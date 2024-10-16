@@ -615,6 +615,7 @@ def launch(**kwargs):
         - 'max_budget' (int, optional): The maximum budget that the agent can reach, after reaching this budget, the episode will restart. (Default 10) 
         - 'intelligence_episode_steps' (int, optional): The number of steps that the intelligence episode will last. (Default 50)
         - 'online_evaluation_rounds' (int, optional): The number of batches for online evaluation. (Default 50)
+        - 'max_episode_steps' (int, optional): The maximum number of steps per episode, in case the budget limits are not reached.) (Default 70)
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -652,6 +653,7 @@ def launch(**kwargs):
     kwargs['max_budget'] = int(kwargs.get('max_budget', 20))
     kwargs['intelligence_episode_steps'] = int(kwargs.get('intelligence_episode_steps', 50))
     kwargs['online_evaluation_rounds'] = int(kwargs.get('online_evaluation_rounds', 50))
+    kwargs['max_episode_steps'] = int(kwargs.get('max_episode_steps', 70))
     wb_run_name = kwargs.get('wb_run_name', f"my_run")
 
     # Switching arguments:

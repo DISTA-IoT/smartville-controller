@@ -936,7 +936,9 @@ class TigerBrain():
             self.env.current_budget += batch_reward
             
             # an episode ends if the budget ends... 
-            end_signal = self.env.has_episode_ended()
+            end_signal = self.env.has_episode_ended(self.step_counter)
+
+            # broadcast it for attaching to centroids: 
             broadcasted_end_signal = torch.Tensor([end_signal] * cluster_action_signals.shape[0])
 
             # the state is going to be assemled using the new budget.

@@ -23,7 +23,8 @@ class TigerEnvironment:
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
-        
+        self.max_episode_steps = kwargs['max_episode_steps'] 
+
 
     def reset_intelligence(self):
         with self.lock:
@@ -74,11 +75,12 @@ class TigerEnvironment:
         return list(self.current_cti_options.values())
 
 
-    def has_episode_ended(self):
-        if self.current_budget > self.max_budget:
+    def has_episode_ended(self, current_steps):
+        if (self.current_budget < self.min_budget) \
+                or (self.current_budget > self.max_budget) \
+                or current_steps >= self.max_episode_steps:
             return True
-        else:
-            return self.current_budget < self.min_budget
+        return False
 
 
     def has_intelligence_episode_ended(self):
