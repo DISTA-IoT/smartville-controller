@@ -320,6 +320,7 @@ class DynamicLabelEncoder:
 
         logger.info(f'ENCODER: Changing  {old_label} to {new_label}')
 
+        # did we actually know the old version of this label? 
         if old_label in self._label_to_int:
 
             # get the numeric mapping: 
@@ -333,7 +334,9 @@ class DynamicLabelEncoder:
             self._int_to_label[current_val] = new_label
         
         else:
+
             logger.info(f'ENCODER:  Added {new_label} because {old_label} was not found')
+            
             self.add_class(new_label)
             add_replay_buffer_signal = True
 
@@ -473,10 +476,13 @@ class TigerBrain():
             self.logger_instance.info(f'New class found: {new_class}')
 
         self.current_known_classes_count += 1
+        
         if not 'G2' in new_class:
             self.current_training_known_classes_count += 1 
+
         if not 'G1' in new_class:
             self.current_test_known_classes_count += 1
+        
         self.add_replay_buffer(new_class)
         self.reset_train_cms()
         self.reset_test_cms()
@@ -856,44 +862,81 @@ class TigerBrain():
                 # assume a perfect clusterer for now TODO what is happening here?
                 predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
                 kr_precision = torch.zeros(1)
-
+            
+            ####### 
             ### agentic process:
+            ####### 
+
+            # how many clusters have we identified? 
+            num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
+
+            # one-hot encode the predicted clusters
+            predicted_clusters_oh = torch.nn.functional.one_hot(
+                predicted_decimal_clusters,
+                num_classes=num_of_predicted_clusters
+            )
+
+            # get latent centroids
+            centroids, missing_clusters = self.get_centroids(
+                hidden_vectors[merged_query_mask][predicted_zda_mask], 
+                predicted_clusters_oh.to(torch.float32))
 
             # decide if blocking or accepting each unknown... 
             cluster_action_signals, state_vecs = self.act( 
-                hidden_vectors[merged_query_mask][predicted_zda_mask],
-                self.env.current_budget,
-                predicted_decimal_clusters
-                )
-    
-            # get a reward for each blocking decision (for each predicted cluster)  
-            rewards_per_signal, updates_dict = self.compute_rewards(
-                cluster_action_signals,
-                predicted_decimal_clusters,
-                merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
+                centroids[~missing_clusters],
+                self.env.current_budget)
+
+            ####### coumputing rewards:
             
+            # natural language labels
+            nl_labels = self.encoder.inverse_transform(
+                merged_batch.class_labels[merged_query_mask][predicted_zda_mask])    
+    
+            # sample-specific rewards:
+            sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])
+
+            # for convenience, put the rewards on the correspoding cluster column  
+            rewards_per_cluster = (predicted_clusters_oh * sample_rewards.unsqueeze(-1)).sum(0)
+
+            # get the cluster_passing_mask:
+            cluster_passing_mask = cluster_action_signals == 0 
+            
+            # get the cluster-specific rewards  
+            rewards_per_cluster= rewards_per_cluster[~missing_clusters] *  cluster_passing_mask
+
+            # get the epistemic action mask:
+            purchased_mask = cluster_action_signals == 2 
+
+            # perform epistemic action 
+            for epistemic_action_index in purchased_mask.nonzero():
+            
+                # get information about the change in the curriculum
+                updates_dict = self.perform_epistemic_action()
+                # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
+                # in each cluster reward (this helps computing the current budget)
+                rewards_per_cluster[epistemic_action_index]  = rewards_per_cluster[epistemic_action_index] - updates_dict['price_payed']
+                
             # compute new budget: 
-            batch_reward = rewards_per_signal.sum().item()
+            batch_reward = rewards_per_cluster.sum().item()
             self.env.current_budget += batch_reward
             
-            # broadcast it to append it to the state vectors 
-            num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
-            broadcasted_budget = torch.Tensor([self.env.current_budget] * num_of_predicted_clusters)
-
             # an episode ends if the budget ends... 
             end_signal = self.env.has_episode_ended()
-            broadcasted_end_signal = torch.Tensor([end_signal] * num_of_predicted_clusters)
+            broadcasted_end_signal = torch.Tensor([end_signal] * cluster_action_signals.shape[0])
 
+            # the state is going to be assemled using the new budget.
+            broadcasted_new_budget = torch.Tensor([self.env.current_budget] * cluster_action_signals.shape[0] ) 
+            
             # we can approximate the new state with the previous one, but changing the budget. 
             next_states = torch.hstack(
                 [state_vecs[:, :-1], 
-                    broadcasted_budget.unsqueeze(-1)]
+                    broadcasted_new_budget.unsqueeze(-1)]
                     )
 
             # collect experience tuples for training: 
             for experience_tuple in zip(state_vecs, 
                     cluster_action_signals,
-                    rewards_per_signal,
+                    rewards_per_cluster,
                     next_states,
                     broadcasted_end_signal):
                 self.mitigation_agent.remember(*experience_tuple)
@@ -1004,33 +1047,17 @@ class TigerBrain():
         centroids[~missing_clusters] = existent_centroids
 
         return centroids, missing_clusters
-    
 
-    def act(self, hidden_vectors, curr_budget, predicted_clusters):
+   
+    def act(self, centroids, curr_budget):
         
-        num_of_predicted_clusters = predicted_clusters.max() + 1
-
-        # one-hot encode the predicted clusters
-        predicted_clusters_oh = torch.nn.functional.one_hot(
-            predicted_clusters,
-            num_classes=num_of_predicted_clusters
-        )
-
-        # get latent centroids
-        centroids, missing_clusters = self.get_centroids(
-            hidden_vectors, 
-            predicted_clusters_oh.to(torch.float32))
-
         # the state vectors are gonna be composed of the hidden centroids + the current budget.
         # So we boradcast the current butget value to concatenate it with the hidden clusters. 
-        
-        num_of_predicted_centroids = centroids[~missing_clusters].shape[0]
-
-        broadcasted_budget = torch.Tensor([curr_budget] * num_of_predicted_centroids)
+        broadcasted_budget = torch.Tensor([curr_budget] * centroids.shape[0])
 
         # get state vectors
         state_vecs = torch.hstack(
-           [centroids[~missing_clusters], 
+           [centroids, 
             broadcasted_budget.unsqueeze(-1)]
             )
 
@@ -1040,87 +1067,6 @@ class TigerBrain():
 
         return torch.Tensor(action_per_cluster).to(torch.long), state_vecs.detach()
 
-
-
-    def compute_rewards(
-            self,
-            cluster_action_signals,
-            predicted_clusters,
-            class_labels):
-        
-        # updates_dict helps managing eventual epistemic actions
-        updates_dict = None
-
-        # get one-hot labels 
-        predicted_clusters_oh = torch.nn.functional.one_hot(
-            predicted_clusters, 
-            num_classes=predicted_clusters.max()+1)
-        
-        # first see if a label has been acquired:
-        purchased_mask = cluster_action_signals == 2
-
-        if purchased_mask.any():
-
-            # if you take the epistemic action, you let all traffic in the batch to pass
-            passed_mask = torch.ones_like(cluster_action_signals)
-
-        else:
-
-            # if the cluster_action_signal is not zero, then the cluster was accepted 
-            passed_mask = (cluster_action_signals != 0).to(torch.long)
-
-
-        passed_samples = (predicted_clusters_oh @ passed_mask.unsqueeze(1))
-
-        # get the labels of the samples you did not block
-        passed_sample_classes = class_labels[passed_samples.to(torch.long)] 
-
-        # get natural-language labels    
-        nl_labels = self.encoder.inverse_transform(passed_sample_classes)
-
-        # get the associated reward per sample 
-        passed_sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
-
-        passed_clusters_oh = predicted_clusters_oh[passed_sample_classes.squeeze()]
-
-        cluster_rewards = self.get_cluster_rewards(
-            passed_clusters_oh, passed_sample_rewards)
-        
-        
-        for epistemic_action_index in purchased_mask.nonzero():
-            
-            # get information about the change in the curriculum
-            updates_dict = self.perform_epistemic_action()
-            # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
-            # in each cluster reward (this helps computing the current budget)
-            cluster_rewards[epistemic_action_index]  = cluster_rewards[epistemic_action_index] - updates_dict['price_payed']
-            
-        return cluster_rewards, updates_dict 
-
-
-    def get_cluster_rewards(self, cluster_oh_labels, sample_rewards):
-        """
-        Compute the reward per cluster by summing the rewards of the samples 
-        within each cluster.
-
-        Args:
-        cluster_oh_labels (torch.Tensor): One-hot encoded cluster labels
-        sample_rewards (torch.Tensor): Rewards associated with each sample
-
-        Returns:
-        rewards_per_cluster (torch.Tensor): Total reward per cluster
-        """
-
-        transposed_labels = cluster_oh_labels.T
-
-        rewards_on_cluster_row = sample_rewards * transposed_labels
-
-        rewards_on_cluster_col = rewards_on_cluster_row.T
-
-        rewards_per_cluster = rewards_on_cluster_col.sum(0)
-
-        return rewards_per_cluster
-    
 
     def process_input(self, flows, node_feats: dict = None):
         """
@@ -1145,7 +1091,6 @@ class TigerBrain():
 
             if self.experience_learning_allowed:
                 self.experience_learning()
-                
 
         return updates_dict        
 
@@ -1155,7 +1100,7 @@ class TigerBrain():
         balanced_node_feat_batch = None
 
         init = True
-
+  
         classes_decimal_tensor = torch.Tensor(list(self.replay_buffers.keys())).to(torch.long)
         nl_labels = self.encoder.inverse_transform(classes_decimal_tensor)
         
@@ -1225,35 +1170,37 @@ class TigerBrain():
         Support samples are used for centroid computation.
         Query samples are used for  prototypical learning, i.e., they are assigned to each centroid based on their simmilarity in the manifold.
 
-        This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 or 0 to each sample in the batch, indicating
-        if it is a query sample or not (in which case it will be a support sample).
+        This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 (True) or 0 (False) to each sample in the batch, indicating
+        if it is a query sample (1) or not (0) (in which case it will be a support sample).
 
         This method assumes that the samples in the batch are concatenated in continuous slices, i.e. all the 
         samples corresponding to class A are in the first M positions, where M correspondons to the number of support + query samples for each class,
         In the positions M+1 to 2M positions, we'll have samples from class B, and so on... 
         
-        So we need to mask M-K samples of each class, where K is the number of support samples for each class, 
-        and this methods masks the first M-K samples of each class. 
+        We mask-out (i.e. put zeros on) K samples of each class, where K is the number of support samples for each class, AKA the K-shot parameter. 
+        and this methods masks the first K samples of each class. 
         
-        The unique difference between training and evaluation cases is that the number of known classes might be different, so 
-        we take that number into account for creating the quesy mask... 
-        (the mask will have dimensions N times M where N is the number of classes in the knowledge base)
+
+        (the mask will have dimensions N times M, where N is the number of classes in the knowledge base)
         """
+
+        # The unique difference between training and evaluation cases is that the number of known classes might be different, so 
+        # we take that number into account for creating the query mask... 
         if phase == TRAINING:
             class_count = self.current_training_known_classes_count
         elif phase == INFERENCE:
             class_count = self.current_test_known_classes_count
 
-        query_mask = torch.zeros(
+        query_mask = torch.ones(
             size=(class_count, self.replay_buff_batch_size),
             device=self.device).to(torch.bool)
         
         # This is a trick for labelling withouth messing around with indexes.
         # We started from a bi-dimensional binary mask, all zeros, 
-        # we fill with ones the last self.replay_buff_batch_size - self.K_shot positions (that correspond to the query samples)
+        # we mask out the first self.K_shot positions (that correspond to the query samples)
         #  of every row (that corresponds to each class)
-        query_mask[:, self.replay_buff_batch_size - self.k_shot:] = True
-        # and then we flatten the di-dimensional mask to get a one-dimensional one that works for us! 
+        query_mask[:, :self.k_shot] = False
+        # and then we flatten the bi-dimensional mask to get a one-dimensional one that works for us! 
         query_mask = query_mask.view(-1)
         return query_mask
 
@@ -1531,6 +1478,9 @@ class TigerBrain():
 
         if updates_dict['updated_label'] is not None:
             
+            # we are adding a label to our dataset. Update the known-class counter:
+            self.current_training_known_classes_count += 1 
+
             add_replay_buff = self.encoder.update_label(
                 old_label=updates_dict['updated_label'],
                 new_label=updates_dict['new_label'],
@@ -1539,7 +1489,7 @@ class TigerBrain():
 
             if add_replay_buff:
                 self.add_class_to_knowledge_base(updates_dict['new_label'])
-        
+                
         return updates_dict
     
 
