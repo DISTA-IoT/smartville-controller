@@ -346,6 +346,31 @@ class DynamicLabelEncoder:
         return add_replay_buffer_signal
 
 
+    @thread_safe  
+    def reset_original_labels(self):
+
+        # we are keeping the count of known training classes each time.   
+        training_classes_to_subtract = 0
+
+        for original_label, new_label in self._old_labels.items():
+
+            # the old_labels dictionary contains as entries as CTI prototypes 
+            # we have acquired so far  
+            training_classes_to_subtract += 0
+
+            # reset the label of the class in the transformation dict:
+            code = self._label_to_int[new_label]
+            del self._label_to_int[new_label]
+            self._label_to_int[original_label] = code
+            
+            # also in the inverse dict:
+            self._int_to_label[code] = new_label    
+
+        # empty this dict for a new episode 
+        self._old_labels = {}
+
+        # tell the caller how many classes to subtract from the count.  
+        return training_classes_to_subtract
 
 class TigerBrain():
 
@@ -393,8 +418,8 @@ class TigerBrain():
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
-        self.reset_environment()
         self.init_agents(kwargs)
+        self.init_intelligence()
 
         if self.wbt:
 
@@ -415,24 +440,28 @@ class TigerBrain():
                 config_dict=kwargs).wb_logger        
 
     
-    def reset_environment(self):
+    def init_intelligence(self):
+        self.current_known_classes_count = 0
+        self.current_training_known_classes_count = 0
+        self.current_test_known_classes_count = 0
         self.inference_allowed = False
         self.experience_learning_allowed = False
         self.eval_allowed = False 
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
-        self.current_known_classes_count = 0
-        self.current_training_known_classes_count = 0
-        self.current_test_known_classes_count = 0
         self.reset_train_cms()
         self.reset_test_cms()
-        # reseting the label encoder should not be a problem for prototypical classification...
         self.encoder = DynamicLabelEncoder()
         self.replay_buffers = {}
-        self.init_neural_modules(LEARNING_RATE, self.seed)
-        self.env.reset()
+        self.reset_environment()
 
+
+    def reset_environment(self):
+        self.env.reset()    
+        training_classes_to_subtract = self.encoder.reset_original_labels()
+        self.current_training_known_classes_count -= training_classes_to_subtract
+        self.init_inference_neural_modules(LEARNING_RATE, self.seed)
 
     def init_agents(self, kwargs):
         
@@ -506,7 +535,7 @@ class TigerBrain():
             device=self.device)
         
 
-    def init_neural_modules(self, lr, seed):
+    def init_inference_neural_modules(self, lr, seed):
         torch.manual_seed(seed)
         self.confidence_decoder = ConfidenceDecoder(device=self.device)
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
@@ -895,7 +924,7 @@ class TigerBrain():
             # sample-specific rewards:
             sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])
 
-            # for convenience, put the rewards on the correspoding cluster column  
+            # get the potential rewards per cluster 
             rewards_per_cluster = (predicted_clusters_oh * sample_rewards.unsqueeze(-1)).sum(0)
 
             # get the cluster_passing_mask:
@@ -914,7 +943,7 @@ class TigerBrain():
                 updates_dict = self.perform_epistemic_action()
                 # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
                 # in each cluster reward (this helps computing the current budget)
-                rewards_per_cluster[epistemic_action_index]  = rewards_per_cluster[epistemic_action_index] - updates_dict['price_payed']
+                rewards_per_cluster[epistemic_action_index]  -= updates_dict['price_payed']
                 
             # compute new budget: 
             batch_reward = rewards_per_cluster.sum().item()
@@ -1644,20 +1673,6 @@ class TigerBrain():
         self.save_cs_model(postfix='coupled')
         if self.multi_class:
             self.save_ad_model(postfix='coupled')
-
-
-    def reward_computation(
-            self,
-            sample_blocking_mask,  # binary mask 
-            sample_class_labels  # decimal labels
-            ):
-
-        # report progress
-        if self.wbt:
-            self.wbl.log({
-                'batch_reward': batch_reward.item(), 
-                STEP_LABEL:self.step_counter})
-
     
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
