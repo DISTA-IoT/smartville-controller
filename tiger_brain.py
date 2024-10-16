@@ -351,10 +351,6 @@ class DynamicLabelEncoder:
 
         for original_label, new_label in self._old_labels.items():
 
-            # the old_labels dictionary contains as entries as CTI prototypes 
-            # we have acquired so far  
-            training_classes_to_subtract += 0
-
             # reset the label of the class in the transformation dict:
             code = self._label_to_int[new_label]
             del self._label_to_int[new_label]
