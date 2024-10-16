@@ -111,6 +111,9 @@ ANOMALY_BALANCE = 'ANOMALY_BALANCE'
 CLOSED_SET = 'CS'
 ANOMALY_DETECTION = 'AD'
 
+NEW = 'NEW'
+G1 = 'G1'
+G2 = 'G2'
 
 def thread_safe(method):
     @wraps(method)
@@ -249,10 +252,10 @@ class DynamicLabelEncoder:
         new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
         # Handling sync erros:
-        # notice that ex-G2 labels, that contain the '(ZdA )' or '(Bening )' substring
+        # notice that ex-G2 labels, that contain the 'NEW' substring
         
         # ex-G2 must be introduced only via the update function.  
-        modified_new_labels =[new_label.replace('(ZdA )', '(ZdA G2)').replace('(Bening )', '(Bening G2)') for new_label in new_labels] 
+        modified_new_labels =[new_label.replace(NEW, G2) for new_label in new_labels] 
         
         # ex non-G2 may not be new: 
         new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
@@ -289,7 +292,7 @@ class DynamicLabelEncoder:
 
                 # A label that was non-G2 in the prev episode and now should be G2 again: 
                 else:
-                    correct_label = correct_label.replace('(ZdA )', '(ZdA G2)').replace('(Bening )', '(Bening G2)')
+                    correct_label = correct_label.replace(NEW, G2)
 
             try:
                 encoded_labels.append(self._label_to_int[correct_label])
@@ -714,8 +717,8 @@ class TigerBrain():
 
             buff_lengths = []
             for class_label, class_idx in self.encoder.get_mapping().items():
-                if mode==TRAINING and 'G2' in class_label: continue
-                if mode==INFERENCE and 'G1' in class_label: continue
+                if mode==TRAINING and G2 in class_label: continue
+                if mode==INFERENCE and G1 in class_label: continue
                 if class_idx in buffers.keys():
                     curr_buff_len = len(buffers[class_idx]) 
                     buff_lengths.append((class_label, curr_buff_len))
@@ -779,8 +782,8 @@ class TigerBrain():
 
     def get_zda_labels(self, batch):
         nl_labels = self.encoder.inverse_transform(batch.class_labels)
-        zda_labels = torch.Tensor(['G1' in nl_label for nl_label in nl_labels]).unsqueeze(-1)
-        test_zda_labels = torch.Tensor(['G2' in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        test_zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
         return zda_labels, test_zda_labels
 
 
@@ -1121,15 +1124,15 @@ class TigerBrain():
             test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
 
             if mode== TRAINING:
-                if 'G2' in class_nl_label:
+                if G2 in class_nl_label:
                     continue
-                if 'G1' in class_nl_label:
+                if G1 in class_nl_label:
                     zda_batch_labels = torch.ones(samples_per_class, 1)
                 
             if mode == INFERENCE:
-                if 'G1' in class_nl_label:
+                if G1 in class_nl_label:
                     continue
-                if 'G2' in class_nl_label:
+                if G2 in class_nl_label:
                     test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
             
             flow_batch, \

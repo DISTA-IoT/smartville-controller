@@ -3,6 +3,9 @@ import requests
 import torch
 import threading
 
+G2 = 'G2'
+NEW = 'NEW'
+
 class TigerEnvironment:
 
     def __init__(self, kwargs):
@@ -44,7 +47,7 @@ class TigerEnvironment:
         """
         
         # current unknowns according to the dict 
-        self.unknowns = [label for label in self.current_TRAINING_LABELS_DICT.values() if 'G2' in label]
+        self.unknowns = [label for label in self.current_TRAINING_LABELS_DICT.values() if G2 in label]
         self.cti_prices = {}
 
         for unknown in self.unknowns:
@@ -132,7 +135,7 @@ class TigerEnvironment:
                     # Take out the indicators of ZDA from the curriculum dicts.  
                     self.current_ZDA_DICT[ip] = False
                     self.current_TEST_ZDA_DICT[ip]  = False 
-                    new_label = str(label).replace('G2', '')
+                    new_label = str(label).replace(G2, NEW)
                     self.current_TRAINING_LABELS_DICT[ip] = new_label
                     # This will be used for changing the encoder values in the brain class  
                     updated_label = label
