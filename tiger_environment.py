@@ -20,7 +20,6 @@ class TigerEnvironment:
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
-        self.reset()
         
 
     def reset_intelligence(self):
@@ -174,7 +173,7 @@ class TigerEnvironment:
     def restart_traffic(self):
         print(f'stopping traffic...')
         response = requests.get(self.container_manager_ep+'stop_traffic')
-        time.sleep(3)
+        time.sleep(0.1)
         print(f'launching traffic...')
         response = requests.get(self.container_manager_ep+'launch_traffic')
         if response.status_code == 200:
