@@ -349,9 +349,6 @@ class DynamicLabelEncoder:
     @thread_safe  
     def reset_original_labels(self):
 
-        # we are keeping the count of known training classes each time.   
-        training_classes_to_subtract = 0
-
         for original_label, new_label in self._old_labels.items():
 
             # the old_labels dictionary contains as entries as CTI prototypes 
@@ -369,8 +366,6 @@ class DynamicLabelEncoder:
         # empty this dict for a new episode 
         self._old_labels = {}
 
-        # tell the caller how many classes to subtract from the count.  
-        return training_classes_to_subtract
 
 class TigerBrain():
 
@@ -442,7 +437,6 @@ class TigerBrain():
     
     def init_intelligence(self):
         self.current_known_classes_count = 0
-        self.current_training_known_classes_count = 0
         self.current_test_known_classes_count = 0
         self.inference_allowed = False
         self.experience_learning_allowed = False
@@ -459,8 +453,7 @@ class TigerBrain():
 
     def reset_environment(self):
         self.env.reset()    
-        training_classes_to_subtract = self.encoder.reset_original_labels()
-        self.current_training_known_classes_count -= training_classes_to_subtract
+        self.encoder.reset_original_labels()
         self.init_inference_neural_modules(LEARNING_RATE, self.seed)
 
     def init_agents(self, kwargs):
@@ -505,12 +498,6 @@ class TigerBrain():
             self.logger_instance.info(f'New class found: {new_class}')
 
         self.current_known_classes_count += 1
-        
-        if not 'G2' in new_class:
-            self.current_training_known_classes_count += 1 
-
-        if not 'G1' in new_class:
-            self.current_test_known_classes_count += 1
         
         self.add_replay_buffer(new_class)
         self.reset_train_cms()
@@ -830,7 +817,7 @@ class TigerBrain():
                                 samples_per_class=self.replay_buff_batch_size,
                                 mode=INFERENCE)
         
-        aux_query_mask = self.get_canonical_query_mask(INFERENCE)
+        aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
         online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
 
         merged_query_mask = torch.cat([
@@ -1193,7 +1180,7 @@ class TigerBrain():
             test_zda_labels=balanced_test_zda_labels)
 
 
-    def get_canonical_query_mask(self, phase):
+    def get_canonical_query_mask(self, whole_batch_size):
         """
         The query mask differentiates support from query samples. 
         Support samples are used for centroid computation.
@@ -1213,15 +1200,11 @@ class TigerBrain():
         (the mask will have dimensions N times M, where N is the number of classes in the knowledge base)
         """
 
-        # The unique difference between training and evaluation cases is that the number of known classes might be different, so 
-        # we take that number into account for creating the query mask... 
-        if phase == TRAINING:
-            class_count = self.current_training_known_classes_count
-        elif phase == INFERENCE:
-            class_count = self.current_test_known_classes_count
+        N = whole_batch_size // self.replay_buff_batch_size
+        M = self.replay_buff_batch_size
 
         query_mask = torch.ones(
-            size=(class_count, self.replay_buff_batch_size),
+            size=(N, M),
             device=self.device).to(torch.bool)
         
         # This is a trick for labelling withouth messing around with indexes.
@@ -1368,7 +1351,7 @@ class TigerBrain():
         # get zda labels for the online batch
         training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch)
         
-        query_mask = self.get_canonical_query_mask(TRAINING)
+        query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
         logits, hidden_vectors, predicted_kernel = self.infer(
             batch=training_batch,
@@ -1506,9 +1489,6 @@ class TigerBrain():
         updates_dict = self.env.perform_epistemic_action(current_action)
 
         if updates_dict['updated_label'] is not None:
-            
-            # we are adding a label to our dataset. Update the known-class counter:
-            self.current_training_known_classes_count += 1 
 
             add_replay_buff = self.encoder.update_label(
                 old_label=updates_dict['updated_label'],
@@ -1537,7 +1517,7 @@ class TigerBrain():
                                     samples_per_class=self.replay_buff_batch_size,
                                     mode=INFERENCE)
             
-            query_mask = self.get_canonical_query_mask(INFERENCE)
+            query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
 
             assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
 
