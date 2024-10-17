@@ -1156,8 +1156,6 @@ class TigerBrain():
                     node_feat_batch, \
                         batch_labels = replay_buff.sample(samples_per_class)
             
-             
-
             if init:
                 balanced_flow_batch = flow_batch
                 balanced_labels = batch_labels
