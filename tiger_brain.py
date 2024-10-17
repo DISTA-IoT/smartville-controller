@@ -784,7 +784,7 @@ class TigerBrain():
 
     def get_zda_labels(self, batch):
         nl_labels = self.encoder.inverse_transform(batch.class_labels)
-        zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        zda_labels = torch.Tensor([G1 in nl_label or NEW in nl_label for nl_label in nl_labels]).unsqueeze(-1)
         test_zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
         return zda_labels, test_zda_labels
 
@@ -986,9 +986,9 @@ class TigerBrain():
                                             f'Online {INFERENCE} KR accuracy: {kr_precision}')
             
             if self.wbt:
-                self.wbl.log({AGENT+'_'+'reward': batch_reward, STEP_LABEL:self.step_counter})
-                self.wbl.log({AGENT+'_'+'budget': self.env.current_budget, STEP_LABEL:self.step_counter})
-
+                self.wbl.log({AGENT+'_'+'reward': batch_reward}, step=self.step_counter)
+                self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
+                if end_signal: self.wbl.log({'ending_episode_signal':True}, step=self.step_counter)
             self.classifier.train()
             self.confidence_decoder.train()
 
@@ -1023,8 +1023,8 @@ class TigerBrain():
 
         # report progress
         if self.wbt:
-            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+CS_ACC: acc.item()}, step=self.step_counter)
+            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item()}, step=self.step_counter)
 
         return cs_loss, acc
 
@@ -1291,9 +1291,9 @@ class TigerBrain():
 
         
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item()}, step=self.step_counter)
+            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item()}, step=self.step_counter)
+            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance}, step=self.step_counter)
 
         """
         if self.AI_DEBUG: 
@@ -1330,10 +1330,9 @@ class TigerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt:
-                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.step_counter})
-                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.step_counter})
-
-                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.step_counter})
+                self.wbl.log({mode+'_'+KR_ARI: kr_ari}, step=self.step_counter)
+                self.wbl.log({mode+'_'+KR_NMI: kr_nmi}, step=self.step_counter)
+                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item()}, step=self.step_counter)
             """
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
@@ -1571,9 +1570,9 @@ class TigerBrain():
                                         f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
                                         f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
-            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.step_counter})
-            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.step_counter})
+            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item()}, step=self.step_counter)
+            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item()}, step=self.step_counter)
+            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari}, step=self.step_counter)
 
         """
         if not self.eval:
@@ -1801,7 +1800,7 @@ class TigerBrain():
         plt.title(f'{phase} Confusion Matrix')
         
         if self.wbl is not None:
-            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt), STEP_LABEL:self.step_counter})
+            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt)}, step=self.step_counter)
 
         plt.cla()
         plt.close()
@@ -1857,7 +1856,7 @@ class TigerBrain():
         plt.tight_layout()
 
         if self.wbl is not None:
-            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)})
+            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)}, step=self.step_counter)
 
         plt.cla()
         plt.close()
@@ -1906,7 +1905,7 @@ class TigerBrain():
         plt.tight_layout()
         
         if self.wbl is not None:
-            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)})
+            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)}, step=self.step_counter)
 
         plt.cla()
         plt.close()

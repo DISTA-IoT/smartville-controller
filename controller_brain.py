@@ -870,9 +870,9 @@ class ControllerBrain():
 
         
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.backprop_counter})
+            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item()}, step=self.backprop_counter)
+            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item()}, step=self.backprop_counter)
+            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance}, step=self.backprop_counter)
 
         """
         if self.AI_DEBUG: 
@@ -909,10 +909,9 @@ class ControllerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt:
-                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.backprop_counter})
-                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.backprop_counter})
-
-                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.backprop_counter})
+                self.wbl.log({mode+'_'+KR_ARI: kr_ari}, step=self.backprop_counter)
+                self.wbl.log({mode+'_'+KR_NMI: kr_nmi}, step=self.backprop_counter)
+                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item()}, step=self.backprop_counter)
             """
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
@@ -1058,9 +1057,9 @@ class ControllerBrain():
                                     f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f}')
             self.logger_instance.info(f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
-            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.backprop_counter})
+            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item()}, step=self.backprop_counter)
+            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item()}, step=self.backprop_counter)
+            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari}, step=self.backprop_counter)
 
         if not self.eval:
             self.check_kr_progress(curr_kr_acc=mean_eval_kr_ari)
@@ -1177,8 +1176,8 @@ class ControllerBrain():
 
         # report progress
         if self.wbt:
-            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.backprop_counter})
-            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.backprop_counter})
+            self.wbl.log({mode+'_'+CS_ACC: acc.item()}, step=self.backprop_counter)
+            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item()}, step=self.backprop_counter)
 
         return cs_loss, acc
     
@@ -1322,7 +1321,7 @@ class ControllerBrain():
         plt.title(f'{phase} Confusion Matrix')
         
         if self.wbl is not None:
-            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt), STEP_LABEL:self.backprop_counter})
+            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt)}, step=self.backprop_counter)
 
         plt.cla()
         plt.close()
@@ -1378,7 +1377,7 @@ class ControllerBrain():
         plt.tight_layout()
 
         if self.wbl is not None:
-            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)})
+            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)}, step=self.backprop_counter)
 
         plt.cla()
         plt.close()
@@ -1427,7 +1426,7 @@ class ControllerBrain():
         plt.tight_layout()
         
         if self.wbl is not None:
-            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)})
+            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)}, step=self.backprop_counter)
 
         plt.cla()
         plt.close()
