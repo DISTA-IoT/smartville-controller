@@ -1,10 +1,10 @@
 import time
 import requests
-import torch
 import threading
 
 G2 = 'G2'
 NEW = 'NEW'
+
 
 class TigerEnvironment:
 
@@ -76,9 +76,9 @@ class TigerEnvironment:
 
 
     def has_episode_ended(self, current_steps):
-        if (self.current_budget < self.min_budget) \
-                or (self.current_budget > self.max_budget) \
-                or current_steps >= self.max_episode_steps:
+        if self.current_budget < self.min_budget \
+                or current_steps % self.max_episode_steps == 0\
+                or self.current_budget > self.max_budget:
             return True
         return False
 
