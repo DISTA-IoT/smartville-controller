@@ -918,11 +918,20 @@ class TigerBrain():
             # get the cluster_passing_mask:
             cluster_passing_mask = cluster_action_signals == 0 
 
-            # benign traffic which is blocked comes with a cost:
-            benign_mask = torch.Tensor([BENIGN in label for label in nl_labels])  
+            # benign traffic mask:
+            benign_rewards = torch.relu(sample_rewards) 
 
-            # get the cluster-specific rewards  
+            # potential benign rewards in each cluster  
+            benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
+ 
+            # blocked benign traffic implies to pay a cost:
+            benign_blocking_cost_per_cluster = 4 * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
+
+            # get the cluster-specific passing rewards  
             rewards_per_cluster= rewards_per_cluster[~missing_clusters] *  cluster_passing_mask
+
+            # subtract the price of neglecting benign traffic
+            rewards_per_cluster -= benign_blocking_cost_per_cluster
 
             # get the epistemic action mask:
             purchased_mask = cluster_action_signals == 2 
