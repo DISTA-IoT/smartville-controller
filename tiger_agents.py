@@ -15,7 +15,7 @@ class DDQNAgent:
         self.gamma = 0.99  # discount rate
         self.epsilon = 1.0  # exploration rate
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = float((kwargs['greedy_decay'] if 'greedy_decay' in kwargs else 0.995))
         self.model = DQN(state_size, action_size)
         self.target_model = DQN(state_size, action_size)
         self.update_target_model()
