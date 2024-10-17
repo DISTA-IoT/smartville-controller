@@ -114,6 +114,8 @@ ANOMALY_DETECTION = 'AD'
 NEW = 'NEW'
 G1 = 'G1'
 G2 = 'G2'
+BENIGN = 'Benign'
+
 
 def thread_safe(method):
     @wraps(method)
@@ -915,7 +917,10 @@ class TigerBrain():
 
             # get the cluster_passing_mask:
             cluster_passing_mask = cluster_action_signals == 0 
-            
+
+            # benign traffic which is blocked comes with a cost:
+            benign_mask = torch.Tensor([BENIGN in label for label in nl_labels])  
+
             # get the cluster-specific rewards  
             rewards_per_cluster= rewards_per_cluster[~missing_clusters] *  cluster_passing_mask
 

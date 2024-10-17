@@ -17,6 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 import torch
 
+BENIGN = "Benign"
 
 class CircularBuffer:
     def __init__(self, buffer_size=10, feature_size=4):
@@ -59,7 +60,7 @@ class Flow():
                             feature_size=flow_feat_dim)
         self.packets_tensor = None
         self.node_feats = None
-        self.element_class = "Bening"
+        self.element_class = BENIGN
         self.zda = False
         self.test_zda = False
 
