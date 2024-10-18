@@ -411,6 +411,7 @@ class TigerBrain():
         self.report_step_freq = report_step_freq 
         self.use_neural_AD = (kwargs['use_neural_AD'].lower() == 'true' if 'use_neural_AD' in kwargs else True)
         self.use_neural_KR = (kwargs['use_neural_KR'].lower()  == 'true' if 'use_neural_KR' in kwargs else True)
+        self.online_evaluation = (kwargs['online_evaluation'].lower() == 'true' if 'online_evaluation' in kwargs else True) 
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
@@ -439,9 +440,7 @@ class TigerBrain():
     def init_intelligence(self):
         self.current_known_classes_count = 0
         self.current_test_known_classes_count = 0
-        self.inference_allowed = False
-        self.experience_learning_allowed = False
-        self.eval_allowed = False 
+        self.batch_processing_allowed = False
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
@@ -481,10 +480,11 @@ class TigerBrain():
 
     
     def add_replay_buffer(self, class_name):
-        self.inference_allowed = False
-        self.experience_learning_allowed = False
-        self.eval_allowed = False 
-                
+
+        # take care of waiting to have a minimum quantity of samples for each new class before
+        # doing prototypical learning. 
+        self.batch_processing_allowed = False
+        
         self.replay_buffers[self.current_known_classes_count-1] = RawReplayBuffer(
             capacity=REPLAY_BUFFER_MAX_CAPACITY,
             batch_size=self.replay_buff_batch_size,
@@ -715,25 +715,18 @@ class TigerBrain():
                     print('something went wrong')
                     assert 1 == 0
 
-        if not self.experience_learning_allowed or not self.inference_allowed or not self.eval_allowed:
+        if not self.batch_processing_allowed:
 
             buff_lengths = []
             for class_label, class_idx in self.encoder.get_mapping().items():
-                if mode==TRAINING and G2 in class_label: continue
-                if mode==INFERENCE and G1 in class_label: continue
-                if class_idx in buffers.keys():
-                    curr_buff_len = len(buffers[class_idx]) 
-                    buff_lengths.append((class_label, curr_buff_len))
+            
+                curr_buff_len = len(buffers[class_idx]) 
+                buff_lengths.append((class_label, curr_buff_len))
       
-            if mode == TRAINING:
-                self.experience_learning_allowed = torch.all(
+            self.batch_processing_allowed = torch.all(
                     torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
 
-            if mode == INFERENCE:
-                self.inference_allowed = self.eval_allowed = torch.all(
-                    torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))
-
-            if self.AI_DEBUG: self.logger_instance.info(f'{mode} Buffer lengths: {buff_lengths}')
+            if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
 
 
     def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
@@ -782,16 +775,22 @@ class TigerBrain():
         return mask   
 
 
-    def get_zda_labels(self, batch):
+    def get_zda_labels(self, batch, mode):
         """
+        Get the zda labels based on natural-language labels
+        - If we are in TRAINING mode, then we are doing experience learning and we should not have any G2 class.
+        - If we are in INFERENCE mode, then we are doing online inference or evaluation and we should not label G1s as anomalies 
+        because they are not.
         @TODO optimise  
         """
+
         nl_labels = self.encoder.inverse_transform(batch.class_labels)
-        zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
-        test_zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
         
-        # a test-time zda has also the zda label 
-        test_zda_labels += zda_labels
+        if mode == TRAINING:
+            test_zda_labels = torch.zeros((len(nl_labels),1))
+            zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        elif mode == INFERENCE:
+            test_zda_labels = zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
 
         return zda_labels, test_zda_labels
 
@@ -817,7 +816,7 @@ class TigerBrain():
         updates_dict  = None
 
         # get zda labels for the online batch
-        online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch)
+        online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch, mode=INFERENCE)
 
         # sample from the replay buffers
         aux_batch = self.sample_from_replay_buffers(
@@ -995,11 +994,15 @@ class TigerBrain():
                 self.wbl.log({AGENT+'_'+'reward': batch_reward}, step=self.step_counter)
                 self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
                 if end_signal: self.wbl.log({'ending_episode_signal':True}, step=self.step_counter)
+            
+            # re-activate gradient tracking on inference modules: 
             self.classifier.train()
             self.confidence_decoder.train()
 
+            # eventually reset the environment. 
             if end_signal: self.reset_environment()
 
+            # communicate eventual epistemic changes to the caller   
             return updates_dict
 
 
@@ -1122,11 +1125,9 @@ class TigerBrain():
                 (batch.node_features if self.use_node_feats else None),  
                 batch_labels=batch.class_labels,
                 mode=mode)
-            
-            if self.inference_allowed:
-                updates_dict = self.online_inference(batch)
 
-            if self.experience_learning_allowed:
+            if self.batch_processing_allowed:
+                updates_dict = self.online_inference(batch)
                 self.experience_learning()
 
         return updates_dict        
@@ -1374,7 +1375,7 @@ class TigerBrain():
                 mode=TRAINING)
         
         # get zda labels for the online batch
-        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch)
+        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
         
         query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
@@ -1449,7 +1450,7 @@ class TigerBrain():
             # Update the target Q Network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
             
-            if self.eval_allowed:
+            if self.online_evaluation:
                 self.evaluate_models()
             
             """

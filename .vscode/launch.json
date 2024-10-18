@@ -50,11 +50,11 @@
             "args": [
                 "samples.pretty_log",
                 "smartController.tiger",
-                "--wb_tracking=True",
+                "--wb_tracking=False",
                 "--ai_debug=True",
                 "--multi_class=True",
-                "--init_k_shot=5",
-                "--batch_size=20",
+                "--init_k_shot=4",
+                "--batch_size=8",
                 "--node_features=False",
                 "--wb_project_name=TIGER",
                 "--wb_run_name=HEavynewisg1",
@@ -66,7 +66,8 @@
                 "--max_episode_steps=900",
                 "--greedy_decay=0.999",
                 "--use_neural_AD=True",
-                "--use_neural_KR=True"
+                "--use_neural_KR=True",
+                "--online_evaluation=False"
             ],
             "justMyCode": true
         },

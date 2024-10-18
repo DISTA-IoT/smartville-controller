@@ -614,9 +614,10 @@ def launch(**kwargs):
         - 'min_budget' (int, optional): The minimum budget that the agent can reach, after reaching this budget, the episode will restart. (Default -5)
         - 'max_budget' (int, optional): The maximum budget that the agent can reach, after reaching this budget, the episode will restart. (Default 10) 
         - 'intelligence_episode_steps' (int, optional): The number of steps that the intelligence episode will last. (Default 50)
-        - 'online_evaluation_rounds' (int, optional): The number of batches for online evaluation. (Default 50)
+        - 'online_evaluation_rounds' (int, optional): The number of batches for online evaluation. (Default 50) Only used when 'online_evaluation' is True
         - 'max_episode_steps' (int, optional): The maximum number of steps per episode, in case the budget limits are not reached.) (Default 70)
         - 'greedy_decay' (float): epsilon-greedy decay for balancing exploration-exploitation. (default: 0.995)
+        - 'online_evaluation' (bool, optional): perform online evaluation rounds each 'report_step_freq' steps. (Default is True)
     """
     global FLOWSTATS_FREQ_SECS
 
