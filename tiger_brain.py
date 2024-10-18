@@ -409,8 +409,8 @@ class TigerBrain():
         self.k_shot = init_k_shot
         self.replay_buff_batch_size = replay_buffer_batch_size
         self.report_step_freq = report_step_freq 
-        self.use_neural_AD = True
-        self.use_neural_KR = True
+        self.use_neural_AD = (kwargs['use_neural_AD'].lower() == 'true' if 'use_neural_AD' in kwargs else True)
+        self.use_neural_KR = (kwargs['use_neural_KR'].lower()  == 'true' if 'use_neural_KR' in kwargs else True)
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
@@ -783,9 +783,16 @@ class TigerBrain():
 
 
     def get_zda_labels(self, batch):
+        """
+        @TODO optimise  
+        """
         nl_labels = self.encoder.inverse_transform(batch.class_labels)
-        zda_labels = torch.Tensor([G1 in nl_label or NEW in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
         test_zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        
+        # a test-time zda has also the zda label 
+        test_zda_labels += zda_labels
+
         return zda_labels, test_zda_labels
 
 
@@ -802,7 +809,7 @@ class TigerBrain():
         3. acquire a TCI label  (epistemic action)
         """
         
-        # do not run gradients on the inference modules, this is unlabelled traffic!
+        # do not run gradients on the inference modules!
         self.classifier.eval()
         self.confidence_decoder.eval()
 
@@ -811,7 +818,6 @@ class TigerBrain():
 
         # get zda labels for the online batch
         online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch)
-
 
         # sample from the replay buffers
         aux_batch = self.sample_from_replay_buffers(
@@ -826,7 +832,7 @@ class TigerBrain():
                                 online_query_mask
                                 ])
         
-        # we report accuracy only over online samples
+        # we report and compute rewards only over online samples
         accuracy_mask = torch.cat([
                                 torch.zeros_like(aux_query_mask), 
                                 online_query_mask
@@ -1140,14 +1146,21 @@ class TigerBrain():
             test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
 
             if mode== TRAINING:
+                # we cannot use test-time anomalies for backproping gradients on our inference module, (by definition) 
                 if G2 in class_nl_label:
                     continue
+                # we use fake-anomalies, (i.e. clusters we know but that we can label as anomalies to teach the inference
+                # module to learn the cluster separation distribution and be able to detect OOD test-time anomalies or G2 classes) 
                 if G1 in class_nl_label:
                     zda_batch_labels = torch.ones(samples_per_class, 1)
-                
+            
+            # in inference, we sample from the replay buffers to build an auxiliary batch for classification.
+            # the auxiliary batch is combined with the online batch, which can potentially contain any record, 
+            # (also train-time or fake-anomalies, i.e. G1 classes) for this reason, the aux batch contains also 
+            # every class, but we do not treat G1 as anomalies anymore, as we are not interested on making inferences
+            # on their benign/malicious nature, as we already known what they are, so the unique anomalies here are the eventual G2s
+            # that are still-to-buy as CTI 
             if mode == INFERENCE:
-                if G1 in class_nl_label:
-                    continue
                 if G2 in class_nl_label:
                     test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
             
