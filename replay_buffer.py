@@ -93,3 +93,35 @@ class ReplayBuffer():
 
     def __len__(self):
         return len(self.buffer)
+    
+
+
+class RawReplayBuffer():
+    """
+    This buffer is not using binary labels for zdas and test zdas,
+    instead, it will ask the zda labellings to the dynamic curriculum in the caller.
+    """
+    def __init__(self, capacity, batch_size, seed):
+        self.batch_size = batch_size
+        self.buffer = deque(maxlen=capacity)
+        random.seed(seed)
+
+
+    def push(self, flow_state, packet_state, node_state, label):
+        self.buffer.append((flow_state, packet_state, node_state, label))
+
+
+    def sample(self, num_of_samples):
+        
+        batch = random.sample(self.buffer, num_of_samples)
+
+        flow_state_batch, packet_state_batch, node_state_batch, label_batch = zip(*batch)
+        
+        return torch.vstack(flow_state_batch), \
+            (None if packet_state_batch[0] is None else torch.vstack(packet_state_batch)), \
+            (None if node_state_batch[0] is None else torch.vstack(node_state_batch)), \
+                torch.vstack(label_batch)
+
+
+    def __len__(self):
+        return len(self.buffer)

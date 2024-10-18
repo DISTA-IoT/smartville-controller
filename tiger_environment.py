@@ -1,7 +1,10 @@
 import time
 import requests
-import torch
 import threading
+
+G2 = 'G2'
+NEW = 'NEW'
+
 
 class TigerEnvironment:
 
@@ -10,7 +13,7 @@ class TigerEnvironment:
         host_ip_addr = kwargs['host_ip_addr'] 
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         self.init_budget = (kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.flow_rewards_dict = self.get_init_flow_rewards()
+        self.init_flow_rewards_dict = self.flow_rewards_dict = self.get_init_flow_rewards()
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
@@ -20,8 +23,8 @@ class TigerEnvironment:
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
-        self.reset()
-        
+        self.max_episode_steps = kwargs['max_episode_steps'] 
+
 
     def reset_intelligence(self):
         with self.lock:
@@ -29,7 +32,7 @@ class TigerEnvironment:
             self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
             self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
             self.update_cti_options()
-            self.flow_rewards_dict = self.get_init_flow_rewards()
+            self.flow_rewards_dict = self.init_flow_rewards_dict
             
             return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                     'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
@@ -45,7 +48,7 @@ class TigerEnvironment:
         """
         
         # current unknowns according to the dict 
-        self.unknowns = [label for label in self.current_TRAINING_LABELS_DICT.values() if 'G2' in label]
+        self.unknowns = [label for label in self.current_TRAINING_LABELS_DICT.values() if G2 in label]
         self.cti_prices = {}
 
         for unknown in self.unknowns:
@@ -72,11 +75,12 @@ class TigerEnvironment:
         return list(self.current_cti_options.values())
 
 
-    def has_episode_ended(self):
-        if self.current_budget > self.max_budget:
+    def has_episode_ended(self, current_steps):
+        if self.current_budget < self.min_budget \
+                or current_steps % self.max_episode_steps == 0\
+                or self.current_budget > self.max_budget:
             return True
-        else:
-            return self.current_budget < self.min_budget
+        return False
 
 
     def has_intelligence_episode_ended(self):
@@ -102,7 +106,7 @@ class TigerEnvironment:
 
 
     def reset(self):
-        print('TIGER ENV: restarting mitigation episode!')
+        print('TIGER ENV: restarting episode!')
         self.restart_budget()
         self.reset_intelligence()
 
@@ -133,7 +137,7 @@ class TigerEnvironment:
                     # Take out the indicators of ZDA from the curriculum dicts.  
                     self.current_ZDA_DICT[ip] = False
                     self.current_TEST_ZDA_DICT[ip]  = False 
-                    new_label = str(label).replace('G2', '')
+                    new_label = str(label).replace(G2, NEW)
                     self.current_TRAINING_LABELS_DICT[ip] = new_label
                     # This will be used for changing the encoder values in the brain class  
                     updated_label = label
@@ -174,7 +178,7 @@ class TigerEnvironment:
     def restart_traffic(self):
         print(f'stopping traffic...')
         response = requests.get(self.container_manager_ep+'stop_traffic')
-        time.sleep(3)
+        time.sleep(0.1)
         print(f'launching traffic...')
         response = requests.get(self.container_manager_ep+'launch_traffic')
         if response.status_code == 200:

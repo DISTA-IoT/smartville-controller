@@ -17,7 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 from smartController.neural_modules import  MultiClassFlowClassifier, ThreeStreamMulticlassFlowClassifier, \
         TwoStreamMulticlassFlowClassifier, KernelRegressionLoss, ConfidenceDecoder
-from smartController.replay_buffer import ReplayBuffer, Batch
+from smartController.replay_buffer import RawReplayBuffer, Batch
 import os
 import torch
 import torch.optim as optim
@@ -110,6 +110,11 @@ STEP_LABEL = 'step'
 ANOMALY_BALANCE = 'ANOMALY_BALANCE'
 CLOSED_SET = 'CS'
 ANOMALY_DETECTION = 'AD'
+
+NEW = 'NEW'
+G1 = 'G1'
+G2 = 'G2'
+BENIGN = 'Benign'
 
 
 def thread_safe(method):
@@ -249,10 +254,10 @@ class DynamicLabelEncoder:
         new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
         # Handling sync erros:
-        # notice that ex-G2 labels, that contain the '(ZdA )' or '(Bening )' substring
+        # notice that ex-G2 labels, that contain the 'NEW' substring
         
         # ex-G2 must be introduced only via the update function.  
-        modified_new_labels =[new_label.replace('(ZdA )', '(ZdA G2)').replace('(Bening )', '(Bening G2)') for new_label in new_labels] 
+        modified_new_labels =[new_label.replace(NEW, G2) for new_label in new_labels] 
         
         # ex non-G2 may not be new: 
         new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
@@ -289,7 +294,7 @@ class DynamicLabelEncoder:
 
                 # A label that was non-G2 in the prev episode and now should be G2 again: 
                 else:
-                    correct_label = correct_label.replace('(ZdA )', '(ZdA G2)').replace('(Bening )', '(Bening G2)')
+                    correct_label = correct_label.replace(NEW, G2)
 
             try:
                 encoded_labels.append(self._label_to_int[correct_label])
@@ -320,6 +325,7 @@ class DynamicLabelEncoder:
 
         logger.info(f'ENCODER: Changing  {old_label} to {new_label}')
 
+        # did we actually know the old version of this label? 
         if old_label in self._label_to_int:
 
             # get the numeric mapping: 
@@ -333,7 +339,9 @@ class DynamicLabelEncoder:
             self._int_to_label[current_val] = new_label
         
         else:
+
             logger.info(f'ENCODER:  Added {new_label} because {old_label} was not found')
+            
             self.add_class(new_label)
             add_replay_buffer_signal = True
 
@@ -342,6 +350,22 @@ class DynamicLabelEncoder:
 
         return add_replay_buffer_signal
 
+
+    @thread_safe  
+    def reset_original_labels(self):
+
+        for original_label, new_label in self._old_labels.items():
+
+            # reset the label of the class in the transformation dict:
+            code = self._label_to_int[new_label]
+            del self._label_to_int[new_label]
+            self._label_to_int[original_label] = code
+            
+            # also in the inverse dict:
+            self._int_to_label[code] = new_label    
+
+        # empty this dict for a new episode 
+        self._old_labels = {}
 
 
 class TigerBrain():
@@ -385,13 +409,13 @@ class TigerBrain():
         self.k_shot = init_k_shot
         self.replay_buff_batch_size = replay_buffer_batch_size
         self.report_step_freq = report_step_freq 
-        self.use_neural_AD = True
-        self.use_neural_KR = True
+        self.use_neural_AD = (kwargs['use_neural_AD'].lower() == 'true' if 'use_neural_AD' in kwargs else True)
+        self.use_neural_KR = (kwargs['use_neural_KR'].lower()  == 'true' if 'use_neural_KR' in kwargs else True)
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
-        self.reset_environment()
         self.init_agents(kwargs)
+        self.init_intelligence()
 
         if self.wbt:
 
@@ -412,25 +436,26 @@ class TigerBrain():
                 config_dict=kwargs).wb_logger        
 
     
-    def reset_environment(self):
+    def init_intelligence(self):
+        self.current_known_classes_count = 0
+        self.current_test_known_classes_count = 0
         self.inference_allowed = False
         self.experience_learning_allowed = False
         self.eval_allowed = False 
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
-        self.current_known_classes_count = 0
-        self.current_training_known_classes_count = 0
-        self.current_test_known_classes_count = 0
         self.reset_train_cms()
         self.reset_test_cms()
-        # reseting the label encoder should not be a problem for prototypical classification...
         self.encoder = DynamicLabelEncoder()
         self.replay_buffers = {}
-        self.test_replay_buffers = {}
-        self.init_neural_modules(LEARNING_RATE, self.seed)
-        self.env.reset()
+        self.reset_environment()
 
+
+    def reset_environment(self):
+        self.env.reset()    
+        self.encoder.reset_original_labels()
+        self.init_inference_neural_modules(LEARNING_RATE, self.seed)
 
     def init_agents(self, kwargs):
         
@@ -459,22 +484,14 @@ class TigerBrain():
         self.inference_allowed = False
         self.experience_learning_allowed = False
         self.eval_allowed = False 
-        
-        if not 'G2' in class_name:
-            self.replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
-                capacity=REPLAY_BUFFER_MAX_CAPACITY,
-                batch_size=self.replay_buff_batch_size,
-                seed=self.seed)
-            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
-                                        ' in the training replay buffers')
-        if not 'G1' in class_name:
-            self.test_replay_buffers[self.current_known_classes_count-1] = ReplayBuffer(
-                        capacity=REPLAY_BUFFER_MAX_CAPACITY,
-                        batch_size=self.replay_buff_batch_size,
-                        seed=self.seed)
-            self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name}' +\
-                                      ' in the test replay buffers')
-
+                
+        self.replay_buffers[self.current_known_classes_count-1] = RawReplayBuffer(
+            capacity=REPLAY_BUFFER_MAX_CAPACITY,
+            batch_size=self.replay_buff_batch_size,
+            seed=self.seed)
+        self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
+                                    ' in the replay buffers')
+    
 
     @thread_safe
     def add_class_to_knowledge_base(self, new_class):
@@ -482,10 +499,7 @@ class TigerBrain():
             self.logger_instance.info(f'New class found: {new_class}')
 
         self.current_known_classes_count += 1
-        if not 'G2' in new_class:
-            self.current_training_known_classes_count += 1 
-        if not 'G1' in new_class:
-            self.current_test_known_classes_count += 1
+        
         self.add_replay_buffer(new_class)
         self.reset_train_cms()
         self.reset_test_cms()
@@ -509,7 +523,7 @@ class TigerBrain():
             device=self.device)
         
 
-    def init_neural_modules(self, lr, seed):
+    def init_inference_neural_modules(self, lr, seed):
         torch.manual_seed(seed)
         self.confidence_decoder = ConfidenceDecoder(device=self.device)
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
@@ -673,8 +687,6 @@ class TigerBrain():
             packet_input_batch,
             node_feat_input_batch,
             batch_labels,
-            zda_batch_labels,
-            test_zda_batch_labels,
             mode):
         """
         Don't know why, but you can have more than one sample
@@ -684,9 +696,9 @@ class TigerBrain():
         Otherwise we will have bad surprises when sampling from them!!!
         (i.e. sampling more elements than those requested!)
         """
-        buffers = (self.replay_buffers if mode == TRAINING else self.test_replay_buffers)
-
         unique_labels = torch.unique(batch_labels)
+
+        buffers = self.replay_buffers
 
         for label in unique_labels:
 
@@ -698,9 +710,7 @@ class TigerBrain():
                         flow_state=flow_input_batch[mask][sample_idx].unsqueeze(0), 
                         packet_state=(packet_input_batch[mask][sample_idx].unsqueeze(0) if self.use_packet_feats else None),
                         node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
-                        label=batch_labels[mask][sample_idx].unsqueeze(0),
-                        zda_label=zda_batch_labels[mask][sample_idx].unsqueeze(0),
-                        test_zda_label=test_zda_batch_labels[mask][sample_idx].unsqueeze(0))
+                        label=batch_labels[mask][sample_idx].unsqueeze(0))
                 except:
                     print('something went wrong')
                     assert 1 == 0
@@ -709,13 +719,12 @@ class TigerBrain():
 
             buff_lengths = []
             for class_label, class_idx in self.encoder.get_mapping().items():
-
+                if mode==TRAINING and G2 in class_label: continue
+                if mode==INFERENCE and G1 in class_label: continue
                 if class_idx in buffers.keys():
                     curr_buff_len = len(buffers[class_idx]) 
                     buff_lengths.append((class_label, curr_buff_len))
-
-            if self.AI_DEBUG: self.logger_instance.info(f'{mode} Buffer lengths: {buff_lengths}')
-
+      
             if mode == TRAINING:
                 self.experience_learning_allowed = torch.all(
                     torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
@@ -723,6 +732,8 @@ class TigerBrain():
             if mode == INFERENCE:
                 self.inference_allowed = self.eval_allowed = torch.all(
                     torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))
+
+            if self.AI_DEBUG: self.logger_instance.info(f'{mode} Buffer lengths: {buff_lengths}')
 
 
     def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
@@ -750,8 +761,8 @@ class TigerBrain():
         node_features = (torch.vstack([left_batch.node_features, rigth_batch.node_features]) if self.use_node_feats else None)
 
         class_labels = torch.cat([left_batch.class_labels.squeeze(1), rigth_batch.class_labels]).unsqueeze(1)
-        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), rigth_batch.zda_labels]).unsqueeze(1)
-        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), rigth_batch.test_zda_labels]).unsqueeze(1)
+        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), rigth_batch.zda_labels.squeeze(1)]).unsqueeze(1)
+        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), rigth_batch.test_zda_labels.squeeze(1)]).unsqueeze(1)
 
         return Batch(
                 flow_features=flow_features,
@@ -771,6 +782,20 @@ class TigerBrain():
         return mask   
 
 
+    def get_zda_labels(self, batch):
+        """
+        @TODO optimise  
+        """
+        nl_labels = self.encoder.inverse_transform(batch.class_labels)
+        zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        test_zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+        
+        # a test-time zda has also the zda label 
+        test_zda_labels += zda_labels
+
+        return zda_labels, test_zda_labels
+
+
     def online_inference(
             self, 
             online_batch):
@@ -784,19 +809,22 @@ class TigerBrain():
         3. acquire a TCI label  (epistemic action)
         """
         
-        # do not run gradients on the inference modules, this is unlabelled traffic!
+        # do not run gradients on the inference modules!
         self.classifier.eval()
         self.confidence_decoder.eval()
 
         # updates_dict helps managing eventual epistemic actions
         updates_dict  = None
-        
+
+        # get zda labels for the online batch
+        online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch)
+
         # sample from the replay buffers
         aux_batch = self.sample_from_replay_buffers(
                                 samples_per_class=self.replay_buff_batch_size,
                                 mode=INFERENCE)
         
-        aux_query_mask = self.get_canonical_query_mask(INFERENCE)
+        aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
         online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
 
         merged_query_mask = torch.cat([
@@ -804,7 +832,7 @@ class TigerBrain():
                                 online_query_mask
                                 ])
         
-        # we report accuracy only over online samples
+        # we report and compute rewards only over online samples
         accuracy_mask = torch.cat([
                                 torch.zeros_like(aux_query_mask), 
                                 online_query_mask
@@ -817,7 +845,8 @@ class TigerBrain():
             merged_batch,
             query_mask=merged_query_mask)
 
-        one_hot_labels = self.get_oh_labels(merged_batch, logits)
+        one_hot_labels = self.get_oh_labels(merged_batch, logits)       
+
         # known class horizonal mask:
         known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
 
@@ -856,44 +885,95 @@ class TigerBrain():
                 # assume a perfect clusterer for now TODO what is happening here?
                 predicted_decimal_clusters = merged_batch.class_labels[merged_query_mask][predicted_zda_mask]
                 kr_precision = torch.zeros(1)
-
+            
+            ####### 
             ### agentic process:
+            ####### 
+
+            # how many clusters have we identified? 
+            num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
+
+            # one-hot encode the predicted clusters
+            predicted_clusters_oh = torch.nn.functional.one_hot(
+                predicted_decimal_clusters,
+                num_classes=num_of_predicted_clusters
+            )
+
+            # get latent centroids
+            centroids, missing_clusters = self.get_centroids(
+                hidden_vectors[merged_query_mask][predicted_zda_mask], 
+                predicted_clusters_oh.to(torch.float32))
 
             # decide if blocking or accepting each unknown... 
             cluster_action_signals, state_vecs = self.act( 
-                hidden_vectors[merged_query_mask][predicted_zda_mask],
-                self.env.current_budget,
-                predicted_decimal_clusters
-                )
-    
-            # get a reward for each blocking decision (for each predicted cluster)  
-            rewards_per_signal, updates_dict = self.compute_rewards(
-                cluster_action_signals,
-                predicted_decimal_clusters,
-                merged_batch.class_labels[merged_query_mask][predicted_zda_mask])
+                centroids[~missing_clusters],
+                self.env.current_budget)
+
+            ####### coumputing rewards:
             
+            # natural language labels
+            nl_labels = self.encoder.inverse_transform(
+                merged_batch.class_labels[merged_query_mask][predicted_zda_mask])    
+    
+            # sample-specific rewards:
+            sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])
+
+            # get the potential rewards per cluster 
+            rewards_per_cluster = (predicted_clusters_oh * sample_rewards.unsqueeze(-1)).sum(0)
+
+            # get the cluster_passing_mask:
+            cluster_passing_mask = cluster_action_signals == 0 
+
+            # benign traffic mask:
+            benign_rewards = torch.relu(sample_rewards) 
+
+            # potential benign rewards in each cluster  
+            benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
+ 
+            # blocked benign traffic implies to pay a cost:
+            benign_blocking_cost_per_cluster = 4 * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
+
+            # get the cluster-specific passing rewards  
+            rewards_per_cluster= rewards_per_cluster[~missing_clusters] *  cluster_passing_mask
+
+            # subtract the price of neglecting benign traffic
+            rewards_per_cluster -= benign_blocking_cost_per_cluster
+
+            # get the epistemic action mask:
+            purchased_mask = cluster_action_signals == 2 
+
+            # perform epistemic action 
+            for epistemic_action_index in purchased_mask.nonzero():
+            
+                # get information about the change in the curriculum
+                updates_dict = self.perform_epistemic_action()
+                # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
+                # in each cluster reward (this helps computing the current budget)
+                rewards_per_cluster[epistemic_action_index]  -= updates_dict['price_payed']
+                
             # compute new budget: 
-            batch_reward = rewards_per_signal.sum().item()
+            batch_reward = rewards_per_cluster.sum().item()
             self.env.current_budget += batch_reward
             
-            # broadcast it to append it to the state vectors 
-            num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
-            broadcasted_budget = torch.Tensor([self.env.current_budget] * num_of_predicted_clusters)
-
             # an episode ends if the budget ends... 
-            end_signal = self.env.has_episode_ended()
-            broadcasted_end_signal = torch.Tensor([end_signal] * num_of_predicted_clusters)
+            end_signal = self.env.has_episode_ended(self.step_counter)
 
+            # broadcast it for attaching to centroids: 
+            broadcasted_end_signal = torch.Tensor([end_signal] * cluster_action_signals.shape[0])
+
+            # the state is going to be assemled using the new budget.
+            broadcasted_new_budget = torch.Tensor([self.env.current_budget] * cluster_action_signals.shape[0] ) 
+            
             # we can approximate the new state with the previous one, but changing the budget. 
             next_states = torch.hstack(
                 [state_vecs[:, :-1], 
-                    broadcasted_budget.unsqueeze(-1)]
+                    broadcasted_new_budget.unsqueeze(-1)]
                     )
 
             # collect experience tuples for training: 
             for experience_tuple in zip(state_vecs, 
                     cluster_action_signals,
-                    rewards_per_signal,
+                    rewards_per_cluster,
                     next_states,
                     broadcasted_end_signal):
                 self.mitigation_agent.remember(*experience_tuple)
@@ -912,9 +992,9 @@ class TigerBrain():
                                             f'Online {INFERENCE} KR accuracy: {kr_precision}')
             
             if self.wbt:
-                self.wbl.log({AGENT+'_'+'reward': batch_reward, STEP_LABEL:self.step_counter}, commit=False)
-                self.wbl.log({AGENT+'_'+'budget': self.env.current_budget, STEP_LABEL:self.step_counter})
-
+                self.wbl.log({AGENT+'_'+'reward': batch_reward}, step=self.step_counter)
+                self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
+                if end_signal: self.wbl.log({'ending_episode_signal':True}, step=self.step_counter)
             self.classifier.train()
             self.confidence_decoder.train()
 
@@ -949,8 +1029,8 @@ class TigerBrain():
 
         # report progress
         if self.wbt:
-            self.wbl.log({mode+'_'+CS_ACC: acc.item(), STEP_LABEL:self.step_counter}, commit=False)
-            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item(), STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+CS_ACC: acc.item()}, step=self.step_counter)
+            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item()}, step=self.step_counter)
 
         return cs_loss, acc
 
@@ -1004,26 +1084,13 @@ class TigerBrain():
         centroids[~missing_clusters] = existent_centroids
 
         return centroids, missing_clusters
-    
 
-    def act(self, hidden_vectors, curr_budget, predicted_clusters):
+   
+    def act(self, centroids, curr_budget):
         
-        num_of_predicted_clusters = predicted_clusters.max() + 1
-
         # the state vectors are gonna be composed of the hidden centroids + the current budget.
         # So we boradcast the current butget value to concatenate it with the hidden clusters. 
-        broadcasted_budget = torch.Tensor([curr_budget] * num_of_predicted_clusters)
-
-        # one-hot encode the predicted clusters
-        predicted_clusters_oh = torch.nn.functional.one_hot(
-            predicted_clusters,
-            num_classes=num_of_predicted_clusters
-        )
-
-        # get latent centroids
-        centroids, _ = self.get_centroids(
-            hidden_vectors, 
-            predicted_clusters_oh.to(torch.float32))
+        broadcasted_budget = torch.Tensor([curr_budget] * centroids.shape[0])
 
         # get state vectors
         state_vecs = torch.hstack(
@@ -1038,87 +1105,6 @@ class TigerBrain():
         return torch.Tensor(action_per_cluster).to(torch.long), state_vecs.detach()
 
 
-
-    def compute_rewards(
-            self,
-            cluster_action_signals,
-            predicted_clusters,
-            class_labels):
-        
-        # updates_dict helps managing eventual epistemic actions
-        updates_dict = None
-
-        # get one-hot labels 
-        predicted_clusters_oh = torch.nn.functional.one_hot(
-            predicted_clusters, 
-            num_classes=predicted_clusters.max()+1)
-        
-        # first see if a label has been acquired:
-        purchased_mask = cluster_action_signals == 2
-
-        if purchased_mask.any():
-
-            # if you take the epistemic action, you let all traffic in the batch to pass
-            passed_mask = torch.ones_like(cluster_action_signals)
-
-        else:
-
-            # if the cluster_action_signal is not zero, then the cluster was accepted 
-            passed_mask = (cluster_action_signals != 0).to(torch.long)
-
-
-        passed_samples = (predicted_clusters_oh @ passed_mask.unsqueeze(1))
-
-        # get the labels of the samples you did not block
-        passed_sample_classes = class_labels[passed_samples.to(torch.long)] 
-
-        # get natural-language labels    
-        nl_labels = self.encoder.inverse_transform(passed_sample_classes)
-
-        # get the associated reward per sample 
-        passed_sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])  
-
-        passed_clusters_oh = predicted_clusters_oh[passed_sample_classes.squeeze()]
-
-        cluster_rewards = self.get_cluster_rewards(
-            passed_clusters_oh, passed_sample_rewards)
-        
-        
-        for epistemic_action_index in purchased_mask.nonzero():
-            
-            # get information about the change in the curriculum
-            updates_dict = self.perform_epistemic_action()
-            # you'll pay the price of aqcuiring a TCI labels, and it will be allocated
-            # in each cluster reward (this helps computing the current budget)
-            cluster_rewards[epistemic_action_index]  = cluster_rewards[epistemic_action_index] - updates_dict['price_payed']
-            
-        return cluster_rewards, updates_dict 
-
-
-    def get_cluster_rewards(self, cluster_oh_labels, sample_rewards):
-        """
-        Compute the reward per cluster by summing the rewards of the samples 
-        within each cluster.
-
-        Args:
-        cluster_oh_labels (torch.Tensor): One-hot encoded cluster labels
-        sample_rewards (torch.Tensor): Rewards associated with each sample
-
-        Returns:
-        rewards_per_cluster (torch.Tensor): Total reward per cluster
-        """
-
-        transposed_labels = cluster_oh_labels.T
-
-        rewards_on_cluster_row = sample_rewards * transposed_labels
-
-        rewards_on_cluster_col = rewards_on_cluster_row.T
-
-        rewards_per_cluster = rewards_on_cluster_col.sum(0)
-
-        return rewards_per_cluster
-    
-
     def process_input(self, flows, node_feats: dict = None):
         """
         """
@@ -1128,21 +1114,13 @@ class TigerBrain():
         if len(flows) > 0:
             
             batch = self.assembly_input_tensor(flows, node_feats)
-            
             mode=(TRAINING if random.random() > 0.4 else INFERENCE)
-
-            to_push_mask = self.get_pushing_mask(
-                batch.zda_labels, 
-                batch.test_zda_labels, 
-                mode)
-
+  
             self.push_to_replay_buffers(
-                batch.flow_features[to_push_mask], 
-                (batch.packet_features[to_push_mask] if self.use_packet_feats else None),
-                (batch.node_features[to_push_mask] if self.use_node_feats else None),  
-                batch_labels=batch.class_labels[to_push_mask],
-                zda_batch_labels=batch.zda_labels[to_push_mask],
-                test_zda_batch_labels=batch.test_zda_labels[to_push_mask],
+                batch.flow_features, 
+                (batch.packet_features if self.use_packet_feats else None),
+                (batch.node_features if self.use_node_feats else None),  
+                batch_labels=batch.class_labels,
                 mode=mode)
             
             if self.inference_allowed:
@@ -1150,7 +1128,6 @@ class TigerBrain():
 
             if self.experience_learning_allowed:
                 self.experience_learning()
-                
 
         return updates_dict        
 
@@ -1160,18 +1137,37 @@ class TigerBrain():
         balanced_node_feat_batch = None
 
         init = True
-        if mode == TRAINING:
-            buffers_dict = self.replay_buffers
-        elif mode == INFERENCE:
-            buffers_dict = self.test_replay_buffers
+  
+        classes_decimal_tensor = torch.Tensor(list(self.replay_buffers.keys())).to(torch.long)
+        nl_labels = self.encoder.inverse_transform(classes_decimal_tensor)
+        
+        for replay_buff, class_nl_label  in zip(self.replay_buffers.values(), nl_labels):
 
-        for replay_buff in buffers_dict.values():
+            test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
+
+            if mode== TRAINING:
+                # we cannot use test-time anomalies for backproping gradients on our inference module, (by definition) 
+                if G2 in class_nl_label:
+                    continue
+                # we use fake-anomalies, (i.e. clusters we know but that we can label as anomalies to teach the inference
+                # module to learn the cluster separation distribution and be able to detect OOD test-time anomalies or G2 classes) 
+                if G1 in class_nl_label:
+                    zda_batch_labels = torch.ones(samples_per_class, 1)
+            
+            # in inference, we sample from the replay buffers to build an auxiliary batch for classification.
+            # the auxiliary batch is combined with the online batch, which can potentially contain any record, 
+            # (also train-time or fake-anomalies, i.e. G1 classes) for this reason, the aux batch contains also 
+            # every class, but we do not treat G1 as anomalies anymore, as we are not interested on making inferences
+            # on their benign/malicious nature, as we already known what they are, so the unique anomalies here are the eventual G2s
+            # that are still-to-buy as CTI 
+            if mode == INFERENCE:
+                if G2 in class_nl_label:
+                    test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
+            
             flow_batch, \
                 packet_batch, \
                     node_feat_batch, \
-                        batch_labels, \
-                            zda_batch_labels, \
-                                test_zda_batch_labels = replay_buff.sample(samples_per_class)
+                        batch_labels = replay_buff.sample(samples_per_class)
             
             if init:
                 balanced_flow_batch = flow_batch
@@ -1210,41 +1206,39 @@ class TigerBrain():
             test_zda_labels=balanced_test_zda_labels)
 
 
-    def get_canonical_query_mask(self, phase):
+    def get_canonical_query_mask(self, whole_batch_size):
         """
         The query mask differentiates support from query samples. 
         Support samples are used for centroid computation.
         Query samples are used for  prototypical learning, i.e., they are assigned to each centroid based on their simmilarity in the manifold.
 
-        This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 or 0 to each sample in the batch, indicating
-        if it is a query sample or not (in which case it will be a support sample).
+        This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 (True) or 0 (False) to each sample in the batch, indicating
+        if it is a query sample (1) or not (0) (in which case it will be a support sample).
 
         This method assumes that the samples in the batch are concatenated in continuous slices, i.e. all the 
         samples corresponding to class A are in the first M positions, where M correspondons to the number of support + query samples for each class,
         In the positions M+1 to 2M positions, we'll have samples from class B, and so on... 
         
-        So we need to mask M-K samples of each class, where K is the number of support samples for each class, 
-        and this methods masks the first M-K samples of each class. 
+        We mask-out (i.e. put zeros on) K samples of each class, where K is the number of support samples for each class, AKA the K-shot parameter. 
+        and this methods masks the first K samples of each class. 
         
-        The unique difference between training and evaluation cases is that the number of known classes might be different, so 
-        we take that number into account for creating the quesy mask... 
-        (the mask will have dimensions N times M where N is the number of classes in the knowledge base)
-        """
-        if phase == TRAINING:
-            class_count = self.current_training_known_classes_count
-        elif phase == INFERENCE:
-            class_count = self.current_test_known_classes_count
 
-        query_mask = torch.zeros(
-            size=(class_count, self.replay_buff_batch_size),
+        (the mask will have dimensions N times M, where N is the number of classes in the knowledge base)
+        """
+
+        N = whole_batch_size // self.replay_buff_batch_size
+        M = self.replay_buff_batch_size
+
+        query_mask = torch.ones(
+            size=(N, M),
             device=self.device).to(torch.bool)
         
         # This is a trick for labelling withouth messing around with indexes.
         # We started from a bi-dimensional binary mask, all zeros, 
-        # we fill with ones the last self.replay_buff_batch_size - self.K_shot positions (that correspond to the query samples)
+        # we mask out the first self.K_shot positions (that correspond to the query samples)
         #  of every row (that corresponds to each class)
-        query_mask[:, self.replay_buff_batch_size - self.k_shot:] = True
-        # and then we flatten the di-dimensional mask to get a one-dimensional one that works for us! 
+        query_mask[:, :self.k_shot] = False
+        # and then we flatten the bi-dimensional mask to get a one-dimensional one that works for us! 
         query_mask = query_mask.view(-1)
         return query_mask
 
@@ -1310,9 +1304,9 @@ class TigerBrain():
 
         
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item(), STEP_LABEL:self.step_counter}, commit=False)
-            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item(), STEP_LABEL:self.step_counter}, commit=False)
-            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance, STEP_LABEL:self.step_counter})
+            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item()}, step=self.step_counter)
+            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item()}, step=self.step_counter)
+            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance}, step=self.step_counter)
 
         """
         if self.AI_DEBUG: 
@@ -1349,9 +1343,9 @@ class TigerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt:
-                self.wbl.log({mode+'_'+KR_ARI: kr_ari, STEP_LABEL:self.step_counter}, commit=False)
-                self.wbl.log({mode+'_'+KR_NMI: kr_nmi, STEP_LABEL:self.step_counter}, commit=False)
-                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item(), STEP_LABEL:self.step_counter})
+                self.wbl.log({mode+'_'+KR_ARI: kr_ari}, step=self.step_counter)
+                self.wbl.log({mode+'_'+KR_NMI: kr_nmi}, step=self.step_counter)
+                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item()}, step=self.step_counter)
             """
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
@@ -1379,7 +1373,10 @@ class TigerBrain():
                 samples_per_class=self.replay_buff_batch_size,
                 mode=TRAINING)
         
-        query_mask = self.get_canonical_query_mask(TRAINING)
+        # get zda labels for the online batch
+        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch)
+        
+        query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
         logits, hidden_vectors, predicted_kernel = self.infer(
             batch=training_batch,
@@ -1517,7 +1514,7 @@ class TigerBrain():
         updates_dict = self.env.perform_epistemic_action(current_action)
 
         if updates_dict['updated_label'] is not None:
-            
+
             add_replay_buff = self.encoder.update_label(
                 old_label=updates_dict['updated_label'],
                 new_label=updates_dict['new_label'],
@@ -1526,7 +1523,7 @@ class TigerBrain():
 
             if add_replay_buff:
                 self.add_class_to_knowledge_base(updates_dict['new_label'])
-        
+                
         return updates_dict
     
 
@@ -1545,7 +1542,7 @@ class TigerBrain():
                                     samples_per_class=self.replay_buff_batch_size,
                                     mode=INFERENCE)
             
-            query_mask = self.get_canonical_query_mask(INFERENCE)
+            query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
 
             assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
 
@@ -1586,9 +1583,9 @@ class TigerBrain():
                                         f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
                                         f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
-            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item(), STEP_LABEL:self.step_counter}, commit=False)
-            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item(), STEP_LABEL:self.step_counter}, commit=False)
-            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari, STEP_LABEL:self.step_counter})
+            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item()}, step=self.step_counter)
+            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item()}, step=self.step_counter)
+            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari}, step=self.step_counter)
 
         """
         if not self.eval:
@@ -1699,10 +1696,8 @@ class TigerBrain():
             self.add_class_to_knowledge_base(new_class)
 
         encoded_labels = self.encoder.transform(string_labels)
-        zda_labels = torch.Tensor([flow.zda for flow in flows])
-        test_zda_labels = torch.Tensor([flow.test_zda for flow in flows])
 
-        return encoded_labels.to(torch.long), zda_labels, test_zda_labels
+        return encoded_labels.to(torch.long)
     
 
     def assembly_input_tensor(
@@ -1767,17 +1762,13 @@ class TigerBrain():
                             dim=0)
                         
 
-        batch_labels, \
-                    zda_labels, \
-                        test_zda_labels = self.get_labels(flows)
+        batch_labels = self.get_labels(flows)
         
         return Batch(
             flow_features=flow_input_batch, 
             packet_features=packet_input_batch, 
             node_features=node_feat_input_batch,
-            class_labels=batch_labels,
-            zda_labels=zda_labels,
-            test_zda_labels=test_zda_labels)
+            class_labels=batch_labels)
          
     
 
@@ -1822,7 +1813,7 @@ class TigerBrain():
         plt.title(f'{phase} Confusion Matrix')
         
         if self.wbl is not None:
-            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt), STEP_LABEL:self.step_counter})
+            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt)}, step=self.step_counter)
 
         plt.cla()
         plt.close()
@@ -1878,7 +1869,7 @@ class TigerBrain():
         plt.tight_layout()
 
         if self.wbl is not None:
-            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)})
+            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)}, step=self.step_counter)
 
         plt.cla()
         plt.close()
@@ -1927,7 +1918,7 @@ class TigerBrain():
         plt.tight_layout()
         
         if self.wbl is not None:
-            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)})
+            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)}, step=self.step_counter)
 
         plt.cla()
         plt.close()

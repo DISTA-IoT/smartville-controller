@@ -588,7 +588,7 @@ def launch(**kwargs):
         - 'device' (str, optional): Device for the neural modules, can be 'cpu' or 'cuda:0', 'cuda:1', etc. Depending on hw availability. Default is 'cpu'.
         - 'seed' (int, optional): A fixed initial seed for random sampling and storing in the experience buffer. Defatul is 777.
         - 'ai_debug' (bool, optional): A boolean flag for a verbose version of ML related code. Default is False.
-        - 'multi_class' (bool, optional): A boolean flag indicating if the ML classfier should perform multi-class classificaion, otherwise binary (attack, bening). Default is True.
+        - 'multi_class' (bool, optional): A boolean flag indicating if the ML classfier should perform multi-class classificaion, otherwise binary (attack, benign). Default is True.
         - 'use_packet_feats' (bool, optional):  Use first bytes of first packets of each flow alonside flowstats to build feature vectors. Default is True.
         - 'packet_buffer_len' (int, optional):  If 'use_packet_feats'=True, indicates how many packets are retained from each flow to build feature vectors. Default is 1.
         - 'flow_buff_len' (int, optional): Indicates the flowstats time-window size to build feature vectors. Default is 10.
@@ -615,6 +615,8 @@ def launch(**kwargs):
         - 'max_budget' (int, optional): The maximum budget that the agent can reach, after reaching this budget, the episode will restart. (Default 10) 
         - 'intelligence_episode_steps' (int, optional): The number of steps that the intelligence episode will last. (Default 50)
         - 'online_evaluation_rounds' (int, optional): The number of batches for online evaluation. (Default 50)
+        - 'max_episode_steps' (int, optional): The maximum number of steps per episode, in case the budget limits are not reached.) (Default 70)
+        - 'greedy_decay' (float): epsilon-greedy decay for balancing exploration-exploitation. (default: 0.995)
     """
     global FLOWSTATS_FREQ_SECS
 
@@ -652,6 +654,7 @@ def launch(**kwargs):
     kwargs['max_budget'] = int(kwargs.get('max_budget', 20))
     kwargs['intelligence_episode_steps'] = int(kwargs.get('intelligence_episode_steps', 50))
     kwargs['online_evaluation_rounds'] = int(kwargs.get('online_evaluation_rounds', 50))
+    kwargs['max_episode_steps'] = int(kwargs.get('max_episode_steps', 70))
     wb_run_name = kwargs.get('wb_run_name', f"my_run")
 
     # Switching arguments:
@@ -669,7 +672,7 @@ def launch(**kwargs):
     """
     ZDA_DICT = defaultdict(lambda: False)            # No ZdA detection experiments in binary classification 
     TEST_ZDA_DICT = defaultdict(lambda: False)       # No ZdA detection experiments in binary classification
-    TRAINING_LABELS_DICT= defaultdict(lambda: "Bening")  # class "bening" is default and is reserved for leggittimate traffic. 
+    TRAINING_LABELS_DICT= defaultdict(lambda: "Benign")  # class "Benign" is default and is reserved for leggittimate traffic. 
     if multi_class:
 
       try:
