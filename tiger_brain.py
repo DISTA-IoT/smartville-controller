@@ -225,10 +225,6 @@ class DynamicLabelEncoder:
     """
     Thread-safe dynamic label encoder.
     
-    This class is fully thread-safe. All methods are mutually exclusive,
-    meaning no two methods can execute concurrently. This ensures data
-    consistency when used by multiple threads.
-    
     Warning:
         All access to this class's data should be done through its methods.
         Direct dictionary access is not thread-safe.
@@ -238,7 +234,7 @@ class DynamicLabelEncoder:
         self._label_to_int = {}
         self._int_to_label = {}
         self._current_code = 0
-        # keep track of changed labels for eventually handling sychronization mistakes. 
+        # _old_labels keeps track of changed labels for eventually handling sychronization mistakes. 
         # (packets sent to the router during epistemic updates) 
         self._old_labels = {}
         self._lock = threading.Lock()
@@ -254,12 +250,9 @@ class DynamicLabelEncoder:
         new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
   
         # Handling sync erros:
-        # notice that ex-G2 labels, that contain the 'NEW' substring
-        
-        # ex-G2 must be introduced only via the update function.  
+        # notice that ex-G2 labels, contain the 'NEW' substring
+        # and must be introduced only via the update function.  
         modified_new_labels =[new_label.replace(NEW, G2) for new_label in new_labels] 
-        
-        # ex non-G2 may not be new: 
         new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
 
         for label in new_labels:
@@ -281,21 +274,16 @@ class DynamicLabelEncoder:
 
         for label in labels:
             # Managing eventual labelling synchronisation errors. 
-        
-            # A label synchronised with the encoder: 
             correct_label = label
             
-            # Otherwise: 
             if label not in self._label_to_int.keys():
 
-                # A label that has just-changed in the encoder from G2 to non-G2:  
+                # A label that has just-changed in the encoder from G2 to NEW:  
                 if label in self._old_labels.keys():
                     correct_label = self._old_labels[label]
-
-                # A label that was non-G2 in the prev episode and now should be G2 again: 
+                # A label that was NEW in the prev episode and now should be G2 again: 
                 else:
                     correct_label = correct_label.replace(NEW, G2)
-
             try:
                 encoded_labels.append(self._label_to_int[correct_label])
             except:
@@ -896,6 +884,7 @@ class TigerBrain():
  
         # classif. accuracy (only for reporting purposes) 
         cs_acc = kwown_good_classification_mask.sum() / kwown_good_classification_mask.shape[0] 
+        if self.wbt: self.wbl.log({INFERENCE+'_'+CS_ACC: cs_acc.item()}, step=self.step_counter)
 
         # how many online samples are we classifying as known? 
         number_of_known_samples = (~predicted_online_zda_mask).sum()
@@ -986,8 +975,8 @@ class TigerBrain():
             classification_reward = correct_classif_rewards.sum() + bad_classif_costs.sum()
 
         # update the current budget 
-        self.env.current_budget += classification_reward
-
+        self.env.current_budget += classification_reward.item()
+        
         # the new state is a copy of the old one: 
         new_state = state_vecs[0].detach().clone()
         # but changing the current budget: 
