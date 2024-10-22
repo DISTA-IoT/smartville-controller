@@ -57,7 +57,7 @@
                 "--batch_size=16",
                 "--node_features=False",
                 "--wb_project_name=TIGER",
-                "--wb_run_name=longunboundedepisodes",
+                "--wb_run_name=hard",
                 "--online_evaluation=False",
                 "--report_step_freq=50",
                 "--inference_freq_secs=1",
@@ -68,6 +68,7 @@
                 "--greedy_decay=0.999",
                 "--use_neural_AD=True",
                 "--use_neural_KR=True",
+                "--cti_price_factor=4"
             ],
             "justMyCode": true
         },
