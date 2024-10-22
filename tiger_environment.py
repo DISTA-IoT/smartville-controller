@@ -24,7 +24,7 @@ class TigerEnvironment:
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
         self.max_episode_steps = kwargs['max_episode_steps'] 
-
+        self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)
 
     def reset_intelligence(self):
         with self.lock:
@@ -53,7 +53,7 @@ class TigerEnvironment:
 
         for unknown in self.unknowns:
             # the cti price is n times the cost or revenue of the corresponding flow 
-            self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * 20)  
+            self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
         
         # set a list of n_options available cti options:   
         self.current_cti_options = {}  
