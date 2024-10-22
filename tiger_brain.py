@@ -993,6 +993,9 @@ class TigerBrain():
         # COLLECTIVE anomaly detection (i.e., clustering eventual zdas) 
         # 
         kr_precision = torch.ones(1)
+
+        purchased_mask = torch.zeros(1)
+
         if num_of_anomalies > 0:
             # Anomaly clustering is going to be done only if there are anomalies.
 
@@ -1109,8 +1112,7 @@ class TigerBrain():
         if self.wbt:
             self.wbl.log({AGENT+'_'+'reward': batch_reward}, step=self.step_counter)
             self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
-            if end_signal: self.wbl.log({'ending_episode_signal':True}, step=self.step_counter)
-        
+            self.wbl.log({'Epistemic Actions taken': (1 if purchased_mask.sum() > 0 else 0)}, step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
@@ -1655,7 +1657,7 @@ class TigerBrain():
 
             if add_replay_buff:
                 self.add_class_to_knowledge_base(updates_dict['new_label'])
-                
+        
         return updates_dict
     
 
