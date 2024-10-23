@@ -350,7 +350,7 @@ class DynamicLabelEncoder:
             self._label_to_int[original_label] = code
             
             # also in the inverse dict:
-            self._int_to_label[code] = new_label    
+            self._int_to_label[code] = original_label    
 
         # empty this dict for a new episode 
         self._old_labels = {}
@@ -401,6 +401,7 @@ class TigerBrain():
         self.use_neural_KR = (kwargs['use_neural_KR'].lower()  == 'true' if 'use_neural_KR' in kwargs else True)
         self.online_evaluation = (kwargs['online_evaluation'].lower() == 'true' if 'online_evaluation' in kwargs else True) 
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
+        self.load_pretrained_inference_module = (kwargs['pretrained_inference'].lower()  == 'true' if 'pretrained_inference' in kwargs else True)
         kwargs['host_ip_addr'] = host_ip_addr
         self.env = TigerEnvironment(kwargs)
         self.init_agents(kwargs)
@@ -564,8 +565,8 @@ class TigerBrain():
                     device=self.device)
             
 
-
-        self.check_pretrained()
+        if self.load_pretrained_inference_module:
+            self.check_pretrained()
 
         params_for_optimizer = \
             list(self.confidence_decoder.parameters()) + \
@@ -831,20 +832,21 @@ class TigerBrain():
         # inference
         logits, hidden_vectors, predicted_kernel = self.infer(
             merged_batch,
-            query_mask=merged_query_mask)
-
-        one_hot_labels = self.get_oh_labels(merged_batch, logits)       
-
-        # known class horizonal mask:
-        known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
-
-        # separate between candidate known traffic and unknown traffic.
-        zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+            query_mask=merged_query_mask)           
         
         # 
         # (Individual) Anomaly detection:   
         # 
         if self.use_neural_AD:
+
+            one_hot_labels = self.get_oh_labels(merged_batch, logits)
+
+            # known class horizonal mask:
+            known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
+            
+            # separate between candidate known traffic and unknown traffic.
+            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+
             # using the inference module to classify anomalies. 
             _, ad_acc = self.zda_classification_step(
                 zda_labels=merged_batch.zda_labels[merged_query_mask], 
@@ -854,7 +856,8 @@ class TigerBrain():
             predicted_zda_mask = self.preds_to_mask(zda_predictions).squeeze(-1)
         else:
             # assuming a perfect anomaly detector (just for eval purposes, not learning from this experience tuple)
-            zda_predictions = predicted_zda_mask = merged_batch.zda_labels[merged_query_mask].to(torch.bool).squeeze(-1) 
+            zda_predictions = merged_batch.zda_labels[merged_query_mask].squeeze(-1) 
+            predicted_zda_mask = zda_predictions.to(torch.bool)
             ad_acc = torch.ones(1)
 
         # We needed the aux samples to perform inference in the prototypical way, but
@@ -928,7 +931,7 @@ class TigerBrain():
         # 
         
         # the reward obtained in this batch 
-        batch_reward = 0
+        batch_reward = torch.zeros(1)
 
         # natural language labels
         nl_labels = self.encoder.inverse_transform(
@@ -958,13 +961,17 @@ class TigerBrain():
 
         classification_reward = torch.zeros(1)
 
-        if action_signal == 0:
-            # Each well classified sample is rewarded positively:        
-            correct_classif_rewards = torch.abs(known_samples_costs * kwown_good_classification_mask)
-            # Incorrectly classified stuff has a cost: 
-            bad_classif_costs = -torch.abs(known_samples_costs * (~kwown_good_classification_mask))
-            # total classification reward:  
-            classification_reward = correct_classif_rewards.sum() + bad_classif_costs.sum()
+        # for now we assign reward on the known traffic independently from the agent action. 
+        # if action_signal == 0:
+        
+        # Each well classified sample is rewarded positively:        
+        correct_classif_rewards = torch.abs(known_samples_costs * kwown_good_classification_mask)
+        # Incorrectly classified stuff has a cost: 
+        bad_classif_costs = -torch.abs(known_samples_costs * (~kwown_good_classification_mask))
+        # total classification reward:  
+        classification_reward = correct_classif_rewards.sum() + bad_classif_costs.sum()
+        #  
+        # (End of if action_signal == 0) 
 
         # update the current budget 
         self.env.current_budget += classification_reward.item()
@@ -1105,12 +1112,12 @@ class TigerBrain():
         if self.AI_DEBUG: 
             self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
                                         f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
-                                        f'Online {INFERENCE} batch reward: {batch_reward} \n'+\
+                                        f'Online {INFERENCE} batch reward: {batch_reward.item()} \n'+\
                                         f'Online {INFERENCE} current budget: {self.env.current_budget} \n'+\
                                         f'Online {INFERENCE} KR accuracy: {kr_precision}')
         
         if self.wbt:
-            self.wbl.log({AGENT+'_'+'reward': batch_reward}, step=self.step_counter)
+            self.wbl.log({AGENT+'_'+'reward': batch_reward.item()}, step=self.step_counter)
             self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
             self.wbl.log({'Epistemic Actions taken': (1 if purchased_mask.sum() > 0 else 0)}, step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
