@@ -305,7 +305,7 @@ class DynamicLabelEncoder:
     def get_labels(self):
         return list(self._label_to_int.keys())
     
-    @thread_safe
+
     def update_label(self, old_label, new_label, logger):
 
         # the caller needs to know if he should add a replay buffer 
@@ -339,7 +339,6 @@ class DynamicLabelEncoder:
         return add_replay_buffer_signal
 
 
-    @thread_safe  
     def reset_original_labels(self):
 
         for original_label, new_label in self._old_labels.items():
@@ -439,7 +438,7 @@ class TigerBrain():
         self.replay_buffers = {}
         self.reset_environment()
 
-
+    @thread_safe
     def reset_environment(self):
         self.env.reset()    
         self.encoder.reset_original_labels()
@@ -999,6 +998,8 @@ class TigerBrain():
 
         purchased_mask = torch.zeros(1)
 
+        cluster_action_signals = torch.zeros(1)
+
         if num_of_anomalies > 0:
             # Anomaly clustering is going to be done only if there are anomalies.
 
@@ -1116,6 +1117,10 @@ class TigerBrain():
             self.wbl.log({AGENT+'_'+'reward': batch_reward.item()}, step=self.step_counter)
             self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
             self.wbl.log({'Epistemic Actions taken': (1 if purchased_mask.sum() > 0 else 0)}, step=self.step_counter)
+            self.wbl.log({'known traffic action': action_signal.item(),
+                          'cluster actions': cluster_action_signals.tolist(),
+                          'classification_reward': classification_reward.item(),
+                          'num_of_anomalies': num_of_anomalies.item()}, step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
@@ -1262,7 +1267,11 @@ class TigerBrain():
                 batch_labels=batch.class_labels,
                 mode=mode)
 
-            if self.batch_processing_allowed:
+            # this fella could be toogling because of a new class arriving... 
+            with self._lock:
+                batch_processing = self.batch_processing_allowed
+
+            if batch_processing:
                 updates_dict = self.online_inference(batch)
                 self.experience_learning()
 
@@ -1645,7 +1654,7 @@ class TigerBrain():
         # for epistemic updates  
         return updates_dict
     """    
-
+    @thread_safe 
     def perform_epistemic_action(self, current_action=0):      
         
         updates_dict = self.env.perform_epistemic_action(current_action)
@@ -1659,8 +1668,19 @@ class TigerBrain():
             )
 
             if add_replay_buff:
-                self.add_class_to_knowledge_base(updates_dict['new_label'])
-        
+                # we cant invoke this function here because it would be a deadlock 
+                # self.add_class_to_knowledge_base(updates_dict['new_label'])
+                # fo we repeat the code: 
+                new_class = updates_dict['new_label']
+                if self.AI_DEBUG:
+                    self.logger_instance.info(f'New class found: {new_class}')
+
+                self.current_known_classes_count += 1
+                
+                self.add_replay_buffer(new_class)
+                self.reset_train_cms()
+                self.reset_test_cms()
+
         return updates_dict
     
 

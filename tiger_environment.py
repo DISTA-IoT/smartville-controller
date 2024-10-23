@@ -13,13 +13,12 @@ class TigerEnvironment:
         host_ip_addr = kwargs['host_ip_addr'] 
         self.container_manager_ep = f'http://{host_ip_addr}:7777/'
         self.init_budget = float(kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.init_flow_rewards_dict = self.flow_rewards_dict = self.get_init_flow_rewards()
+        self.init_flow_rewards_dict = self.get_init_flow_rewards()
+        self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
-        self.intelligence_budget_snapshot = self.init_budget
         self.restart_traffic()
-        self.lock = threading.Lock()
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
         self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
@@ -27,19 +26,19 @@ class TigerEnvironment:
         self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)
 
     def reset_intelligence(self):
-        with self.lock:
-            self.current_ZDA_DICT = self.init_ZDA_DICT
-            self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
-            self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
-            self.update_cti_options()
-            self.flow_rewards_dict = self.init_flow_rewards_dict
-            
-            return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
-                    'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
-                    'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
-                    'updated_label': None,
-                    'new_label': None,
-                    'reset' : True}
+        
+        self.current_ZDA_DICT = self.init_ZDA_DICT
+        self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
+        self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
+        self.update_cti_options()
+        self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
+        
+        return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
+                'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
+                'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
+                'updated_label': None,
+                'new_label': None,
+                'reset' : True}
 
 
     def update_cti_options(self, n_options=1):
@@ -144,11 +143,11 @@ class TigerEnvironment:
                     changed_ip = ip
                     price_payed = self.cti_prices[label]
 
-                    with self.lock:
-                        # update also the rewards dictionary:
-                        reward = self.flow_rewards_dict[label]    
-                        del self.flow_rewards_dict[label]
-                        self.flow_rewards_dict[new_label] = reward
+                    
+                    # update also the rewards dictionary:
+                    reward = self.flow_rewards_dict[label]    
+                    del self.flow_rewards_dict[label]
+                    self.flow_rewards_dict[new_label] = reward
 
                 # update our options vector:
                 self.update_cti_options()
@@ -164,12 +163,6 @@ class TigerEnvironment:
 
 
     def restart_budget(self):
-        
-        # we are now going to reset the budget, how much are we gaining by restarting the budget?
-        gaining = self.init_budget - self.current_budget
-
-        # we subtract such gaining from the intelligence budget snapshot to keep counts fair
-        self.intelligence_budget_snapshot -= gaining
 
         # now we can restart the budget
         self.current_budget = self.init_budget
