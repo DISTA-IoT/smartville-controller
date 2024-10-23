@@ -21,7 +21,7 @@ class TigerEnvironment:
         self.restart_traffic()
         self.init_ZDA_DICT = kwargs['ZDA_DICT']
         self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
-        self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT']
+        self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT'].copy()
         self.max_episode_steps = kwargs['max_episode_steps'] 
         self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)
 
@@ -29,9 +29,10 @@ class TigerEnvironment:
         
         self.current_ZDA_DICT = self.init_ZDA_DICT
         self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
-        self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT
-        self.update_cti_options()
+        self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT.copy()
         self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
+        self.update_cti_options()
+        
         
         return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
                 'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
@@ -51,9 +52,11 @@ class TigerEnvironment:
         self.cti_prices = {}
 
         for unknown in self.unknowns:
-            # the cti price is n times the cost or revenue of the corresponding flow 
-            self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
-        
+            try:
+                # the cti price is n times the cost or revenue of the corresponding flow 
+                self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
+            except:
+                print('something went wrong...')
         # set a list of n_options available cti options:   
         self.current_cti_options = {}  
 

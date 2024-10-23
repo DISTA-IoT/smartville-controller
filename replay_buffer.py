@@ -112,8 +112,10 @@ class RawReplayBuffer():
 
 
     def sample(self, num_of_samples):
-        
-        batch = random.sample(self.buffer, num_of_samples)
+        try:
+            batch = random.sample(self.buffer, num_of_samples)
+        except:
+            print('something went wrong')
 
         flow_state_batch, packet_state_batch, node_state_batch, label_batch = zip(*batch)
         
