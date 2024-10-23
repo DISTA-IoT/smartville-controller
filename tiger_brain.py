@@ -961,17 +961,13 @@ class TigerBrain():
 
         classification_reward = torch.zeros(1)
 
-        # for now we assign reward on the known traffic independently from the agent action. 
-        # if action_signal == 0:
-        
-        # Each well classified sample is rewarded positively:        
-        correct_classif_rewards = torch.abs(known_samples_costs * kwown_good_classification_mask)
-        # Incorrectly classified stuff has a cost: 
-        bad_classif_costs = -torch.abs(known_samples_costs * (~kwown_good_classification_mask))
-        # total classification reward:  
-        classification_reward = correct_classif_rewards.sum() + bad_classif_costs.sum()
-        #  
-        # (End of if action_signal == 0) 
+        if action_signal == 0:
+            # Each well classified sample is rewarded positively:        
+            correct_classif_rewards = torch.abs(known_samples_costs * kwown_good_classification_mask)
+            # Incorrectly classified stuff has a cost: 
+            bad_classif_costs = -torch.abs(known_samples_costs * (~kwown_good_classification_mask))
+            # total classification reward:  
+            classification_reward = correct_classif_rewards.sum() + bad_classif_costs.sum()
 
         # update the current budget 
         self.env.current_budget += classification_reward.item()
