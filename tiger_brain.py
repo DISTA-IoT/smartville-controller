@@ -398,7 +398,8 @@ class TigerBrain():
         self.report_step_freq = report_step_freq 
         self.use_neural_AD = (kwargs['use_neural_AD'].lower() == 'true' if 'use_neural_AD' in kwargs else True)
         self.use_neural_KR = (kwargs['use_neural_KR'].lower()  == 'true' if 'use_neural_KR' in kwargs else True)
-        self.online_evaluation = (kwargs['online_evaluation'].lower() == 'true' if 'online_evaluation' in kwargs else True) 
+        self.online_evaluation = (kwargs['online_evaluation'].lower() == 'true' if 'online_evaluation' in kwargs else True)
+        self.blocked_benign_cost_factor =  int(kwargs['blocked_benign_cost_factor'] if 'blocked_benign_cost_factor' in kwargs else 4)
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         self.load_pretrained_inference_module = (kwargs['pretrained_inference'].lower()  == 'true' if 'pretrained_inference' in kwargs else True)
         kwargs['host_ip_addr'] = host_ip_addr
@@ -868,16 +869,16 @@ class TigerBrain():
           
         #  
         # CLASSIFICATION OF KNOWN TRAFFIC: 
-        # rewards need to be given if classification is good, (as if we were accpeting/blocking stuff...)
+        # rewards need to be given if classification is good, (as if we were accepting/blocking stuff...)
         # notice we select only traffic classified as known using the inverse of the anomaly-classified mask
         # i.e., the ~predicted_online_zda_mask mask
         #
         online_class_labels = merged_batch.class_labels[-num_of_online_samples:][~predicted_online_zda_mask].squeeze(-1)
         online_class_preds = logits[-num_of_online_samples:][~predicted_online_zda_mask].max(1)[1]
-        kwown_good_classification_mask = online_class_labels == online_class_preds
+        known_correct_classification_mask = online_class_labels == online_class_preds
  
         # classif. accuracy (only for reporting purposes) 
-        cs_acc = kwown_good_classification_mask.sum() / kwown_good_classification_mask.shape[0] 
+        cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
         if self.wbt: self.wbl.log({INFERENCE+'_'+CS_ACC: cs_acc.item()}, step=self.step_counter)
 
         # how many online samples are we classifying as known? 
@@ -958,18 +959,18 @@ class TigerBrain():
         # Computing the rewads for known traffic: 
         known_samples_costs = sample_rewards[~predicted_online_zda_mask]
 
-        classification_reward = torch.zeros(1)
+        classification_reward = 0
 
-        if action_signal == 0:
+        if action_signal.item() == 0:
             # Each well classified sample is rewarded positively:        
-            correct_classif_rewards = torch.abs(known_samples_costs * kwown_good_classification_mask)
+            correct_classif_rewards = torch.abs(known_samples_costs * known_correct_classification_mask)
             # Incorrectly classified stuff has a cost: 
-            bad_classif_costs = -torch.abs(known_samples_costs * (~kwown_good_classification_mask))
+            bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask))
             # total classification reward:  
-            classification_reward = correct_classif_rewards.sum() + bad_classif_costs.sum()
+            classification_reward = (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
 
         # update the current budget 
-        self.env.current_budget += classification_reward.item()
+        self.env.current_budget += classification_reward
         
         # the new state is a copy of the old one: 
         new_state = state_vecs[0].detach().clone()
@@ -989,7 +990,7 @@ class TigerBrain():
         )
         
         # add the good classification reward to the batch reward (only for reporting purposes)
-        batch_reward += classification_reward.item()
+        batch_reward += classification_reward
         
         #  
         # COLLECTIVE anomaly detection (i.e., clustering eventual zdas) 
@@ -1055,7 +1056,7 @@ class TigerBrain():
             benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
             # blocked benign traffic implies to pay a cost:
-            benign_blocking_cost_per_cluster = 4 * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
+            benign_blocking_cost_per_cluster = self.blocked_benign_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
 
             # subtract the price of neglecting benign traffic
             rewards_per_cluster -= benign_blocking_cost_per_cluster
@@ -1119,7 +1120,7 @@ class TigerBrain():
             self.wbl.log({'Epistemic Actions taken': (1 if purchased_mask.sum() > 0 else 0)}, step=self.step_counter)
             self.wbl.log({'known traffic action': action_signal.item(),
                           'cluster actions': cluster_action_signals.tolist(),
-                          'classification_reward': classification_reward.item(),
+                          'classification_reward': classification_reward,
                           'num_of_anomalies': num_of_anomalies.item()}, step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()

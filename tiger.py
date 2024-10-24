@@ -618,6 +618,7 @@ def launch(**kwargs):
         - 'max_episode_steps' (int, optional): The maximum number of steps per episode, in case the budget limits are not reached.) (Default 70)
         - 'greedy_decay' (float): epsilon-greedy decay for balancing exploration-exploitation. (default: 0.995)
         - 'online_evaluation' (bool, optional): perform online evaluation rounds each 'report_step_freq' steps. (Default is True)
+        - 'blocked_benign_cost_factor' (int, optional): the factor by which the benign-traffic revenues are multiplied before beign subtracted to the bugdet when blocked.
     """
     global FLOWSTATS_FREQ_SECS
 
