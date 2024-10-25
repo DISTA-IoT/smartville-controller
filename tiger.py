@@ -619,6 +619,7 @@ def launch(**kwargs):
         - 'greedy_decay' (float): epsilon-greedy decay for balancing exploration-exploitation. (default: 0.995)
         - 'online_evaluation' (bool, optional): perform online evaluation rounds each 'report_step_freq' steps. (Default is True)
         - 'blocked_benign_cost_factor' (int, optional): the factor by which the benign-traffic revenues are multiplied before beign subtracted to the bugdet when blocked.
+        - 'agent' (str, optional): the current RL algorithm to train and evaluate in the TIGER environment. (Defaul is 'DQN', currently implemented options are: {'DQN' and 'DDQN'})
     """
     global FLOWSTATS_FREQ_SECS
 

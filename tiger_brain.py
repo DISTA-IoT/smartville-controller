@@ -33,7 +33,7 @@ from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment import TigerEnvironment
-from smartController.tiger_agents import DDQNAgent
+from smartController.tiger_agents import ValueLearningAgent
 from functools import wraps
 
 # List of colors
@@ -462,7 +462,7 @@ class TigerBrain():
         # 5. current system budget 
         self.state_space_dim += 5
 
-        self.mitigation_agent = DDQNAgent(
+        self.mitigation_agent = ValueLearningAgent(
             state_size=self.state_space_dim, # the "current_budget" scalar is part of the state space  
             action_size=3, # block, pass or TCI acquisition
             replay_batch_size=kwargs['replay_batch_size'],  
