@@ -669,7 +669,13 @@ def launch(**kwargs):
     switching_args['arp_req_exp_secs'] = int(kwargs.get('arp_req_exp_secs', 4))
     switching_args['inference_freq_secs'] = int(kwargs.get('inference_freq_secs', 5))
 
-
+    try:
+       response = requests.get(f'http://{host_ip_addr}:7777/'+'attach_controller')
+       if response.status_code == 200:
+          print(f'Attaching controller to switch command response:\n{response.text}')
+    except:
+       print('An error ocurred while attaching teh controller to the switch! now exiting!')
+       assert 0 == 1 
     """
     Curricula for training (See utils/curricula in the Smartville root repository.) 
     """
