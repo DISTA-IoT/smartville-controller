@@ -674,7 +674,7 @@ def launch(**kwargs):
        if response.status_code == 200:
           print(f'Attaching controller to switch command response:\n{response.text}')
     except:
-       print('An error ocurred while attaching teh controller to the switch! now exiting!')
+       print('An error ocurred while attaching the controller to the switch! now exiting!')
        assert 0 == 1 
     """
     Curricula for training (See utils/curricula in the Smartville root repository.) 
