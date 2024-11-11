@@ -785,6 +785,34 @@ class TigerBrain():
         return zda_labels, test_zda_labels
 
 
+    def online_anomaly_detection(self, batch, logits, query_mask, accuracy_mask):
+
+        if self.use_neural_AD:
+
+            one_hot_labels = self.get_oh_labels(batch, logits)
+
+            # known class horizonal mask:
+            known_class_h_mask = self.get_known_classes_mask(batch, one_hot_labels)
+            
+            # separate between candidate known traffic and unknown traffic.
+            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+
+            # using the inference module to classify anomalies. 
+            _, ad_acc = self.zda_classification_step(
+                zda_labels=batch.zda_labels[query_mask], 
+                zda_predictions=zda_predictions,
+                accuracy_mask=accuracy_mask[query_mask],
+                mode=INFERENCE)
+            predicted_zda_mask = self.preds_to_mask(zda_predictions).squeeze(-1)
+        else:
+            # assuming a perfect anomaly detector (just for eval purposes, not learning from this experience tuple)
+            zda_predictions = batch.zda_labels[query_mask].squeeze(-1) 
+            predicted_zda_mask = zda_predictions.to(torch.bool)
+            ad_acc = torch.ones(1)
+
+        return ad_acc, zda_predictions, predicted_zda_mask
+    
+
     def online_inference(
             self, 
             online_batch):
@@ -816,16 +844,10 @@ class TigerBrain():
         aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
         online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
 
-        merged_query_mask = torch.cat([
-                                aux_query_mask, 
-                                online_query_mask
-                                ])
+        merged_query_mask = torch.cat([aux_query_mask, online_query_mask])
         
         # we report and compute rewards only over online samples
-        accuracy_mask = torch.cat([
-                                torch.zeros_like(aux_query_mask), 
-                                online_query_mask
-                                ])
+        accuracy_mask = torch.cat([torch.zeros_like(aux_query_mask), online_query_mask])
 
         merged_batch = self.merge_batches(aux_batch, online_batch)
 
@@ -837,29 +859,14 @@ class TigerBrain():
         # 
         # (Individual) Anomaly detection:   
         # 
-        if self.use_neural_AD:
-
-            one_hot_labels = self.get_oh_labels(merged_batch, logits)
-
-            # known class horizonal mask:
-            known_class_h_mask = self.get_known_classes_mask(merged_batch, one_hot_labels)
-            
-            # separate between candidate known traffic and unknown traffic.
-            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-
-            # using the inference module to classify anomalies. 
-            _, ad_acc = self.zda_classification_step(
-                zda_labels=merged_batch.zda_labels[merged_query_mask], 
-                zda_predictions=zda_predictions,
-                accuracy_mask=accuracy_mask[merged_query_mask],
-                mode=INFERENCE)
-            predicted_zda_mask = self.preds_to_mask(zda_predictions).squeeze(-1)
-        else:
-            # assuming a perfect anomaly detector (just for eval purposes, not learning from this experience tuple)
-            zda_predictions = merged_batch.zda_labels[merged_query_mask].squeeze(-1) 
-            predicted_zda_mask = zda_predictions.to(torch.bool)
-            ad_acc = torch.ones(1)
-
+        ad_acc, zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
+            batch=merged_batch,
+            logits=logits,
+            query_mask=merged_query_mask,
+            accuracy_mask=accuracy_mask
+        )
+        
+        
         # We needed the aux samples to perform inference in the prototypical way, but
         # actually, we only care about online anomalies:
         # so we compute how many samples we had in the online batch: 
