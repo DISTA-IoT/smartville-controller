@@ -98,7 +98,7 @@ class TigerEnvironment:
                 # Parse the JSON response into a Python dictionary
                 data = response.json()
                 # Print the received dictionary
-                print("Flow rewards received from container maganer server:")
+                print("Flow rewards received from container maganer server")
                 return data
             else:
                 print(f"Error: Received status code {response.status_code}")
