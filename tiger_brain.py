@@ -785,11 +785,9 @@ class TigerBrain():
         return zda_labels, test_zda_labels
 
 
-    def online_anomaly_detection(self, batch, logits, query_mask, accuracy_mask):
+    def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask, accuracy_mask):
 
         if self.use_neural_AD:
-
-            one_hot_labels = self.get_oh_labels(batch, logits)
 
             # known class horizonal mask:
             known_class_h_mask = self.get_known_classes_mask(batch, one_hot_labels)
@@ -856,12 +854,15 @@ class TigerBrain():
             merged_batch,
             query_mask=merged_query_mask)           
         
+        one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
+
         # 
         # (Individual) Anomaly detection:   
         # 
         ad_acc, zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
             batch=merged_batch,
             logits=logits,
+            one_hot_labels=one_hot_labels,
             query_mask=merged_query_mask,
             accuracy_mask=accuracy_mask
         )
@@ -1397,13 +1398,13 @@ class TigerBrain():
         return query_mask
 
 
-    def get_oh_labels(self, batch, logits):
+    def get_oh_labels(self, batch, class_shape):
         """
         Create a one-hot encoding of the targets.
         """
         curr_shape=(
                 batch.class_labels.shape[0],
-                logits.shape[1])
+                class_shape)
         
         targets=batch.class_labels
         targets = targets.to(torch.int64)
@@ -1536,7 +1537,7 @@ class TigerBrain():
             batch=training_batch,
             query_mask=query_mask)
         
-        one_hot_labels = self.get_oh_labels(training_batch, logits)
+        one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
         # known class horizonal mask:
         known_class_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
         
@@ -1715,7 +1716,7 @@ class TigerBrain():
                 eval_batch,
                 query_mask=query_mask)
 
-            one_hot_labels = self.get_oh_labels(eval_batch, logits)
+            one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
             # known class horizonal mask:
             known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
 
