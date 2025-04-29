@@ -890,16 +890,16 @@ class TigerBrain():
         if self.wbt: self.wbl.log({INFERENCE+'_'+CS_ACC: cs_acc.item()}, step=self.step_counter)
 
         # how many online samples are we classifying as known? 
-        number_of_known_samples = (~predicted_online_zda_mask).sum()
+        number_of_predicted_known_samples = (~predicted_online_zda_mask).sum()
 
         # how many of them are we classifying as anomalies instead? 
-        num_of_anomalies = predicted_online_zda_mask.sum()
+        num_of_predicted_anomalies = predicted_online_zda_mask.sum()
 
         #
         # Computing confidence on known-class classification:
         # take the polarisation-degree of your inferences. 
         #  
-        # analysing only the logits of known samples 
+        # analysing only the logits of samples predicted as known: 
         interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
         number_of_known_classes = logits.shape[1]
 
@@ -908,8 +908,8 @@ class TigerBrain():
         # 
         # Conf. of multiclass classification: 
         # we compute the ratio of the average max logits with those of the other logits:  
-        non_choosed_mask = torch.ones(number_of_known_samples, number_of_known_classes)
-        non_choosed_mask[torch.arange(number_of_known_samples), online_class_preds] = 0 
+        non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
+        non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
         mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
         mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
         known_classification_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values)
@@ -957,9 +957,9 @@ class TigerBrain():
 
         action_signal, state_vecs = self.act( 
             torch.zeros(1, hidden_vectors.shape[1]),
-            num_of_anomalies,
+            num_of_predicted_anomalies,
             zda_confidence,
-            number_of_known_samples,
+            number_of_predicted_known_samples,
             known_classification_confidence,
             self.env.current_budget
             )
@@ -1009,8 +1009,8 @@ class TigerBrain():
 
         cluster_action_signals = torch.zeros(1)
 
-        if num_of_anomalies > 0:
-            # Anomaly clustering is going to be done only if there are anomalies.
+        if num_of_predicted_anomalies > 0:
+            # Anomaly clustering is going to be done only if there are predicted anomalies.
 
             if self.use_neural_KR:
                 # use inference modules for clustering...
@@ -1042,9 +1042,9 @@ class TigerBrain():
             # decide if blocking or accepting each unknown... 
             cluster_action_signals, state_vecs = self.act( 
                 centroids[~missing_clusters],
-                num_of_anomalies,
+                num_of_predicted_anomalies,
                 zda_confidence,
-                number_of_known_samples,
+                number_of_predicted_known_samples,
                 known_classification_confidence,
                 self.env.current_budget)
             
@@ -1129,7 +1129,7 @@ class TigerBrain():
             self.wbl.log({'known traffic action': action_signal.item(),
                           'cluster actions': cluster_action_signals.tolist(),
                           'classification_reward': classification_reward,
-                          'num_of_anomalies': num_of_anomalies.item()}, step=self.step_counter)
+                          'num_of_anomalies': num_of_predicted_anomalies.item()}, step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
