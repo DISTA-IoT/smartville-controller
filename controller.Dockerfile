@@ -1,12 +1,7 @@
 FROM python:3.13.3-slim
 
 ARG WANDB_API_KEY
-ARG GIT_USERNAME
-ARG GIT_TOKEN
-
 ENV WANDB_API_KEY=${WANDB_API_KEY}
-ENV GIT_USERNAME=${GIT_USERNAME}
-ENV GIT_TOKEN=${GIT_TOKEN}
 
 RUN apt-get update && \
     apt-get install -y git nano vim python3-pip\
@@ -16,10 +11,6 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --upgrade pip
-
-RUN pip3 install scapy networkx pydot numpy scikit-learn \
-    wandb confluent_Kafka grafana_api prometheus_client \
-    netifaces prometheus_api_client seaborn
 
 RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu
 
@@ -66,12 +57,13 @@ RUN git checkout gar-experimental
 
 RUN rm -r .git
 
-RUN git clone https://${GIT_USERNAME}:${GIT_TOKEN}@github.com/DISTA-IoT/smartville-controller pox/smartController
-
 COPY  prometheus_grafana_datasource.yaml /usr/share/grafana/conf/provisioning/datasources
 
-RUN chmod -R 777 /pox/
+RUN git clone https://github.com/DISTA-IoT/smartville-controller.git pox/smartController
 
+WORKDIR /pox/pox/smartController
+
+RUN pip install -r requirements.txt
 # ENTRYPOINT ["pox/smartController/entrypoint.sh"]
 
 
