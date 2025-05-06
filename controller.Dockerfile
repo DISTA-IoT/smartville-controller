@@ -1,4 +1,4 @@
-FROM python:3.8
+FROM python:3.13.3-slim
 
 ARG WANDB_API_KEY
 ARG GIT_USERNAME
@@ -12,7 +12,7 @@ RUN apt-get update && \
     apt-get install -y git nano vim python3-pip\
     libpcap0.8 libpcap0.8-dev wget\
     adduser libfontconfig1 musl\
-    net-tools iputils-ping  tcpdump && \
+    net-tools iputils-ping  tcpdump socat && \
     rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --upgrade pip
