@@ -82,19 +82,12 @@ DELAY = 'DELAY'
 AGENT = 'AGENT'
 
 
-PRETRAINED_MODELS_DIR = '/pox/pox/smartController/tiger_models/'
 
-REPLAY_BUFFER_MAX_CAPACITY=1000
 
-LEARNING_RATE=1e-3
 
-REPULSIVE_WEIGHT = 1
 
-ATTRACTIVE_WEIGHT = 1
 
-KERNEL_REGRESSOR_HEADS = 2
 
-CLUSTERING_LOSS_BACKPROP = True
 
 # Constants for wandb monitoring:
 INFERENCE = 'Inference'
@@ -396,30 +389,26 @@ class TigerBrain():
         self.k_shot = init_k_shot
         self.replay_buff_batch_size = replay_buffer_batch_size
         self.report_step_freq = report_step_freq 
-        self.use_neural_AD = (kwargs['use_neural_AD'].lower() == 'true' if 'use_neural_AD' in kwargs else True)
-        self.use_neural_KR = (kwargs['use_neural_KR'].lower()  == 'true' if 'use_neural_KR' in kwargs else True)
-        self.online_evaluation = (kwargs['online_evaluation'].lower() == 'true' if 'online_evaluation' in kwargs else True)
-        self.blocked_benign_cost_factor =  int(kwargs['blocked_benign_cost_factor'] if 'blocked_benign_cost_factor' in kwargs else 4)
+        self.use_neural_AD = kwargs['use_neural_AD']
+        self.use_neural_KR = kwargs['use_neural_KR']
+        self.online_evaluation = kwargs['online_evaluation']
+        self.blocked_benign_cost_factor =  int(kwargs['blocked_benign_cost_factor'])
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
-        self.load_pretrained_inference_module = (kwargs['pretrained_inference'].lower()  == 'true' if 'pretrained_inference' in kwargs else True)
-        kwargs['host_ip_addr'] = host_ip_addr
+        self.load_pretrained_inference_module = kwargs['pretrained_inference']
+        self.clustering_loss_backprop = kwargs['clustering_loss_backprop']
+        self.kernel_regressor_heads = kwargs['kernel_regressor_heads']
+        self.attractive_weight = kwargs['attractive_weight']
+        self.repulsive_weight = kwargs['repulsive_weight']
+        self.learning_rate= float(kwargs['learning_rate'])
+        self.replay_buffer_max_capacity= kwargs['replay_buffer_max_capacity']
+        self.pretrained_models_dir = kwargs['pretrained_models_dir']
+
+        kwargs['logger'] = self.logger_instance
         self.env = NewTigerEnvironment(kwargs)
         self.init_agents(kwargs)
         self.init_intelligence()
 
         if self.wbt:
-
-            kwargs['PRETRAINED_MODEL_PATH'] = PRETRAINED_MODELS_DIR
-            kwargs['REPLAY_BUFFER_MAX_CAPACITY'] = REPLAY_BUFFER_MAX_CAPACITY
-            kwargs['LEARNING_RATE'] = LEARNING_RATE
-            kwargs['REPORT_STEP_FREQUENCY'] = self.report_step_freq
-            kwargs['KERNEL_REGRESSOR_HEADS'] = KERNEL_REGRESSOR_HEADS
-            kwargs['REPULSIVE_WEIGHT']  = REPULSIVE_WEIGHT
-            kwargs['ATTRACTIVE_WEIGHT']  = ATTRACTIVE_WEIGHT
-            # Clustering loss is actually the opposite of a regularization, because it slightly may bias the manifold
-            # toward training class distributions. We keep the "regularization" name in wandb reporting for retrocompatibility.
-            kwargs['REGULARIZATION']  = CLUSTERING_LOSS_BACKPROP
-
             self.wbl = WandBTracker(
                 wanb_project_name=wb_project_name,
                 run_name=wb_run_name,
@@ -443,7 +432,7 @@ class TigerBrain():
     def reset_environment(self):
         self.env.reset()    
         self.encoder.reset_original_labels()
-        self.init_inference_neural_modules(LEARNING_RATE, self.seed)
+        self.init_inference_neural_modules(self.learning_rate, self.seed)
 
     def init_agents(self, kwargs):
         
@@ -476,7 +465,7 @@ class TigerBrain():
         self.batch_processing_allowed = False
         
         self.replay_buffers[self.current_known_classes_count-1] = RawReplayBuffer(
-            capacity=REPLAY_BUFFER_MAX_CAPACITY,
+            capacity=self.replay_buffer_max_capacity,
             batch_size=self.replay_buff_batch_size,
             seed=self.seed)
         self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
@@ -518,8 +507,8 @@ class TigerBrain():
         self.confidence_decoder = ConfidenceDecoder(device=self.device)
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
         self.cs_criterion = nn.CrossEntropyLoss().to(self.device)
-        self.kr_criterion = KernelRegressionLoss(repulsive_weigth=REPULSIVE_WEIGHT, 
-            attractive_weigth=ATTRACTIVE_WEIGHT).to(self.device)
+        self.kr_criterion = KernelRegressionLoss(repulsive_weigth=self.repulsive_weight, 
+            attractive_weigth=self.attractive_weight).to(self.device)
         
         if self.use_packet_feats:
             
@@ -530,7 +519,7 @@ class TigerBrain():
                     second_stream_input_size=self.packet_feat_dim,
                     third_stream_input_size=5,
                     hidden_size=self.h_dim,
-                    kr_heads=KERNEL_REGRESSOR_HEADS,
+                    kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
                     device=self.device)
             
@@ -540,7 +529,7 @@ class TigerBrain():
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=self.packet_feat_dim,
                     hidden_size=self.h_dim,
-                    kr_heads=KERNEL_REGRESSOR_HEADS,
+                    kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
                     device=self.device)
 
@@ -552,7 +541,7 @@ class TigerBrain():
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=5,
                     hidden_size=self.h_dim,
-                    kr_heads=KERNEL_REGRESSOR_HEADS,
+                    kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
                     device=self.device)
             else:
@@ -561,7 +550,7 @@ class TigerBrain():
                     input_size=self.flow_feat_dim, 
                     hidden_size=self.h_dim,
                     dropout_prob=self.dropout,
-                    kr_heads=KERNEL_REGRESSOR_HEADS,
+                    kr_heads=self.kernel_regressor_heads,
                     device=self.device)
             
 
@@ -587,21 +576,21 @@ class TigerBrain():
 
         if self.use_packet_feats:
             if self.use_node_feats:
-                self.classifier_path = PRETRAINED_MODELS_DIR+'multiclass_flow_packet_node_classifier_pretrained'
-                self.confidence_decoder_path = PRETRAINED_MODELS_DIR+'flow_packet_node_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_packet_node_classifier_pretrained'
+                self.confidence_decoder_path = self.pretrained_models_dir+'flow_packet_node_confidence_decoder_pretrained'
             else:
-                self.classifier_path = PRETRAINED_MODELS_DIR+'multiclass_flow_packet_classifier_pretrained'
-                self.confidence_decoder_path = PRETRAINED_MODELS_DIR+'flow_packet_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_packet_classifier_pretrained'
+                self.confidence_decoder_path = self.pretrained_models_dir+'flow_packet_confidence_decoder_pretrained'
         else:
             if self.use_node_feats:
-                self.classifier_path = PRETRAINED_MODELS_DIR+'multiclass_flow_node_classifier_pretrained'
-                self.confidence_decoder_path = PRETRAINED_MODELS_DIR+'flow_node_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_node_classifier_pretrained'
+                self.confidence_decoder_path = self.pretrained_models_dir+'flow_node_confidence_decoder_pretrained'
             else:    
-                self.classifier_path = PRETRAINED_MODELS_DIR+'multiclass_flow_classifier_pretrained'
-                self.confidence_decoder_path = PRETRAINED_MODELS_DIR+'flow_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_classifier_pretrained'
+                self.confidence_decoder_path = self.pretrained_models_dir+'flow_confidence_decoder_pretrained'
 
         # Check if the file exists
-        if os.path.exists(PRETRAINED_MODELS_DIR):
+        if os.path.exists(self.pretrained_models_dir):
 
             if os.path.exists(self.classifier_path+'.pt'):
                 # Load the pre-trained weights
@@ -619,7 +608,7 @@ class TigerBrain():
              
 
         elif self.AI_DEBUG:
-            self.logger_instance.info(f"Pre-trained folder not found at {PRETRAINED_MODELS_DIR}.")
+            self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
 
 
     def infer(
@@ -1563,7 +1552,7 @@ class TigerBrain():
             one_hot_labels, 
             TRAINING)
         
-        if CLUSTERING_LOSS_BACKPROP: loss += kr_loss
+        if self.clustering_loss_backprop: loss += kr_loss
         
         # This helps to converge 
         classification_loss, cs_acc = self.class_classification_step(

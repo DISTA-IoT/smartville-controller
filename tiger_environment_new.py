@@ -11,22 +11,26 @@ class NewTigerEnvironment:
     def __init__(self, kwargs):
         """Initialize the attributes of the Car class."""
         self.init_budget = float(kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.init_flow_rewards_dict = kwargs['flow_rewards_dict'].copy()
-        self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
+        self.init_flow_rewards_dict = kwargs['rewards'].copy()
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
-        self.init_ZDA_DICT = kwargs['ZDA_DICT']
-        self.init_TEST_ZDA_DICT = kwargs['TEST_ZDA_DICT']
-        self.init_TRAINING_LABELS_DICT = kwargs['TRAINING_LABELS_DICT'].copy()
+        self.init_ZDA_DICT = None
+        self.init_TEST_ZDA_DICT = None
+        self.init_TRAINING_LABELS_DICT = None
+        self.honeypots = kwargs['honeypots']
+        self.attackers = kwargs['attackers']
+        self.init_knowledge = kwargs['knowledge']
+        self.logger = kwargs['logger']
         self.max_episode_steps = kwargs['max_episode_steps'] 
         self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)
 
     def reset_intelligence(self):
         
-        self.current_ZDA_DICT = self.init_ZDA_DICT
-        self.current_TEST_ZDA_DICT = self.init_TEST_ZDA_DICT
-        self.current_TRAINING_LABELS_DICT = self.init_TRAINING_LABELS_DICT.copy()
+        self.current_ZDA_DICT = None
+        self.current_TEST_ZDA_DICT = None
+        self.current_TRAINING_LABELS_DICT = None
+        self.current_knowledge = self.init_knowledge.copy()
         self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
         self.update_cti_options()
         
@@ -43,12 +47,10 @@ class NewTigerEnvironment:
         """
         This method updates the CTI agent state vector, i.e., according to available labels to buy.
         """
-        
-        # current unknowns according to the dict 
-        self.unknowns = [label for label in self.current_TRAINING_LABELS_DICT.values() if G2 in label]
+                
         self.cti_prices = {}
 
-        for unknown in self.unknowns:
+        for unknown in self.current_knowledge['G2s']:
             try:
                 # the cti price is n times the cost or revenue of the corresponding flow 
                 self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
@@ -60,8 +62,8 @@ class NewTigerEnvironment:
         for idx in range(n_options):
 
             # do we still have so many unknowns? 
-            if idx < len(self.unknowns):
-                self.current_cti_options[self.unknowns[idx]] = self.cti_prices[self.unknowns[idx]]
+            if idx < len(self.current_knowledge['G2s']):
+                self.current_cti_options[self.current_knowledge['G2s'][idx]] = self.cti_prices[self.current_knowledge['G2s'][idx]]
             else:
                 # if we do not have unknowns anymore, then lets put a placeholder in the state space (with high cost).  
                 self.current_cti_options[f'placeholder_{idx}'] = 100 
@@ -88,7 +90,7 @@ class NewTigerEnvironment:
 
 
     def reset(self):
-        print('TIGER ENV: restarting episode!')
+        self.logger('TIGER ENV: restarting episode!')
         self.restart_budget()
         self.reset_intelligence()
 

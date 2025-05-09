@@ -86,6 +86,13 @@ def requests_stats():
   log.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
 
 
+def pprint(obj):
+          for key, value in obj.items():
+              if isinstance(value, dict):
+                  pprint(value)
+              else:
+                log.debug(f"{key}: {value}")
+
 
 def launch(**kwargs):     
     global app
@@ -111,15 +118,7 @@ def launch(**kwargs):
 
         log.info(f"Initialisation command received")
 
-        def pprint(obj):
-          for key, value in obj.items():
-              if isinstance(value, dict):
-                  pprint(value)
-              else:
-                log.info(f"{key}: {value}")
-
         pprint(kwargs)
-
 
         honeypots = kwargs.get("honeypots", [])
         attackers = kwargs.get("attackers", [])
@@ -128,6 +127,11 @@ def launch(**kwargs):
         container_ips = kwargs.get("container_ips", {})
 
         intrusion_detection_args = kwargs.get("intrusion_detection", {})
+        intrusion_detection_args['container_ips'] = container_ips
+        intrusion_detection_args['honeypots'] = honeypots
+        intrusion_detection_args['attackers'] = attackers
+        intrusion_detection_args['rewards'] = rewards
+        intrusion_detection_args['knowledge'] = knowledge
 
         flow_logger = FlowLogger(
             intrusion_detection_args.get("multi_class", False),
