@@ -378,10 +378,10 @@ class SmartSwitch(EventMixin):
                                      port=incomming_port, 
                                      connection=packet_in_event.connection)
 
-      if create_flow_rule:
-          self.try_creating_flow_rule(switch_id, 
-                                      incomming_port, 
-                                      packet_in_event)
+      # if create_flow_rule:
+      self.try_creating_flow_rule(switch_id, 
+                                  incomming_port, 
+                                  packet_in_event)
 
 
   def send_arp_response(
