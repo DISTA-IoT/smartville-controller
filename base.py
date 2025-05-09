@@ -118,7 +118,7 @@ class l3_switch (EventMixin):
   def _handle_expiration (self):
     # Called by a timer so that we can remove old items.
     empty = []
-    for k,v in self.lost_buffers.iteritems():
+    for k,v in self.lost_buffers.items():
       dpid,ip = k
 
       for item in list(v):
@@ -330,6 +330,14 @@ class l3_switch (EventMixin):
         msg.buffer_id = event.ofp.buffer_id
       event.connection.send(msg.pack())
 
+#connection enstablished 
+def _handle_ConnectionUp (event):
+  global openflow_connection
+  openflow_connection=event.connection
+  log.info("Connection is UP")
+  # Request stats periodically
+
+
 
 def launch (fakeways="", arp_for_unknowns=None):
   fakeways = fakeways.replace(","," ").split()
@@ -339,3 +347,7 @@ def launch (fakeways="", arp_for_unknowns=None):
   else:
     arp_for_unknowns = str_to_bool(arp_for_unknowns)
   core.registerNew(l3_switch, fakeways, arp_for_unknowns)
+  # attach handlers to listeners
+  core.openflow.addListenerByName(
+    "ConnectionUp", 
+    _handle_ConnectionUp)

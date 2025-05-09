@@ -44,6 +44,7 @@ from fastapi import FastAPI
 import uvicorn
 from pox.lib.recoco import Timer
 import logging
+import threading
 
 logger = core.getLogger()
 logger.name = "TigerServer"
@@ -55,12 +56,15 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+app_thread = None  # Thread for the FastAPI server
+app = None  # FastAPI app instance
 openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
 honeypots = None
 attackers = None
 rewards = None
 knowledge = None
+smart_switch = None
 container_ips = None
 flow_logger = None
 metrics_logger = None
@@ -70,35 +74,43 @@ def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
    
 
-def _handle_ConnectionUp (event):
-  global openflow_connection
-  openflow_connection=event.connection
-  logger.info("Connection is UP")
-  # Request stats periodically
-  Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
-
-
 def requests_stats():
   for connection in core.openflow._connections.values():
     connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
     connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
   logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
-
+  
 
 def pprint(obj):
-          for key, value in obj.items():
-              if isinstance(value, dict):
-                  pprint(value)
-              else:
-                logger.debug(f"{key}: {value}")
+    for key, value in obj.items():
+        if isinstance(value, dict):
+            pprint(value)
+        else:
+          logger.debug(f"{key}: {value}")
 
+
+def run_server():
+  global app
+  # Start the FastAPI server
+  uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+def _handle_ConnectionUp (event):
+      global openflow_connection, app_thread
+      openflow_connection=event.connection
+      logger.info("Connection is UP")
+
+      if app_thread is None or not app_thread.is_alive():
+        logger.info("TigerServer API is starting...")
+        app_thread = threading.Thread(target=run_server, daemon=True)
+        app_thread.start()
+     
 
 def launch(**kwargs):     
-    global app
+    global app, app_thread, openflow_connection
     
     app = FastAPI(title="TigerServer API", description="API for ML experiments")
     
-
     @app.get("/")
     async def root():
         logger.info("Root endpoint called")
@@ -179,9 +191,7 @@ def launch(**kwargs):
         core.register("smart_switch", smart_switch) 
         core.listen_to_dependencies(smart_switch)
         
-        core.openflow.addListenerByName(
-            "ConnectionUp", 
-            _handle_ConnectionUp)
+        
 
         FLOWSTATS_FREQ_SECS = int(intrusion_detection_args.get("flowstats_freq_secs", 5))
         
@@ -192,8 +202,12 @@ def launch(**kwargs):
               event, 
               smart_switch.knowledge))
     
+          # Request stats periodically
+          Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
+
         return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 
-    logger.info("TigerServer API is starting...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    core.openflow.addListenerByName(
+        "ConnectionUp", 
+        _handle_ConnectionUp)
