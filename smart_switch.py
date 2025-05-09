@@ -60,9 +60,6 @@ class SmartSwitch(EventMixin):
    """
   def __init__ (
         self, 
-        flow_logger, 
-        metrics_logger, 
-        brain,
         **kwargs
         ):
 
@@ -72,7 +69,6 @@ class SmartSwitch(EventMixin):
     self.max_buffering_secs = kwargs.get('max_buffering_secs')
     self.arp_req_exp_secs = kwargs.get('arp_req_exp_secs')
     self.logger = kwargs.get('logger')
-    self.use_node_feats = kwargs.get('use_node_feats')
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time
     self.recently_sent_ARPs = {}
@@ -87,21 +83,20 @@ class SmartSwitch(EventMixin):
     # (Entries are pairs of switch output ports and MAC addresses)
     self.arpTables = {}
 
-    self.brain = brain
-
     # This timer handles expiring stuff 
     # Doesnt seems having to do with time to live stuff
     self._expire_timer = Timer(5, self._handle_expiration, recurring=True)
 
     # Call the smart check function repeatedly:
-    self.smart_check_timer = Timer(kwargs.get('inference_freq_secs'), self.smart_check, recurring=True)
 
-    # Our flow logger instance:
-    self.flow_logger = flow_logger
+    # TODO manage
+    # self.brain = brain
+    # self.flow_logger = flow_logger
+    # self.metrics_logger = metrics_logger
+    # self.knowledge = kwargs.get('knowledge', None)
+    # self.use_node_feats = kwargs.get('use_node_feats')
+    # self.smart_check_timer = Timer(kwargs.get('inference_freq_secs'), self.smart_check, recurring=True)
 
-    self.metrics_logger = metrics_logger
-
-    self.knowledge = kwargs.get('knowledge', None)
 
     self.logger.info(f"SmartSwitch initialized!!")
 
@@ -363,12 +358,14 @@ class SmartSwitch(EventMixin):
                 packet.next.srcip,
                 packet.next.dstip)
       
-      # Save the first packets of each flow for inference purposes...
-      create_flow_rule = self.flow_logger.cache_unprocessed_packets(
-         src_ip=packet.next.srcip,
-         dst_ip=packet.next.dstip,
-         packet=packet)
       
+      # Save the first packets of each flow for inference purposes... TODO uncomment this
+      # create_flow_rule = self.flow_logger.cache_unprocessed_packets(
+      #    src_ip=packet.next.srcip,
+      #    dst_ip=packet.next.dstip,
+      #    packet=packet)
+      
+
       # Send any waiting packets for that ip
       self._send_unprocessed_flows(
          switch_id, 

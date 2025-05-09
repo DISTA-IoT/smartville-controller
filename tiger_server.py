@@ -45,11 +45,12 @@ import uvicorn
 from pox.lib.recoco import Timer
 import logging
 import threading
+import os
 
 logger = core.getLogger()
 logger.name = "TigerServer"
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("api.log"),
@@ -106,8 +107,30 @@ def _handle_ConnectionUp (event):
         app_thread.start()
      
 
+def get_switching_args(**kwargs):
+
+  switching_args = {
+    'flow_idle_timeout' : os.getenv('flow_idle_timeout'),
+    'arp_timeout' : os.getenv('arp_timeout'),
+    'max_buffered_packets' : os.getenv('max_buffered_packets'),
+    'max_buffering_secs' : os.getenv('max_buffering_secs'),
+    'arp_req_exp_secs' : os.getenv('arp_req_exp_secs'),
+    'logger' :logger
+    }
+
+  return switching_args
+
+
 def launch(**kwargs):     
     global app, app_thread, openflow_connection
+
+    # Registering Switch component:
+    smart_switch = SmartSwitch(
+      get_switching_args(**kwargs)
+      )
+    
+    core.register("smart_switch", smart_switch) 
+    core.listen_to_dependencies(smart_switch)
     
     app = FastAPI(title="TigerServer API", description="API for ML experiments")
     
@@ -179,18 +202,6 @@ def launch(**kwargs):
             wb_run_name=intrusion_detection_args.get('wb_run_name', f"my_run"),
             report_step_freq=int(intrusion_detection_args.get('report_step_freq',50)),
             kwargs=intrusion_detection_args)
-        
-        # Registering Switch component:
-        smart_switch = SmartSwitch(
-          flow_logger=flow_logger,
-          metrics_logger=metrics_logger,
-          brain=controller_brain,
-          **intrusion_detection_args
-          )
-      
-        core.register("smart_switch", smart_switch) 
-        core.listen_to_dependencies(smart_switch)
-        
         
 
         FLOWSTATS_FREQ_SECS = int(intrusion_detection_args.get("flowstats_freq_secs", 5))
