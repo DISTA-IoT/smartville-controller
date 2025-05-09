@@ -177,7 +177,8 @@ def launch(**kwargs):
           )
       
         core.register("smart_switch", smart_switch) 
-
+        core.listen_to_dependencies(smart_switch)
+        
         core.openflow.addListenerByName(
             "ConnectionUp", 
             _handle_ConnectionUp)
