@@ -1,7 +1,7 @@
 scapy>=2.6.1
-networkx==3.0
+networkx==3.2.1
 pydot>=4.0.0
-numpy>=2.2.5
+numpy== 2.0.2
 scikit-learn>=1.6.1
 wandb>=0.19.10
 confluent_Kafka>=2.10.0
