@@ -43,9 +43,18 @@ from smartController.smart_switch import SmartSwitch
 from fastapi import FastAPI
 import uvicorn
 from pox.lib.recoco import Timer
+import logging
 
-log = core.getLogger()
-log.name = "TigerServer"
+logger = core.getLogger()
+logger.name = "TigerServer"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("api.log"),
+        logging.StreamHandler()
+    ]
+)
 openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
 honeypots = None
@@ -64,7 +73,7 @@ def dpid_to_mac (dpid):
 def _handle_ConnectionUp (event):
   global openflow_connection
   openflow_connection=event.connection
-  log.info("Connection is UP")
+  logger.info("Connection is UP")
   # Request stats periodically
   Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
 
@@ -73,7 +82,7 @@ def requests_stats():
   for connection in core.openflow._connections.values():
     connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
     connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
-  log.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
+  logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
 
 
 def pprint(obj):
@@ -81,7 +90,7 @@ def pprint(obj):
               if isinstance(value, dict):
                   pprint(value)
               else:
-                log.debug(f"{key}: {value}")
+                logger.debug(f"{key}: {value}")
 
 
 def launch(**kwargs):     
@@ -92,7 +101,7 @@ def launch(**kwargs):
 
     @app.get("/")
     async def root():
-        log.info("Root endpoint called")
+        logger.info("Root endpoint called")
         return {"msg": "Hello World from the TigerServer!"}
     
 
@@ -102,7 +111,7 @@ def launch(**kwargs):
         global flow_logger, metrics_logger, controller_brain, smart_switch
         global FLOWSTATS_FREQ_SECS
 
-        log.info(f"Initialisation command received")
+        logger.info(f"Initialisation command received")
 
         pprint(kwargs)
 
@@ -118,7 +127,7 @@ def launch(**kwargs):
         intrusion_detection_args['attackers'] = attackers
         intrusion_detection_args['rewards'] = rewards
         intrusion_detection_args['knowledge'] = knowledge
-        intrusion_detection_args['logger'] = log
+        intrusion_detection_args['logger'] = logger
 
         flow_logger = FlowLogger(
             intrusion_detection_args.get("multi_class", False),
@@ -185,5 +194,5 @@ def launch(**kwargs):
         return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 
-    log.info("TigerServer API is starting...")
+    logger.info("TigerServer API is starting...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
