@@ -63,6 +63,8 @@ attackers = None
 rewards = None
 knowledge = None
 container_ips = None
+flow_logger = None
+metrics_logger = None
 
 
 def dpid_to_mac (dpid):
@@ -102,12 +104,13 @@ def launch(**kwargs):
         return {"msg": "Hello World from the TigerServer!"}
     
 
-    @app.post("/curricula")
-    async def set_curricula(curricula: dict):
+    @app.post("/initialize")
+    async def initialize(kwargs: dict):
         global honeypots, attackers, rewards, knowledge, container_ips
+        global flow_logger, metrics_logger
 
-        log.info(f"Curricula received:")
-        
+        log.info(f"Initialisation command received")
+
         def pprint(obj):
           for key, value in obj.items():
               if isinstance(value, dict):
@@ -115,31 +118,36 @@ def launch(**kwargs):
               else:
                 log.info(f"{key}: {value}")
 
-        pprint(curricula)
-        honeypots = curricula.get("honeypots", [])
-        attackers = curricula.get("attackers", [])
-        rewards = curricula.get("rewards", {})
-        knowledge = curricula.get("knowledge", {})
-        container_ips = curricula.get("container_ips", {})
-
-        # Here you would typically process the curricula
-        return {"msg": "Curricula updated successfully", "status_code": 200}
+        pprint(kwargs)
 
 
-    @app.post("/flowlogger")
-    async def set_flowlogger(flowlogger: dict):
-        global flow_logger
-        log.info(f"Flowlogger received:")
-        flowlogger = FlowLogger(
-            flowlogger.get("multi_class", False),
-            flowlogger.get("packet_buffer_len", 0),
-            flowlogger.get("packet_feat_dim", {}),
-            flowlogger.get("packet_cache", {}),
-            flowlogger.get("anonymize_transport_ports", True),
-            flowlogger.get("flow_feat_dim", 4),
-            flowlogger.get("flow_buff_len", {})
+        honeypots = kwargs.get("honeypots", [])
+        attackers = kwargs.get("attackers", [])
+        rewards = kwargs.get("rewards", {})
+        knowledge = kwargs.get("knowledge", {})
+        container_ips = kwargs.get("container_ips", {})
+
+        intrusion_detection_args = kwargs.get("intrusion_detection", {})
+
+        flow_logger = FlowLogger(
+            intrusion_detection_args.get("multi_class", False),
+            intrusion_detection_args.get("packet_buffer_len", 0),
+            intrusion_detection_args.get("packet_feat_dim", 64),
+            intrusion_detection_args.get("anonymize_transport_ports", True),
+            intrusion_detection_args.get("flow_feat_dim", 4),
+            intrusion_detection_args.get("flow_buff_len", 10)
         )
-        return {"msg": "Flowlogger initialized successfully", "status_code": 200}
+
+        if intrusion_detection_args.get("node_features", False):
+            metrics_logger = MetricsLogger(
+              server_addr = "192.168.1.1:9092",
+              max_conn_retries = int(intrusion_detection_args.get('max_kafka_conn_retries', 5)),
+              metric_buffer_len = int(intrusion_detection_args.get('metric_buffer_len', 10)),
+              grafana_user=intrusion_detection_args.get('grafana_user', 'admin'), 
+              grafana_pass=intrusion_detection_args.get('grafana_password', 'admin'),
+              )
+            
+        return {"msg": "TigerBrain initialized successfully", "status_code": 200}
     
 
     log.info("TigerServer API is starting...")
