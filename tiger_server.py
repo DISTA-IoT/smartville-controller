@@ -46,7 +46,7 @@ from pox.openflow.of_json import *
 from pox.lib.addresses import EthAddr
 from smartController.entry import Entry
 from smartController.flowlogger_new import FlowLogger
-from smartController.tiger_brain import TigerBrain
+from smartController.tiger_brain_new import TigerBrain
 from smartController.metricslogger import MetricsLogger
 from collections import defaultdict
 import requests
@@ -65,7 +65,7 @@ knowledge = None
 container_ips = None
 flow_logger = None
 metrics_logger = None
-
+controller_brain = None
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
@@ -107,7 +107,7 @@ def launch(**kwargs):
     @app.post("/initialize")
     async def initialize(kwargs: dict):
         global honeypots, attackers, rewards, knowledge, container_ips
-        global flow_logger, metrics_logger
+        global flow_logger, metrics_logger, controller_brain
 
         log.info(f"Initialisation command received")
 
@@ -147,7 +147,28 @@ def launch(**kwargs):
               grafana_pass=intrusion_detection_args.get('grafana_password', 'admin'),
               )
             
-        return {"msg": "TigerBrain initialized successfully", "status_code": 200}
+
+        # The controllerBrain holds the ML functionalities.
+        controller_brain = TigerBrain(
+            eval=eval,
+            flow_feat_dim=intrusion_detection_args.get("flow_feat_dim", 4),
+            packet_feat_dim=intrusion_detection_args.get("packet_feat_dim", 64),
+            dropout=intrusion_detection_args.get("packet_feat_dim", 0.6),
+            multi_class=str_to_bool(intrusion_detection_args.get('multi_class', True)), 
+            init_k_shot=int(intrusion_detection_args.get('init_k_shot', 5)),
+            replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size', 20)),
+            kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression', True)),
+            host_ip_addr=None,
+            device=intrusion_detection_args.get('device', 'cpu'),
+            seed=int(intrusion_detection_args.get('seed', 777)),
+            debug=str_to_bool(intrusion_detection_args.get('ai_debug', False)),
+            wb_track=str_to_bool(intrusion_detection_args.get('wb_tracking', False)),
+            wb_project_name=intrusion_detection_args.get('wb_project_name', 'TIGER'),
+            wb_run_name=intrusion_detection_args.get('wb_run_name', f"my_run"),
+            report_step_freq=int(intrusion_detection_args.get('report_step_freq',50)),
+            kwargs=intrusion_detection_args)
+              
+        return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 
     log.info("TigerServer API is starting...")
