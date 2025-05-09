@@ -90,7 +90,7 @@ class NewTigerEnvironment:
 
 
     def reset(self):
-        self.logger('TIGER ENV: restarting episode!')
+        self.logger.info('TIGER ENV: restarting episode!')
         self.restart_budget()
         self.reset_intelligence()
 
