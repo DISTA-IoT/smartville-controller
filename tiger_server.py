@@ -33,26 +33,16 @@ For each switch:
    in the table from step 1), install a flow for it.
 """
 from pox.core import core
-from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST
-from pox.lib.packet.ipv4 import ipv4
-from pox.lib.packet.arp import arp
-from pox.lib.recoco import Timer
 from pox.lib.util import str_to_bool
 import pox.openflow.libopenflow_01 as of
-from pox.lib.revent import *
-import time
-from pox.lib.recoco import Timer
-from pox.openflow.of_json import *
 from pox.lib.addresses import EthAddr
-from smartController.entry import Entry
 from smartController.flowlogger_new import FlowLogger
 from smartController.tiger_brain_new import TigerBrain
 from smartController.metricslogger import MetricsLogger
-from collections import defaultdict
-import requests
+from smartController.smart_switch import SmartSwitch
 from fastapi import FastAPI
 import uvicorn
-
+from pox.lib.recoco import Timer
 
 log = core.getLogger()
 log.name = "TigerServer"
@@ -76,7 +66,7 @@ def _handle_ConnectionUp (event):
   openflow_connection=event.connection
   log.info("Connection is UP")
   # Request stats periodically
-  # Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
+  Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
 
 
 def requests_stats():
@@ -98,11 +88,6 @@ def launch(**kwargs):
     global app
     
     app = FastAPI(title="TigerServer API", description="API for ML experiments")
-
-    # attach handlers to listeners
-    core.openflow.addListenerByName(
-      "ConnectionUp", 
-      _handle_ConnectionUp)
     
 
     @app.get("/")
@@ -114,7 +99,8 @@ def launch(**kwargs):
     @app.post("/initialize")
     async def initialize(kwargs: dict):
         global honeypots, attackers, rewards, knowledge, container_ips
-        global flow_logger, metrics_logger, controller_brain
+        global flow_logger, metrics_logger, controller_brain, smart_switch
+        global FLOWSTATS_FREQ_SECS
 
         log.info(f"Initialisation command received")
 
@@ -132,6 +118,7 @@ def launch(**kwargs):
         intrusion_detection_args['attackers'] = attackers
         intrusion_detection_args['rewards'] = rewards
         intrusion_detection_args['knowledge'] = knowledge
+        intrusion_detection_args['logger'] = log
 
         flow_logger = FlowLogger(
             intrusion_detection_args.get("multi_class", False),
@@ -171,7 +158,30 @@ def launch(**kwargs):
             wb_run_name=intrusion_detection_args.get('wb_run_name', f"my_run"),
             report_step_freq=int(intrusion_detection_args.get('report_step_freq',50)),
             kwargs=intrusion_detection_args)
-              
+        
+        # Registering Switch component:
+        smart_switch = SmartSwitch(
+          flow_logger=flow_logger,
+          metrics_logger=metrics_logger,
+          brain=controller_brain,
+          **intrusion_detection_args
+          )
+      
+        core.register("smart_switch", smart_switch) 
+
+        core.openflow.addListenerByName(
+            "ConnectionUp", 
+            _handle_ConnectionUp)
+
+        FLOWSTATS_FREQ_SECS = int(intrusion_detection_args.get("flowstats_freq_secs", 5))
+        
+        if FLOWSTATS_FREQ_SECS > 0:
+          core.openflow.addListenerByName(
+            "FlowStatsReceived", 
+            lambda event: flow_logger._handle_flowstats_received(
+              event, 
+              smart_switch.knowledge))
+    
         return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 

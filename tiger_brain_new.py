@@ -23,7 +23,6 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from smartController.wandb_tracker import WandBTracker
-from pox.core import core  # only for logging.
 import seaborn as sns
 import matplotlib.pyplot as plt
 import threading
@@ -382,7 +381,7 @@ class TigerBrain():
         self.wbt = wb_track
         self.wbl = None
         self.kernel_regression = kernel_regression
-        self.logger_instance = core.getLogger()
+        self.logger_instance = kwargs['logger']
         self.device=device
         self.seed = seed
         random.seed(seed)
@@ -403,7 +402,6 @@ class TigerBrain():
         self.replay_buffer_max_capacity= kwargs['replay_buffer_max_capacity']
         self.pretrained_models_dir = kwargs['pretrained_models_dir']
 
-        kwargs['logger'] = self.logger_instance
         self.env = NewTigerEnvironment(kwargs)
         self.init_agents(kwargs)
         self.init_intelligence()
