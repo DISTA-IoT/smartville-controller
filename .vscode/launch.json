@@ -102,5 +102,16 @@
             ],
             "justMyCode": true
         },
+        {
+            "name": "base",
+            "type": "python",
+            "request": "launch",
+            "program": "/pox/pox.py",
+            "args": [
+                "samples.pretty_log",
+                "smartController.base",
+            ],
+            "justMyCode": true
+        },
     ]
 }

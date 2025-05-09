@@ -43,8 +43,6 @@ from pox.lib.addresses import EthAddr
 import time
 from smartController.entry import Entry
 
-log = core.getLogger()
-
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
    
@@ -105,7 +103,6 @@ class SmartSwitch(EventMixin):
 
     self.knowledge = kwargs.get('knowledge', None)
 
-    core.listen_to_dependencies(self)
     self.logger.info(f"SmartSwitch initialized!!")
 
 
@@ -123,9 +120,9 @@ class SmartSwitch(EventMixin):
         discovered_attack = epistemic_updates['new_label']
 
         if 'reset' in epistemic_updates:
-            log.info(f'Curricula reset taken out')
+            self.logger.info(f'Curricula reset taken out')
         elif discovered_attack is not None:
-            log.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
+            self.logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
 
 
   def _handle_expiration(self):
@@ -166,7 +163,7 @@ class SmartSwitch(EventMixin):
       bucket = self.unprocessed_flows[query_tuple]    
       del self.unprocessed_flows[query_tuple]
 
-      log.debug(f"Sending {len(bucket)} buffered packets to {dest_ip_addr}")
+      self.logger.debug(f"Sending {len(bucket)} buffered packets to {dest_ip_addr}")
       
       for _, packet_id, in_port, _ in bucket:
         po = of.ofp_packet_out(buffer_id=packet_id, in_port=in_port)
@@ -183,7 +180,7 @@ class SmartSwitch(EventMixin):
       msg.match.dl_type = ethernet.IP_TYPE
       connection.send(msg)
 
-      log.info(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
+      self.logger.info(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
 
 
   def learn_or_update_arp_table(
@@ -209,7 +206,7 @@ class SmartSwitch(EventMixin):
                                             mac=mac_addr, 
                                             ARP_TIMEOUT=self.arp_timeout)
       
-      log.debug(f"Entry added/updated to switch {switch_id}'s internal arp table: "+\
+      self.logger.debug(f"Entry added/updated to switch {switch_id}'s internal arp table: "+\
                 f"(port:{port} ip:{ip_addr})")
         
 
@@ -241,7 +238,7 @@ class SmartSwitch(EventMixin):
       
       connection.send(msg.pack())
 
-      log.debug(f"Added new flow rule to:{switch_id}"+\
+      self.logger.debug(f"Added new flow rule to:{switch_id}"+\
                 f"match: {match} actions: {actions}")
 
 
@@ -268,7 +265,7 @@ class SmartSwitch(EventMixin):
                     dst=ETHER_BROADCAST)
       e.set_payload(request)
       
-      log.debug(f"{switch_id}'s port {incomming_port} ARPing for {dest_ip_addr} on behalf of {source_ip_addr}")
+      self.logger.debug(f"{switch_id}'s port {incomming_port} ARPing for {dest_ip_addr} on behalf of {source_ip_addr}")
 
       msg = of.ofp_packet_out()
       msg.data = e.pack()
@@ -360,7 +357,7 @@ class SmartSwitch(EventMixin):
       
       packet = packet_in_event.parsed
 
-      log.debug("IPV4 DETECTED - SWITCH: %i ON PORT: %i IP SENDER: %s IP RECEIVER %s", 
+      self.logger.debug("IPV4 DETECTED - SWITCH: %i ON PORT: %i IP SENDER: %s IP RECEIVER %s", 
                 switch_id,
                 incomming_port,
                 packet.next.srcip,
@@ -416,7 +413,7 @@ class SmartSwitch(EventMixin):
       
       ethernet_wrapper.set_payload(arp_response)
 
-      log.debug(f"ARP ANSWER from switch {switch_id}: ADDRESS:{arp_response.protosrc}")
+      self.logger.debug(f"ARP ANSWER from switch {switch_id}: ADDRESS:{arp_response.protosrc}")
 
       msg = of.ofp_packet_out()
       msg.data = ethernet_wrapper.pack()
@@ -435,7 +432,7 @@ class SmartSwitch(EventMixin):
       elif inner_packet.opcode == arp.REPLY: arp_operation = 'reply'
       else: arp_operation = 'op_'+ str(inner_packet.opcode)
 
-      log.debug(f"ARP {arp_operation} received: SWITCH: {switch_id} IN PORT:{incomming_port} ARP FROM: {inner_packet.protosrc} TO {inner_packet.protodst}")
+      self.logger.debug(f"ARP {arp_operation} received: SWITCH: {switch_id} IN PORT:{incomming_port} ARP FROM: {inner_packet.protosrc} TO {inner_packet.protodst}")
 
       if inner_packet.prototype == arp.PROTO_TYPE_IP and \
         inner_packet.hwtype == arp.HW_TYPE_ETHERNET and \
@@ -469,7 +466,7 @@ class SmartSwitch(EventMixin):
                 return
 
       # Didn't know how to answer or otherwise handle the received ARP, so just flood it
-      log.debug(f"Flooding ARP {arp_operation} Switch: {switch_id} IN_PORT: {incomming_port} from:{inner_packet.protosrc} to:{inner_packet.protodst}")
+      self.logger.debug(f"Flooding ARP {arp_operation} Switch: {switch_id} IN_PORT: {incomming_port} from:{inner_packet.protosrc} to:{inner_packet.protodst}")
 
       msg = of.ofp_packet_out(
          in_port = incomming_port, 
@@ -490,12 +487,12 @@ class SmartSwitch(EventMixin):
       return 
        
     if not packet.parsed:
-      log.warning(f"switch {switch_id}, port {incomming_port}: ignoring unparsed packet")
+      self.logger.warning(f"switch {switch_id}, port {incomming_port}: ignoring unparsed packet")
       return
   
     if switch_id not in self.arpTables:
       # New switch -- create an empty table
-      log.info(f"New switch detected - creating empty flow table with id {switch_id}")
+      self.logger.info(f"New switch detected - creating empty flow table with id {switch_id}")
       self.arpTables[switch_id] = {}
       
     if packet.type == ethernet.LLDP_TYPE:
