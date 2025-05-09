@@ -90,6 +90,17 @@
             "program": "admin_dashboard/grafana_test.py",
             "args": [],
             "justMyCode": true
-        }
+        },
+        {
+            "name": "TigerServer",
+            "type": "python",
+            "request": "launch",
+            "program": "/pox/pox.py",
+            "args": [
+                "samples.pretty_log",
+                "smartController.tiger_server",
+            ],
+            "justMyCode": true
+        },
     ]
 }
