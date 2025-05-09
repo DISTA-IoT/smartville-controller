@@ -45,7 +45,7 @@ from pox.lib.recoco import Timer
 from pox.openflow.of_json import *
 from pox.lib.addresses import EthAddr
 from smartController.entry import Entry
-from smartController.flowlogger import FlowLogger
+from smartController.flowlogger_new import FlowLogger
 from smartController.tiger_brain import TigerBrain
 from smartController.metricslogger import MetricsLogger
 from collections import defaultdict
@@ -58,7 +58,11 @@ log = core.getLogger()
 log.name = "TigerServer"
 openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
-
+honeypots = None
+attackers = None
+rewards = None
+knowledge = None
+container_ips = None
 
 
 def dpid_to_mac (dpid):
@@ -81,7 +85,6 @@ def requests_stats():
 
 
 
-
 def launch(**kwargs):     
     global app
     
@@ -96,7 +99,48 @@ def launch(**kwargs):
     @app.get("/")
     async def root():
         log.info("Root endpoint called")
-        return {"message": "Hello World from the TigerServer!"}
+        return {"msg": "Hello World from the TigerServer!"}
     
+
+    @app.post("/curricula")
+    async def set_curricula(curricula: dict):
+        global honeypots, attackers, rewards, knowledge, container_ips
+
+        log.info(f"Curricula received:")
+        
+        def pprint(obj):
+          for key, value in obj.items():
+              if isinstance(value, dict):
+                  pprint(value)
+              else:
+                log.info(f"{key}: {value}")
+
+        pprint(curricula)
+        honeypots = curricula.get("honeypots", [])
+        attackers = curricula.get("attackers", [])
+        rewards = curricula.get("rewards", {})
+        knowledge = curricula.get("knowledge", {})
+        container_ips = curricula.get("container_ips", {})
+
+        # Here you would typically process the curricula
+        return {"msg": "Curricula updated successfully", "status_code": 200}
+
+
+    @app.post("/flowlogger")
+    async def set_flowlogger(flowlogger: dict):
+        global flow_logger
+        log.info(f"Flowlogger received:")
+        flowlogger = FlowLogger(
+            flowlogger.get("multi_class", False),
+            flowlogger.get("packet_buffer_len", 0),
+            flowlogger.get("packet_feat_dim", {}),
+            flowlogger.get("packet_cache", {}),
+            flowlogger.get("anonymize_transport_ports", True),
+            flowlogger.get("flow_feat_dim", 4),
+            flowlogger.get("flow_buff_len", {})
+        )
+        return {"msg": "Flowlogger initialized successfully", "status_code": 200}
+    
+
     log.info("TigerServer API is starting...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
