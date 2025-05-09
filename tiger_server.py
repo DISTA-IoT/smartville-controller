@@ -126,7 +126,7 @@ def launch(**kwargs):
 
     # Registering Switch component:
     smart_switch = SmartSwitch(
-      get_switching_args(**kwargs)
+      **get_switching_args(**kwargs)
       )
     
     core.register("smart_switch", smart_switch) 

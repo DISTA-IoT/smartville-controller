@@ -63,11 +63,11 @@ class SmartSwitch(EventMixin):
         **kwargs
         ):
 
-    self.flow_idle_timeout = kwargs.get('flow_idle_timeout')
-    self.arp_timeout = kwargs.get('arp_timeout')
-    self.max_buffered_packets = kwargs.get('max_buffered_packets')
-    self.max_buffering_secs = kwargs.get('max_buffering_secs')
-    self.arp_req_exp_secs = kwargs.get('arp_req_exp_secs')
+    self.flow_idle_timeout = int(kwargs.get('flow_idle_timeout'))
+    self.arp_timeout = int(kwargs.get('arp_timeout'))
+    self.max_buffered_packets = int(kwargs.get('max_buffered_packets'))
+    self.max_buffering_secs = int(kwargs.get('max_buffering_secs'))
+    self.arp_req_exp_secs = int(kwargs.get('arp_req_exp_secs'))
     self.logger = kwargs.get('logger')
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time
