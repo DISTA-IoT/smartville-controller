@@ -69,7 +69,6 @@ class SmartSwitch(EventMixin):
     self.max_buffering_secs = int(kwargs.get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs.get('arp_req_exp_secs'))
     self.logger = kwargs.get('logger')
-    self.logger.setLevel('DEBUG')
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time
     self.recently_sent_ARPs = {}
