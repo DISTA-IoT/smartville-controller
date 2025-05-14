@@ -64,6 +64,5 @@ RUN git clone https://github.com/DISTA-IoT/smartville-controller.git pox/smartCo
 WORKDIR /pox/pox/smartController
 
 RUN pip install -r requirements.txt
-ENTRYPOINT ["pox/smartController/entrypoint.sh"]
 
 
