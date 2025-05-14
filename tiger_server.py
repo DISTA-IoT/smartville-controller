@@ -64,7 +64,6 @@ openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
 traffic_dict = None
 rewards = None
-init_knowledge = None
 current_knowledge = None
 smart_switch = None
 container_ips = None
@@ -122,7 +121,6 @@ def get_switching_args():
   return switching_args
 
 
-
 def smart_check():
   global current_knowledge, args
 
@@ -142,7 +140,7 @@ def smart_check():
 
 
 def launch(**kwargs):     
-    global app, app_thread, openflow_connection, smart_switch, init_knowledge, current_knowledge
+    global app, app_thread, openflow_connection, smart_switch
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
 
     # Registering Switch component:
@@ -163,7 +161,7 @@ def launch(**kwargs):
 
     @app.post("/initialize")
     async def initialize(kwargs: dict):
-        global traffic_dict, rewards, init_knowledge, container_ips, current_knowledge
+        global traffic_dict, rewards, container_ips
         global flow_logger, metrics_logger, controller_brain, smart_switch
         global FLOWSTATS_FREQ_SECS, args
 
@@ -172,20 +170,13 @@ def launch(**kwargs):
         pprint(kwargs)
 
         args = kwargs
-        traffic_dict = kwargs.get("traffic_dict", [])
-        rewards = kwargs.get("rewards", {})
-        init_knowledge = kwargs.get("knowledge", {})
-        current_knowledge = init_knowledge.copy()
-        container_ips = kwargs.get("container_ips", {})
-        ips_containers = kwargs.get("ips_containers", {})
-        
-
+          
         intrusion_detection_args = kwargs.get("intrusion_detection", {})
-        intrusion_detection_args['container_ips'] = container_ips
-        intrusion_detection_args['ips_containers'] = ips_containers
-        intrusion_detection_args['traffic_dict'] = traffic_dict
-        intrusion_detection_args['rewards'] = rewards
-        intrusion_detection_args['knowledge'] = init_knowledge
+        intrusion_detection_args['container_ips'] = kwargs.get("container_ips", {})
+        intrusion_detection_args['ips_containers'] = kwargs.get("ips_containers", {})
+        intrusion_detection_args['traffic_dict'] = kwargs.get("traffic_dict", [])
+        intrusion_detection_args['rewards'] = kwargs.get("rewards", {})
+        intrusion_detection_args['knowledge'] = kwargs.get("knowledge", {})
         intrusion_detection_args['logger'] = logger
 
         flow_logger = FlowLogger(
@@ -199,7 +190,7 @@ def launch(**kwargs):
 
         if intrusion_detection_args.get("node_features", False):
             metrics_logger = MetricsLogger(
-              server_addr = "192.168.1.1:9092",
+              server_addr = f"{intrusion_detection_args['container_ips']['pox-controller']}:9092",
               max_conn_retries = int(intrusion_detection_args.get('max_kafka_conn_retries', 5)),
               metric_buffer_len = int(intrusion_detection_args.get('metric_buffer_len', 10)),
               grafana_user=intrusion_detection_args.get('grafana_user', 'admin'), 
@@ -234,9 +225,9 @@ def launch(**kwargs):
             "FlowStatsReceived", 
             lambda event: flow_logger._handle_flowstats_received(
               event, 
-              current_knowledge,
-              traffic_dict,
-              ips_containers))
+              controller_brain.env.current_knowledge,
+              controller_brain.traffic_dict,
+              controller_brain.ips_containers))
     
           # Request stats periodically
           Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)

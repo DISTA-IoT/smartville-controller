@@ -400,7 +400,9 @@ class TigerBrain():
         self.learning_rate= float(kwargs['learning_rate'])
         self.replay_buffer_max_capacity= kwargs['replay_buffer_max_capacity']
         self.pretrained_models_dir = kwargs['pretrained_models_dir']
-
+        self.container_ips = kwargs['container_ips']
+        self.ips_containers = kwargs['ips_containers']
+        self.traffic_dict = kwargs['traffic_dict']
         self.env = NewTigerEnvironment(kwargs)
         self.init_agents(kwargs)
         self.init_intelligence()
@@ -764,9 +766,9 @@ class TigerBrain():
         
         if mode == TRAINING:
             test_zda_labels = torch.zeros((len(nl_labels),1))
-            zda_labels = torch.Tensor([G1 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+            zda_labels = torch.Tensor([nl_label in self.env.current_knowledge['G1s'] for nl_label in nl_labels]).unsqueeze(-1)
         elif mode == INFERENCE:
-            test_zda_labels = zda_labels = torch.Tensor([G2 in nl_label for nl_label in nl_labels]).unsqueeze(-1)
+            test_zda_labels = zda_labels = torch.Tensor([nl_label in self.env.current_knowledge['G2s'] for nl_label in nl_labels]).unsqueeze(-1)
 
         return zda_labels, test_zda_labels
 
@@ -1288,11 +1290,11 @@ class TigerBrain():
 
             if mode== TRAINING:
                 # we cannot use test-time anomalies for backproping gradients on our inference module, (by definition) 
-                if G2 in class_nl_label:
+                if class_nl_label in self.env.current_knowledge['G2s']:
                     continue
                 # we use fake-anomalies, (i.e. clusters we know but that we can label as anomalies to teach the inference
                 # module to learn the cluster separation distribution and be able to detect OOD test-time anomalies or G2 classes) 
-                if G1 in class_nl_label:
+                if class_nl_label in self.env.current_knowledge['G1s']:
                     zda_batch_labels = torch.ones(samples_per_class, 1)
             
             # in inference, we sample from the replay buffers to build an auxiliary batch for classification.
@@ -1302,7 +1304,7 @@ class TigerBrain():
             # on their benign/malicious nature, as we already known what they are, so the unique anomalies here are the eventual G2s
             # that are still-to-buy as CTI 
             if mode == INFERENCE:
-                if G2 in class_nl_label:
+                if class_nl_label in self.env.current_knowledge['G2s']:
                     test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
             
             flow_batch, \

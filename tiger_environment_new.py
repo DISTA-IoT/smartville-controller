@@ -11,7 +11,7 @@ class NewTigerEnvironment:
     def __init__(self, kwargs):
         """Initialize the attributes of the Car class."""
         self.init_budget = float(kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.init_flow_rewards_dict = kwargs['rewards'].copy()
+        self.flow_rewards_dict = kwargs['rewards'].copy()
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
@@ -24,11 +24,10 @@ class NewTigerEnvironment:
     def reset_intelligence(self):
         
         self.current_knowledge = self.init_knowledge.copy()
-        self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
+        self.current_knowledge['updated_labels'] = []
         self.update_cti_options()
         
         return {'current_knowledge': self.current_knowledge,
-                'flow_rewards_dict': self.flow_rewards_dict,
                 'updated_label': None,
                 'new_label': None,
                 'reset' : True}
@@ -90,49 +89,28 @@ class NewTigerEnvironment:
         """
         This method changes the curriculum by turning an attack that
         was a type2 ZDA in a known attack.
+        TODO check legacy with corresponding tiger_enrivonment action.
         """
-        
-        new_label = None
-        updated_label = None
-        changed_ip = None      
+               
         price_payed = 0
-
         # get the label corresponding to the attack we want to purchase info about 
         acquired_cti = list(self.current_cti_options.keys())[current_action]
 
         # if the action corresponds to a placeholder, it means we did not buy anything. 
         if 'placeholder' not in acquired_cti:
 
-            # turn the corresponding ip address as not a Zda nor a test Zda and 
-            # TAKE OUT THE G2 SUBSTRING FROM THE LABEL 
-            for ip, label in self.current_TRAINING_LABELS_DICT.items():
-
-                if label == acquired_cti:
-                    
-                    # Take out the indicators of ZDA from the curriculum dicts.  
-                    self.current_ZDA_DICT[ip] = False
-                    self.current_TEST_ZDA_DICT[ip]  = False 
-                    new_label = str(label).replace(G2, NEW)
-                    self.current_TRAINING_LABELS_DICT[ip] = new_label
-                    # This will be used for changing the encoder values in the brain class  
-                    updated_label = label
-                    changed_ip = ip
-                    price_payed = self.cti_prices[label]
-
-                    
-                    # update also the rewards dictionary:
-                    reward = self.flow_rewards_dict[label]    
-                    del self.flow_rewards_dict[label]
-                    self.flow_rewards_dict[new_label] = reward
-
-                # update our options vector:
-                self.update_cti_options()
-
-        
+            self.current_knowledge['G2s'].remove(acquired_cti)
+            self.current_knowledge['Knowns'].append(acquired_cti)
+            self.current_knowledge['updated_labels'].append(acquired_cti)
+            price_payed = self.cti_prices[acquired_cti]
+            self.update_cti_options()
+        else:
+            # TODO shall we penalize here??
+            # price_payed = big money??
+            pass
+    
         return {'current_knowledge': self.current_knowledge,
-                'updated_label': updated_label,
-                'new_label': new_label,
-                'changed_ip':changed_ip,
+                'acquired_pattern': acquired_cti,
                 'price_payed': price_payed}
 
 
