@@ -80,14 +80,6 @@ OUT_TRAFFIC = 'OUT_TRAFFIC'
 DELAY = 'DELAY'
 AGENT = 'AGENT'
 
-
-
-
-
-
-
-
-
 # Constants for wandb monitoring:
 INFERENCE = 'Inference'
 TRAINING = 'Training'
@@ -102,11 +94,6 @@ STEP_LABEL = 'step'
 ANOMALY_BALANCE = 'ANOMALY_BALANCE'
 CLOSED_SET = 'CS'
 ANOMALY_DETECTION = 'AD'
-
-NEW = 'NEW'
-G1 = 'G1'
-G2 = 'G2'
-BENIGN = 'Benign'
 
 
 def thread_safe(method):
@@ -232,7 +219,7 @@ class DynamicLabelEncoder:
         self._lock = threading.Lock()
 
 
-    def fit(self, labels):
+    def fit(self, labels, updated_labels):
         """
         returns the number of new classes found!
         """
@@ -244,8 +231,10 @@ class DynamicLabelEncoder:
         # Handling sync erros:
         # notice that ex-G2 labels, contain the 'NEW' substring
         # and must be introduced only via the update function.  
-        modified_new_labels =[new_label.replace(NEW, G2) for new_label in new_labels] 
-        new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
+        # modified_new_labels =[new_label.replace(NEW, G2) for new_label in new_labels] 
+        # new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
+    
+        new_labels = new_labels - set(updated_labels)
 
         for label in new_labels:
             self.add_class(label)
@@ -1845,7 +1834,7 @@ class TigerBrain():
     def get_labels(self, flows):
 
         string_labels = [flow.element_class for flow in flows]
-        new_classes = self.encoder.fit(string_labels)
+        new_classes = self.encoder.fit(string_labels, self.env.current_knowledge['updated_labels'])
         for new_class in new_classes:
             self.add_class_to_knowledge_base(new_class)
 
