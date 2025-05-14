@@ -69,6 +69,7 @@ class SmartSwitch(EventMixin):
     self.max_buffering_secs = int(kwargs.get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs.get('arp_req_exp_secs'))
     self.logger = kwargs.get('logger')
+    self.logger.setLevel('DEBUG')
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time
     self.recently_sent_ARPs = {}
@@ -303,6 +304,7 @@ class SmartSwitch(EventMixin):
     
   
   def try_creating_flow_rule(self, switch_id,incomming_port, packet_in_event):
+      
       packet = packet_in_event.parsed
       source_ip_addr = packet.next.srcip
       dest_ip_addr = packet.next.dstip
@@ -331,7 +333,12 @@ class SmartSwitch(EventMixin):
 
   def handle_ipv4_packet_in(self, switch_id, incomming_port, packet_in_event):
       
-      packet = packet_in_event.parsed
+      try:
+        packet = packet_in_event.parsed  # DNS parsing error occurs during this step
+      except:
+        # If the parsing fails, just skip this packet without raising an exception
+        self.logger.warning(f'error while parsing ipv4 packet_in_event: {packet_in_event}') 
+        return
 
       self.logger.debug("IPV4 DETECTED - SWITCH: %i ON PORT: %i IP SENDER: %s IP RECEIVER %s", 
                 switch_id,
@@ -402,6 +409,13 @@ class SmartSwitch(EventMixin):
       
   def handle_arp_packet_in(self, switch_id, incomming_port, packet_in_event):
       
+      try:
+        packet = packet_in_event.parsed  # DNS parsing error occurs during this step
+      except:
+        # If the parsing fails, just skip this packet without raising an exception
+        self.logger.warning(f'error while parsing arp packet_in_event: {packet_in_event}') 
+        return
+      
       packet = packet_in_event.parsed
       inner_packet = packet.next
 
@@ -458,10 +472,10 @@ class SmartSwitch(EventMixin):
     switch_id = event.connection.dpid
     incomming_port = event.port
     try:
-      packet = event.parsed
+      packet = event.parsed  # DNS parsing error occurs during this step
     except:
       # If the parsing fails, just skip this packet without raising an exception
-      print('.')
+      self.logger.warning(f'error while parsing openflow packet_in_event: {event}') 
       return 
        
     if not packet.parsed:
