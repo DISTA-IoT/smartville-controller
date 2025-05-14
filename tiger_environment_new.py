@@ -15,9 +15,6 @@ class NewTigerEnvironment:
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
-        self.init_ZDA_DICT = None
-        self.init_TEST_ZDA_DICT = None
-        self.init_TRAINING_LABELS_DICT = None
         self.traffic_dict = kwargs['traffic_dict'].copy()
         self.init_knowledge = kwargs['knowledge'].copy()
         self.logger = kwargs['logger']
@@ -26,17 +23,12 @@ class NewTigerEnvironment:
 
     def reset_intelligence(self):
         
-        self.current_ZDA_DICT = None
-        self.current_TEST_ZDA_DICT = None
-        self.current_TRAINING_LABELS_DICT = None
         self.current_knowledge = self.init_knowledge.copy()
         self.flow_rewards_dict = self.init_flow_rewards_dict.copy()
         self.update_cti_options()
         
-        
-        return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
-                'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
-                'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
+        return {'current_knowledge': self.current_knowledge,
+                'flow_rewards_dict': self.flow_rewards_dict,
                 'updated_label': None,
                 'new_label': None,
                 'reset' : True}
@@ -137,9 +129,7 @@ class NewTigerEnvironment:
                 self.update_cti_options()
 
         
-        return {'NEW_ZDA_DICT': self.current_ZDA_DICT,
-                'NEW_TEST_ZDA_DICT': self.current_TEST_ZDA_DICT,
-                'NEW_TRAINING_LABELS_DICT': self.current_TRAINING_LABELS_DICT,
+        return {'current_knowledge': self.current_knowledge,
                 'updated_label': updated_label,
                 'new_label': new_label,
                 'changed_ip':changed_ip,

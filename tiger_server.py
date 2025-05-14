@@ -59,11 +59,13 @@ logging.basicConfig(
 )
 app_thread = None  # Thread for the FastAPI server
 app = None  # FastAPI app instance
+args = None
 openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
 traffic_dict = None
 rewards = None
-knowledge = None
+init_knowledge = None
+current_knowledge = None
 smart_switch = None
 container_ips = None
 flow_logger = None
@@ -120,8 +122,28 @@ def get_switching_args():
   return switching_args
 
 
+
+def smart_check():
+  global current_knowledge, args
+
+  epistemic_updates = controller_brain.process_input(
+    flows=list(flow_logger.flows_dict.values()),
+    node_feats=(metrics_logger.metrics_dict if args.node_features else None))
+  
+  if epistemic_updates is not None:
+      
+      current_knowledge = epistemic_updates['current_knowledge']
+      discovered_attack = epistemic_updates['new_label']
+
+      if 'reset' in epistemic_updates:
+          logger.info(f'Curricula reset taken out')
+      elif discovered_attack is not None:
+          logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
+
+
 def launch(**kwargs):     
-    global app, app_thread, openflow_connection, smart_switch, knowledge
+    global app, app_thread, openflow_connection, smart_switch, init_knowledge, current_knowledge
+    global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
 
     # Registering Switch component:
     smart_switch = SmartSwitch(
@@ -141,17 +163,19 @@ def launch(**kwargs):
 
     @app.post("/initialize")
     async def initialize(kwargs: dict):
-        global traffic_dict, rewards, knowledge, container_ips
+        global traffic_dict, rewards, init_knowledge, container_ips, current_knowledge
         global flow_logger, metrics_logger, controller_brain, smart_switch
-        global FLOWSTATS_FREQ_SECS
+        global FLOWSTATS_FREQ_SECS, args
 
         logger.info(f"Initialisation command received")
 
         pprint(kwargs)
 
+        args = kwargs
         traffic_dict = kwargs.get("traffic_dict", [])
         rewards = kwargs.get("rewards", {})
-        knowledge = kwargs.get("knowledge", {})
+        init_knowledge = kwargs.get("knowledge", {})
+        current_knowledge = init_knowledge.copy()
         container_ips = kwargs.get("container_ips", {})
         ips_containers = kwargs.get("ips_containers", {})
         
@@ -161,7 +185,7 @@ def launch(**kwargs):
         intrusion_detection_args['ips_containers'] = ips_containers
         intrusion_detection_args['traffic_dict'] = traffic_dict
         intrusion_detection_args['rewards'] = rewards
-        intrusion_detection_args['knowledge'] = knowledge
+        intrusion_detection_args['knowledge'] = init_knowledge
         intrusion_detection_args['logger'] = logger
 
         flow_logger = FlowLogger(
@@ -210,13 +234,15 @@ def launch(**kwargs):
             "FlowStatsReceived", 
             lambda event: flow_logger._handle_flowstats_received(
               event, 
-              knowledge,
+              current_knowledge,
               traffic_dict,
               ips_containers))
     
           # Request stats periodically
           Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
-
+          # Periodic Training and Inference
+          Timer(intrusion_detection_args['inference_freq_secs'], smart_check, recurring=True) 
+          
         return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 
