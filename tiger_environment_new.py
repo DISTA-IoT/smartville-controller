@@ -18,9 +18,8 @@ class NewTigerEnvironment:
         self.init_ZDA_DICT = None
         self.init_TEST_ZDA_DICT = None
         self.init_TRAINING_LABELS_DICT = None
-        self.honeypots = kwargs['honeypots']
-        self.attackers = kwargs['attackers']
-        self.init_knowledge = kwargs['knowledge']
+        self.traffic_dict = kwargs['traffic_dict'].copy()
+        self.init_knowledge = kwargs['knowledge'].copy()
         self.logger = kwargs['logger']
         self.max_episode_steps = kwargs['max_episode_steps'] 
         self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)

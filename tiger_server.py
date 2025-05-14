@@ -61,8 +61,7 @@ app_thread = None  # Thread for the FastAPI server
 app = None  # FastAPI app instance
 openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
-honeypots = None
-attackers = None
+traffic_dict = None
 rewards = None
 knowledge = None
 smart_switch = None
@@ -107,7 +106,7 @@ def _handle_ConnectionUp (event):
         app_thread.start()
      
 
-def get_switching_args(**kwargs):
+def get_switching_args():
 
   switching_args = {
     'flow_idle_timeout' : os.getenv('flow_idle_timeout'),
@@ -122,11 +121,11 @@ def get_switching_args(**kwargs):
 
 
 def launch(**kwargs):     
-    global app, app_thread, openflow_connection
+    global app, app_thread, openflow_connection, smart_switch, knowledge
 
     # Registering Switch component:
     smart_switch = SmartSwitch(
-      **get_switching_args(**kwargs)
+      **get_switching_args()
       )
     
     core.register("smart_switch", smart_switch) 
@@ -142,7 +141,7 @@ def launch(**kwargs):
 
     @app.post("/initialize")
     async def initialize(kwargs: dict):
-        global honeypots, attackers, rewards, knowledge, container_ips
+        global traffic_dict, rewards, knowledge, container_ips
         global flow_logger, metrics_logger, controller_brain, smart_switch
         global FLOWSTATS_FREQ_SECS
 
@@ -150,16 +149,17 @@ def launch(**kwargs):
 
         pprint(kwargs)
 
-        honeypots = kwargs.get("honeypots", [])
-        attackers = kwargs.get("attackers", [])
+        traffic_dict = kwargs.get("traffic_dict", [])
         rewards = kwargs.get("rewards", {})
         knowledge = kwargs.get("knowledge", {})
         container_ips = kwargs.get("container_ips", {})
+        ips_containers = kwargs.get("ips_containers", {})
+        
 
         intrusion_detection_args = kwargs.get("intrusion_detection", {})
         intrusion_detection_args['container_ips'] = container_ips
-        intrusion_detection_args['honeypots'] = honeypots
-        intrusion_detection_args['attackers'] = attackers
+        intrusion_detection_args['ips_containers'] = ips_containers
+        intrusion_detection_args['traffic_dict'] = traffic_dict
         intrusion_detection_args['rewards'] = rewards
         intrusion_detection_args['knowledge'] = knowledge
         intrusion_detection_args['logger'] = logger
@@ -193,7 +193,6 @@ def launch(**kwargs):
             init_k_shot=int(intrusion_detection_args.get('init_k_shot', 5)),
             replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size', 20)),
             kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression', True)),
-            host_ip_addr=None,
             device=intrusion_detection_args.get('device', 'cpu'),
             seed=int(intrusion_detection_args.get('seed', 777)),
             debug=str_to_bool(intrusion_detection_args.get('ai_debug', False)),
@@ -211,7 +210,9 @@ def launch(**kwargs):
             "FlowStatsReceived", 
             lambda event: flow_logger._handle_flowstats_received(
               event, 
-              smart_switch.knowledge))
+              knowledge,
+              traffic_dict,
+              ips_containers))
     
           # Request stats periodically
           Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)

@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from pox.lib.packet.ipv4 import ipv4
 
 
+BENIGN_SUFFIX = ' (Benign)'
 class FlowLogger(object):
     
 
@@ -122,9 +123,9 @@ class FlowLogger(object):
     def process_received_flow(
           self, 
           flow,
-          class_labels,
-          zda_labels,
-          test_zda_labels):
+          current_knowledge,
+          traffic_dict,
+          ips_containers):
         
         sender_ip_addr = flow['match']['nw_src'].split('/')[0]
 
@@ -136,20 +137,27 @@ class FlowLogger(object):
           flow_buff_len=self.flow_buff_len)
         
         # This is where our labelling takes place... 
-        new_flow.element_class = class_labels[sender_ip_addr]
-        new_flow.zda = zda_labels[sender_ip_addr]
-        new_flow.test_zda = test_zda_labels[sender_ip_addr]
+        if sender_ip_addr in ips_containers:
+            if ips_containers[sender_ip_addr] != 'pox-controller':
+               hostname = ips_containers[sender_ip_addr]
+               flow_info = traffic_dict[hostname]
+                     
+               new_flow.element_class = flow_info['pattern']
+               # legacy labelling:
+               # if flow_info['benign']: new_flow.element_class += BENIGN_SUFFIX
 
-        
-        flow_features = self.extract_flow_feature_tensor(flow=flow)
+               new_flow.test_zda = flow_info['pattern'] in current_knowledge['G2s']
+               new_flow.zda = new_flow.test_zda or flow_info['pattern'] in current_knowledge['G1s']
+               
+               flow_features = self.extract_flow_feature_tensor(flow=flow)
 
-        if new_flow.flow_id in self.flows_dict.keys():
-          self.flows_dict[new_flow.flow_id].enrich_flow_features(flow_features)
-        else:
-          new_flow.enrich_flow_features(flow_features)
-          self.flows_dict[new_flow.flow_id] = new_flow
+               if new_flow.flow_id in self.flows_dict.keys():
+                  self.flows_dict[new_flow.flow_id].enrich_flow_features(flow_features)
+               else:
+                  new_flow.enrich_flow_features(flow_features)
+                  self.flows_dict[new_flow.flow_id] = new_flow
 
-        self.update_packet_buffer(new_flow)
+               self.update_packet_buffer(new_flow)
 
 
     def update_packet_buffer(self, flow_object):
@@ -171,15 +179,15 @@ class FlowLogger(object):
                 self.flows_dict[flow_object.flow_id].packets_tensor.add(single_packet_tensor)
 
     
-    def _handle_flowstats_received (self, event, class_labels, zda_labels, test_zda_labels):
+    def _handle_flowstats_received (self, event, current_knowledge, traffic_dict, ips_containers):
       self.logger_instance.debug("FlowStatsReceived")
       stats = flow_stats_to_list(event.stats)
       for sender_flow in stats:
         self.process_received_flow(
            flow=sender_flow,
-           class_labels=class_labels,
-           zda_labels=zda_labels,
-           test_zda_labels=test_zda_labels)
+           current_knowledge=current_knowledge,
+           traffic_dict=traffic_dict,
+           ips_containers=ips_containers)
 
     def reset_all_flows_metadata(self):
        self.flows_dict = {}

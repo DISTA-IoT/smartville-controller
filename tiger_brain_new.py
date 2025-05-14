@@ -358,7 +358,6 @@ class TigerBrain():
                  init_k_shot,
                  replay_buffer_batch_size,
                  kernel_regression,
-                 host_ip_addr,
                  device='cpu',
                  seed=777,
                  debug=False,
