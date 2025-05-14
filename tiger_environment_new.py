@@ -45,8 +45,8 @@ class NewTigerEnvironment:
             try:
                 # the cti price is n times the cost or revenue of the corresponding flow 
                 self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
-            except:
-                print('something went wrong...')
+            except Exception as e:
+                self.logger.error(f'Something went wrong duting CTI processing... {e}')
         # set a list of n_options available cti options:   
         self.current_cti_options = {}  
 

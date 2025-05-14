@@ -128,7 +128,7 @@ def smart_check():
 
   epistemic_updates = controller_brain.process_input(
     flows=list(flow_logger.flows_dict.values()),
-    node_feats=(metrics_logger.metrics_dict if args.node_features else None))
+    node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
   
   if epistemic_updates is not None:
       
@@ -242,7 +242,7 @@ def launch(**kwargs):
           Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
           # Periodic Training and Inference
           Timer(intrusion_detection_args['inference_freq_secs'], smart_check, recurring=True) 
-          
+
         return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 
