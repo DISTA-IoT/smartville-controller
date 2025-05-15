@@ -1647,17 +1647,19 @@ class TigerBrain():
 
         if updates_dict['updated_label'] is not None:
 
+            # retroconpatibility TODO refac this
             add_replay_buff = self.encoder.update_label(
                 old_label=updates_dict['updated_label'],
-                new_label=updates_dict['new_label'],
+                new_label=updates_dict['updated_label'],
                 logger=self.logger_instance
             )
+            
 
             if add_replay_buff:
                 # we cant invoke this function here because it would be a deadlock 
                 # self.add_class_to_knowledge_base(updates_dict['new_label'])
                 # fo we repeat the code: 
-                new_class = updates_dict['new_label']
+                new_class = updates_dict['updated_label']
                 if self.AI_DEBUG:
                     self.logger_instance.info(f'New class found: {new_class}')
 
