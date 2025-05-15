@@ -105,11 +105,13 @@ class NewTigerEnvironment:
             price_payed = self.cti_prices[acquired_cti]
             self.update_cti_options()
         else:
+            acquired_cti = None
             # TODO shall we penalize here??
             # price_payed = big money??
             pass
     
-        return {'current_knowledge': self.current_knowledge,
+        return {'updated_label': acquired_cti,
+                'current_knowledge': self.current_knowledge,
                 'acquired_pattern': acquired_cti,
                 'price_payed': price_payed}
 
