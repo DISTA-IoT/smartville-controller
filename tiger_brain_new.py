@@ -104,6 +104,14 @@ def thread_safe(method):
     return _impl
 
 
+def epistemic_thread_safe(method):
+    @wraps(method)
+    def _impl(self, *method_args, **method_kwargs):
+        with self._epistemic_lock:
+            return method(self, *method_args, **method_kwargs)
+    return _impl
+
+
 def efficient_cm(preds, targets_onehot):
 
     predictions_decimal = preds.argmax(dim=1).to(torch.int64)
@@ -161,7 +169,10 @@ def get_clusters(predicted_kernel):
     torch.Tensor: A 1D tensor of cluster labels, where each unique label represents a different cluster. 
                   The label values range from 0 to (num_clusters - 1).
     """
-        
+    
+    # All fellas are in its own cluster, so we should start by adding that condition:
+    predicted_kernel = predicted_kernel + torch.eye(predicted_kernel.shape[0])
+
     # Binarize the predicted kernel to create a discrete adjacency matrix (0 or 1)
     discrete_predicted_kernel = (predicted_kernel > 0.5).long()
     
@@ -216,7 +227,6 @@ class DynamicLabelEncoder:
         # _old_labels keeps track of changed labels for eventually handling sychronization mistakes. 
         # (packets sent to the router during epistemic updates) 
         self._old_labels = {}
-        self._lock = threading.Lock()
 
 
     def fit(self, labels, updated_labels):
@@ -292,7 +302,7 @@ class DynamicLabelEncoder:
         # the caller needs to know if he should add a replay buffer 
         add_replay_buffer_signal = False
 
-        logger.info(f'ENCODER: Changing  {old_label} to {new_label}')
+        logger.debug(f'ENCODER: Changing  {old_label} to {new_label}')
 
         # did we actually know the old version of this label? 
         if old_label in self._label_to_int:
@@ -356,6 +366,7 @@ class TigerBrain():
                  report_step_freq=50,
                  kwargs={}):
         self._lock = threading.Lock()
+        self._epistemic_lock = threading.Lock()
         self.eval = eval
         self.use_packet_feats = kwargs['use_packet_feats'] 
         self.use_node_feats = kwargs['node_features'] 
@@ -416,7 +427,7 @@ class TigerBrain():
         self.replay_buffers = {}
         self.reset_environment()
 
-    @thread_safe
+    @epistemic_thread_safe
     def reset_environment(self):
         self.env.reset()    
         self.encoder.reset_original_labels()
@@ -1255,11 +1266,11 @@ class TigerBrain():
 
             # this fella could be toogling because of a new class arriving... 
             with self._lock:
-                batch_processing = self.batch_processing_allowed
-
-            if batch_processing:
-                updates_dict = self.online_inference(batch)
-                self.experience_learning()
+                if self.batch_processing_allowed:
+                    updates_dict = self.online_inference(batch)
+            with self._lock:
+                if self.batch_processing_allowed:
+                    self.experience_learning()
 
         return updates_dict        
 
@@ -1640,7 +1651,7 @@ class TigerBrain():
         # for epistemic updates  
         return updates_dict
     """    
-    @thread_safe 
+    @epistemic_thread_safe 
     def perform_epistemic_action(self, current_action=0):      
         
         updates_dict = self.env.perform_epistemic_action(current_action)
