@@ -131,7 +131,7 @@ def smart_check():
   if epistemic_updates is not None:
       
       current_knowledge = epistemic_updates['current_knowledge']
-      discovered_attack = epistemic_updates['new_label']
+      discovered_attack = epistemic_updates['updated_label']
 
       if 'reset' in epistemic_updates:
           logger.info(f'Curricula reset taken out')
