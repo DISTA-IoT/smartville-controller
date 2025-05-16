@@ -297,53 +297,19 @@ class DynamicLabelEncoder:
         return list(self._label_to_int.keys())
     
 
-    def update_label(self, old_label, new_label, logger):
+    def update_label(self, new_label, logger):
 
         # the caller needs to know if he should add a replay buffer 
         add_replay_buffer_signal = False
 
-        logger.debug(f'ENCODER: Changing  {old_label} to {new_label}')
+        if not new_label in self._label_to_int:
 
-        # did we actually know the old version of this label? 
-        if old_label in self._label_to_int:
-
-            # get the numeric mapping: 
-            current_val = self._label_to_int[old_label]
-            
-            # update the transformation dict:  
-            del self._label_to_int[old_label]
-            self._label_to_int[new_label] = current_val
-
-            # update the inversr transformation dict:
-            self._int_to_label[current_val] = new_label
-        
-        else:
-
-            logger.info(f'ENCODER:  Added {new_label} because {old_label} was not found')
-            
+            logger.info(f'Proactively added {new_label}')
             self.add_class(new_label)
             add_replay_buffer_signal = True
 
-        # this dictionary helps handling eventual sync errors  
-        self._old_labels[old_label] = new_label 
-
         return add_replay_buffer_signal
 
-
-    def reset_original_labels(self):
-
-        for original_label, new_label in self._old_labels.items():
-
-            # reset the label of the class in the transformation dict:
-            code = self._label_to_int[new_label]
-            del self._label_to_int[new_label]
-            self._label_to_int[original_label] = code
-            
-            # also in the inverse dict:
-            self._int_to_label[code] = original_label    
-
-        # empty this dict for a new episode 
-        self._old_labels = {}
 
 
 class TigerBrain():
@@ -430,7 +396,6 @@ class TigerBrain():
     @epistemic_thread_safe
     def reset_environment(self):
         self.env.reset()    
-        self.encoder.reset_original_labels()
         self.init_inference_neural_modules(self.learning_rate, self.seed)
 
     def init_agents(self, kwargs):
@@ -467,14 +432,11 @@ class TigerBrain():
             capacity=self.replay_buffer_max_capacity,
             batch_size=self.replay_buff_batch_size,
             seed=self.seed)
-        self.logger_instance.info(f'Added a replay buffer with code {self.current_known_classes_count-1} for class {class_name} ' +\
-                                    ' in the replay buffers')
+        self.logger_instance.info(f'Replay buffer with code: {self.current_known_classes_count-1} for class: {class_name} was added')
     
 
     @thread_safe
     def add_class_to_knowledge_base(self, new_class):
-        if self.AI_DEBUG:
-            self.logger_instance.info(f'New class found: {new_class}')
 
         self.current_known_classes_count += 1
         
@@ -804,7 +766,7 @@ class TigerBrain():
             online_batch):
         """
         Does online inference with the given online batch.
-        It uses some support samples from the replay buffers to aid in prototpical learning
+        It uses some support samples from the replay buffers to aid in prototypical learning
         After the known-unknown class inferences and the clustering of unknowns, the agent has 
         performs three different actions for each cluster:
         1. block it             (usegul action)
@@ -1656,24 +1618,25 @@ class TigerBrain():
         
         updates_dict = self.env.perform_epistemic_action(current_action)
 
-        if updates_dict['updated_label'] is not None:
-
-            # retroconpatibility TODO refac this
+        new_label = updates_dict['updated_label']
+        
+        if new_label is not None:
+            
+            self.logger_instance.info(f'Bought label {new_label}')
+            
             add_replay_buff = self.encoder.update_label(
-                old_label=updates_dict['updated_label'],
-                new_label=updates_dict['updated_label'],
+                new_label=new_label,
                 logger=self.logger_instance
             )
-            
 
             if add_replay_buff:
+                if self.AI_DEBUG:
+                    self.logger_instance.info(f'New class bought: {new_class}')
                 # we cant invoke this function here because it would be a deadlock 
                 # self.add_class_to_knowledge_base(updates_dict['new_label'])
                 # fo we repeat the code: 
                 new_class = updates_dict['updated_label']
-                if self.AI_DEBUG:
-                    self.logger_instance.info(f'New class found: {new_class}')
-
+                
                 self.current_known_classes_count += 1
                 
                 self.add_replay_buffer(new_class)
