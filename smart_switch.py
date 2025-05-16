@@ -59,7 +59,8 @@ class SmartSwitch(EventMixin):
     in the table from step 1), install a flow for it.
    """
   def __init__ (
-        self, 
+        self,
+        flow_logger,
         **kwargs
         ):
 
@@ -87,17 +88,7 @@ class SmartSwitch(EventMixin):
     # Doesnt seems having to do with time to live stuff
     self._expire_timer = Timer(5, self._handle_expiration, recurring=True)
 
-    # Call the smart check function repeatedly:
-
-    # TODO manage
-    # self.brain = brain
-    # self.flow_logger = flow_logger
-    # self.metrics_logger = metrics_logger
-    # self.knowledge = kwargs.get('knowledge', None)
-    # self.use_node_feats = kwargs.get('use_node_feats')
-    # self.smart_check_timer = Timer(kwargs.get('inference_freq_secs'), self.smart_check, recurring=True)
-
-
+    self.flow_logger = flow_logger
     self.logger.info(f"SmartSwitch initialized!!")
 
 
@@ -346,11 +337,11 @@ class SmartSwitch(EventMixin):
                 packet.next.dstip)
       
       
-      # Save the first packets of each flow for inference purposes... TODO uncomment this
-      # create_flow_rule = self.flow_logger.cache_unprocessed_packets(
-      #    src_ip=packet.next.srcip,
-      #    dst_ip=packet.next.dstip,
-      #    packet=packet)
+      # Save the first packets of each flow for inference purposes...
+      create_flow_rule = self.flow_logger.cache_unprocessed_packets(
+          src_ip=packet.next.srcip,
+          dst_ip=packet.next.dstip,
+          packet=packet)
       
 
       # Send any waiting packets for that ip
@@ -365,10 +356,10 @@ class SmartSwitch(EventMixin):
                                      port=incomming_port, 
                                      connection=packet_in_event.connection)
 
-      # if create_flow_rule:
-      self.try_creating_flow_rule(switch_id, 
-                                  incomming_port, 
-                                  packet_in_event)
+      if create_flow_rule:
+          self.try_creating_flow_rule(switch_id, 
+                                      incomming_port, 
+                                      packet_in_event)
 
 
   def send_arp_response(

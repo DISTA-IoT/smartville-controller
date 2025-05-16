@@ -143,13 +143,6 @@ def launch(**kwargs):
     global app, app_thread, openflow_connection, smart_switch
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
 
-    # Registering Switch component:
-    smart_switch = SmartSwitch(
-      **get_switching_args()
-      )
-    
-    core.register("smart_switch", smart_switch) 
-    core.listen_to_dependencies(smart_switch)
     
     app = FastAPI(title="TigerServer API", description="API for ML experiments")
     
@@ -217,6 +210,16 @@ def launch(**kwargs):
             report_step_freq=int(intrusion_detection_args.get('report_step_freq',50)),
             kwargs=intrusion_detection_args)
         
+
+        # Registering Switch component:
+        smart_switch = SmartSwitch(
+          flow_logger=flow_logger,
+          **get_switching_args()
+          )
+        
+        core.register("smart_switch", smart_switch) 
+        core.listen_to_dependencies(smart_switch)
+
 
         FLOWSTATS_FREQ_SECS = int(intrusion_detection_args.get("flowstats_freq_secs", 5))
         
