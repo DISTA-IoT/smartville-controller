@@ -224,27 +224,16 @@ class DynamicLabelEncoder:
         self._label_to_int = {}
         self._int_to_label = {}
         self._current_code = 0
-        # _old_labels keeps track of changed labels for eventually handling sychronization mistakes. 
-        # (packets sent to the router during epistemic updates) 
-        self._old_labels = {}
 
 
-    def fit(self, labels, updated_labels):
+    def fit(self, labels):
         """
         returns the number of new classes found!
         """
 
         # get the new labels found in the batch  
         # batch_labels  - changed labels - current labels 
-        new_labels = set(labels) - (self._old_labels.keys()) - set(self._label_to_int.keys())
-  
-        # Handling sync erros:
-        # notice that ex-G2 labels, contain the 'NEW' substring
-        # and must be introduced only via the update function.  
-        # modified_new_labels =[new_label.replace(NEW, G2) for new_label in new_labels] 
-        # new_labels = set(modified_new_labels) - set(self._label_to_int.keys())
-    
-        new_labels = new_labels - set(updated_labels)
+        new_labels = set(labels) - set(self._label_to_int.keys())
 
         for label in new_labels:
             self.add_class(label)
@@ -254,6 +243,9 @@ class DynamicLabelEncoder:
 
     def add_class(self, label):
 
+        if label in self._label_to_int:
+            return
+        
         self._label_to_int[label] = self._current_code
         self._int_to_label[self._current_code] = label
         self._current_code += 1
@@ -1795,7 +1787,7 @@ class TigerBrain():
     def get_labels(self, flows):
 
         string_labels = [flow.element_class for flow in flows]
-        new_classes = self.encoder.fit(string_labels, self.env.current_knowledge['updated_labels'])
+        new_classes = self.encoder.fit(string_labels)
         for new_class in new_classes:
             self.add_class_to_knowledge_base(new_class)
 
