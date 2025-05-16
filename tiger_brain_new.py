@@ -171,7 +171,7 @@ def get_clusters(predicted_kernel):
     """
     
     # All fellas are in its own cluster, so we should start by adding that condition:
-    predicted_kernel = predicted_kernel + torch.eye(predicted_kernel.shape[0])
+    # predicted_kernel = predicted_kernel + torch.eye(predicted_kernel.shape[0])
 
     # Binarize the predicted kernel to create a discrete adjacency matrix (0 or 1)
     discrete_predicted_kernel = (predicted_kernel > 0.5).long()
