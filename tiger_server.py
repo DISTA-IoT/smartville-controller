@@ -181,33 +181,33 @@ def launch(**kwargs):
             intrusion_detection_args.get("flow_buff_len", 10)
         )
 
-        if intrusion_detection_args.get("node_features", False):
+        if intrusion_detection_args.get("node_features"):
             metrics_logger = MetricsLogger(
               server_addr = f"{intrusion_detection_args['container_ips']['pox-controller']}:9092",
-              max_conn_retries = int(intrusion_detection_args.get('max_kafka_conn_retries', 5)),
-              metric_buffer_len = int(intrusion_detection_args.get('metric_buffer_len', 10)),
-              grafana_user=intrusion_detection_args.get('grafana_user', 'admin'), 
-              grafana_pass=intrusion_detection_args.get('grafana_password', 'admin'),
+              max_conn_retries = int(intrusion_detection_args.get('max_kafka_conn_retries')),
+              metric_buffer_len = int(intrusion_detection_args.get('metric_buffer_len')),
+              grafana_user=intrusion_detection_args.get('grafana_user'), 
+              grafana_pass=intrusion_detection_args.get('grafana_password'),
               )
             
 
         # The controllerBrain holds the ML functionalities.
         controller_brain = TigerBrain(
             eval=str_to_bool(intrusion_detection_args.get('eval')),
-            flow_feat_dim=intrusion_detection_args.get("flow_feat_dim", 4),
-            packet_feat_dim=intrusion_detection_args.get("packet_feat_dim", 64),
-            dropout=intrusion_detection_args.get("packet_feat_dim", 0.6),
-            multi_class=str_to_bool(intrusion_detection_args.get('multi_class', True)), 
-            init_k_shot=int(intrusion_detection_args.get('init_k_shot', 5)),
-            replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size', 20)),
-            kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression', True)),
-            device=intrusion_detection_args.get('device', 'cpu'),
-            seed=int(intrusion_detection_args.get('seed', 777)),
-            debug=str_to_bool(intrusion_detection_args.get('ai_debug', False)),
-            wb_track=str_to_bool(intrusion_detection_args.get('wb_tracking', False)),
-            wb_project_name=intrusion_detection_args.get('wb_project_name', 'TIGER'),
-            wb_run_name=intrusion_detection_args.get('wb_run_name', f"my_run"),
-            report_step_freq=int(intrusion_detection_args.get('report_step_freq',50)),
+            flow_feat_dim=intrusion_detection_args.get("flow_feat_dim"),
+            packet_feat_dim=intrusion_detection_args.get("packet_feat_dim"),
+            dropout=intrusion_detection_args.get("dropout"),
+            multi_class=str_to_bool(intrusion_detection_args.get('multi_class')), 
+            init_k_shot=int(intrusion_detection_args.get('init_k_shot')),
+            replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size')),
+            kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression')),
+            device=intrusion_detection_args.get('device'),
+            seed=int(intrusion_detection_args.get('seed')),
+            debug=str_to_bool(intrusion_detection_args.get('ai_debug')),
+            wb_track=str_to_bool(intrusion_detection_args.get('wb_tracking')),
+            wb_project_name=intrusion_detection_args.get('wb_project_name'),
+            wb_run_name=intrusion_detection_args.get('wb_run_name'),
+            report_step_freq=int(intrusion_detection_args.get('report_step_freq')),
             kwargs=intrusion_detection_args)
         
 
