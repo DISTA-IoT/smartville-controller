@@ -264,22 +264,7 @@ class DynamicLabelEncoder:
         encoded_labels = []
 
         for label in labels:
-            # Managing eventual labelling synchronisation errors. 
-            correct_label = label
-            
-            if label not in self._label_to_int.keys():
-
-                # A label that has just-changed in the encoder from G2 to NEW:  
-                if label in self._old_labels.keys():
-                    correct_label = self._old_labels[label]
-                # A label that was NEW in the prev episode and now should be G2 again: 
-                else:
-                    correct_label = correct_label.replace(NEW, G2)
-            try:
-                encoded_labels.append(self._label_to_int[correct_label])
-            except:
-                # something went wrong here... 
-                assert 1 == 0
+            encoded_labels.append(self._label_to_int[label])
 
         return torch.tensor(encoded_labels)
 
