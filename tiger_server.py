@@ -193,7 +193,7 @@ def launch(**kwargs):
 
         # The controllerBrain holds the ML functionalities.
         controller_brain = TigerBrain(
-            eval=eval,
+            eval=str_to_bool(intrusion_detection_args.get('eval')),
             flow_feat_dim=intrusion_detection_args.get("flow_feat_dim", 4),
             packet_feat_dim=intrusion_detection_args.get("packet_feat_dim", 64),
             dropout=intrusion_detection_args.get("packet_feat_dim", 0.6),
