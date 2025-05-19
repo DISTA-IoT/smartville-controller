@@ -193,9 +193,7 @@ def launch(**kwargs):
           inference_thread.join()
         if flowstatreq_thread is not None:
           flowstatreq_thread.join()
-        
-        if hasattr(core, "smart_switch"):
-          delattr(core, "smart_switch")
+      
 
         return {"status_code": 200, "msg": "TigerServer is stopped"}
 
