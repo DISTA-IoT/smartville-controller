@@ -161,12 +161,6 @@ def smart_check(period):
     time.sleep(period)
 
 
-def cleanup():
-  logger.info("Cleaning up before exit")
-  
-  return shutdown()
-
-
 def launch(**kwargs):     
     global app, app_thread, openflow_connection, smart_switch
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
@@ -197,6 +191,9 @@ def launch(**kwargs):
 
         return {"status_code": 200, "msg": "TigerServer is stopped"}
 
+    def cleanup():
+      logger.info("Cleaning up before exit")
+      return shutdown()
 
     def handle_sigterm(signum, frame):
       cleanup()
