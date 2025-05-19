@@ -1608,15 +1608,14 @@ class TigerBrain():
 
             if add_replay_buff:
                 if self.AI_DEBUG:
-                    self.logger_instance.info(f'New class bought: {new_class}')
+                    self.logger_instance.info(f'label {new_label} bought proactively!')
                 # we cant invoke this function here because it would be a deadlock 
                 # self.add_class_to_knowledge_base(updates_dict['new_label'])
                 # fo we repeat the code: 
-                new_class = updates_dict['updated_label']
                 
                 self.current_known_classes_count += 1
                 
-                self.add_replay_buffer(new_class)
+                self.add_replay_buffer(new_label)
                 self.reset_train_cms()
                 self.reset_test_cms()
 
