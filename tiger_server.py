@@ -46,6 +46,10 @@ from pox.lib.recoco import Timer
 import logging
 import threading
 import os
+import atexit
+import signal
+from threading import Lock
+
 
 logger = core.getLogger()
 logger.name = "TigerServer"
@@ -70,17 +74,26 @@ container_ips = None
 flow_logger = None
 metrics_logger = None
 controller_brain = None
+stop_tiger_threads = True
+flowstatreq_thread = None
+inference_thread = None
+tiger_lock = Lock()
+
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
    
 
-def requests_stats():
-  for connection in core.openflow._connections.values():
-    connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
-    connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
-  logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
+def periodically_requests_stats(period):
   
+  while not stop_tiger_threads:
+
+    for connection in core.openflow._connections.values():
+      connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
+      connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
+    logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
+    time.sleep(period)
+
 
 def pprint(obj):
     for key, value in obj.items():
@@ -121,22 +134,26 @@ def get_switching_args():
   return switching_args
 
 
-def smart_check():
+def smart_check(period):
   global current_knowledge, args
 
-  epistemic_updates = controller_brain.process_input(
-    flows=list(flow_logger.flows_dict.values()),
-    node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
-  
-  if epistemic_updates is not None:
-      
-      current_knowledge = epistemic_updates['current_knowledge']
-      discovered_attack = epistemic_updates['updated_label']
+  while not stop_tiger_threads:
 
-      if 'reset' in epistemic_updates:
-          logger.info(f'Curricula reset taken out')
-      elif discovered_attack is not None:
-          logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
+    epistemic_updates = controller_brain.process_input(
+      flows=list(flow_logger.flows_dict.values()),
+      node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
+    
+    if epistemic_updates is not None:
+        
+        current_knowledge = epistemic_updates['current_knowledge']
+        discovered_attack = epistemic_updates['updated_label']
+
+        if 'reset' in epistemic_updates:
+            logger.info(f'Curricula reset taken out')
+        elif discovered_attack is not None:
+            logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
+
+    time.sleep(period)
 
 
 def launch(**kwargs):     
@@ -152,11 +169,36 @@ def launch(**kwargs):
         return {"msg": "Hello World from the TigerServer!"}
     
 
+    @app.post("/stop")
+    async def shutdown():
+        global stop_tiger_threads, inference_thread, flowstatreq_thread
+
+        logger.info("Shutdown command received")
+        if stop_tiger_threads:
+          return {"status_code": 304, "msg": "TigerServer is already stopped"}
+        
+        stop_tiger_threads = True
+        inference_thread.join()
+        flowstatreq_thread.join()
+        return {"status_code": 200, "msg": "TigerServer is stopped"}
+
+
+    def cleanup():
+      global stop_tiger_threads
+      logger.info("Cleaning up before exit")
+      return shutdown()
+
+
+    def handle_sigterm(signum, frame):
+      cleanup()
+      os._exit(0)  # Force exit
+
+
     @app.post("/initialize")
     async def initialize(kwargs: dict):
         global traffic_dict, rewards, container_ips
         global flow_logger, metrics_logger, controller_brain, smart_switch
-        global FLOWSTATS_FREQ_SECS, args
+        global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
 
         logger.info(f"Initialisation command received")
 
@@ -232,14 +274,29 @@ def launch(**kwargs):
               controller_brain.traffic_dict,
               controller_brain.ips_containers))
     
-          # Request stats periodically
-          Timer(FLOWSTATS_FREQ_SECS, requests_stats, recurring=True)
-          # Periodic Training and Inference
-          Timer(intrusion_detection_args['inference_freq_secs'], smart_check, recurring=True) 
+          flowstats_req_thread = threading.Thread(
+            target=periodically_requests_stats,
+            args=(FLOWSTATS_FREQ_SECS,),
+            daemon=True
+          )
+
+          inference_thread = threading.Thread(
+            target=smart_check,
+            args=(intrusion_detection_args['inference_freq_secs'],),
+            daemon=True
+          )
+
+          flowstats_req_thread.start()
+          inference_thread.start()
 
         return {"msg": "TigerController initialized successfully", "status_code": 200}
     
 
+    atexit.register(cleanup)
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+
+    
     core.openflow.addListenerByName(
         "ConnectionUp", 
         _handle_ConnectionUp)
