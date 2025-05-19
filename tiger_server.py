@@ -68,7 +68,6 @@ openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
 traffic_dict = None
 rewards = None
-current_knowledge = None
 smart_switch = None
 container_ips = None
 flow_logger = None
@@ -138,26 +137,16 @@ def get_switching_args():
 
 
 def smart_check(period):
-  global current_knowledge, args
+  global args
 
   while not stop_tiger_threads:
 
     with tiger_lock:
 
-      epistemic_updates = controller_brain.process_input(
+      controller_brain.process_input(
         flows=list(flow_logger.flows_dict.values()),
         node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
       
-      if epistemic_updates is not None:
-          
-          current_knowledge = epistemic_updates['current_knowledge']
-          discovered_attack = epistemic_updates['updated_label']
-
-          if 'reset' in epistemic_updates:
-              logger.info(f'Curricula reset taken out')
-          elif discovered_attack is not None:
-              logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
-
     time.sleep(period)
 
 

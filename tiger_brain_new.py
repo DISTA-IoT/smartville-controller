@@ -936,6 +936,8 @@ class TigerBrain():
 
         cluster_action_signals = torch.zeros(1)
 
+        bought_labels = []
+
         if num_of_predicted_anomalies > 0:
             # Anomaly clustering is going to be done only if there are predicted anomalies.
 
@@ -1006,6 +1008,7 @@ class TigerBrain():
                 updates_dict = self.perform_epistemic_action()
                 # you'll pay the price of aqcuiring a TCI label:
                 rewards_per_cluster[epistemic_action_index] -= updates_dict['price_payed']
+                bought_labels.append(updates_dict['updated_label'])
             
             # update the batch reward with pure clustering rewards 
             batch_reward += rewards_per_cluster.sum().item()   
@@ -1063,9 +1066,6 @@ class TigerBrain():
 
         # eventually reset the environment. 
         if end_signal: self.reset_environment()
-
-        # communicate eventual epistemic changes to the caller   
-        return updates_dict
 
 
     def class_classification_step(

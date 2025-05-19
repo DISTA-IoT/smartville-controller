@@ -1,6 +1,5 @@
-import time
-import requests
-import threading
+import copy
+
 
 G2 = 'G2'
 NEW = 'NEW'
@@ -11,41 +10,49 @@ class NewTigerEnvironment:
     def __init__(self, kwargs):
         """Initialize the attributes of the Car class."""
         self.init_budget = float(kwargs['tiger_init_budget'] if 'tiger_init_budget' in kwargs else 1)
-        self.flow_rewards_dict = kwargs['rewards'].copy()
+        self.flow_rewards_dict = copy.deepcopy(kwargs['rewards'])
         self.min_budget = kwargs['min_budget']
         self.max_budget = kwargs['max_budget'] 
         self.current_budget = self.init_budget
-        self.traffic_dict = kwargs['traffic_dict'].copy()
-        self.init_knowledge = kwargs['knowledge'].copy()
+        self.traffic_dict = copy.deepcopy(kwargs['traffic_dict'])
+        self.init_knowledge = copy.deepcopy(kwargs['knowledge'])
         self.logger = kwargs['logger']
         self.max_episode_steps = kwargs['max_episode_steps'] 
         self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)
+        self.cti_prices = self.get_cti_prices()
+    
 
     def reset_intelligence(self):
         
-        self.current_knowledge = self.init_knowledge.copy()
+        self.current_knowledge = copy.deepcopy(self.init_knowledge)
         self.current_knowledge['updated_labels'] = []
         self.update_cti_options()
-        
+    
         return {'current_knowledge': self.current_knowledge,
                 'updated_label': None,
                 'new_label': None,
                 'reset' : True}
 
 
+    def get_cti_prices(self):
+
+        cti_prices = {}
+
+        for unknown in self.init_knowledge['G2s']:
+            try:
+                # the cti price is n times the cost or revenue of the corresponding flow 
+                cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
+            except Exception as e:
+                self.logger.error(f'Something went wrong duting CTI processing... {e}')    
+
+        return cti_prices
+
+
     def update_cti_options(self, n_options=1):
         """
         This method updates the CTI agent state vector, i.e., according to available labels to buy.
         """
-                
-        self.cti_prices = {}
-
-        for unknown in self.current_knowledge['G2s']:
-            try:
-                # the cti price is n times the cost or revenue of the corresponding flow 
-                self.cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
-            except Exception as e:
-                self.logger.error(f'Something went wrong duting CTI processing... {e}')
+        
         # set a list of n_options available cti options:   
         self.current_cti_options = {}  
 
@@ -112,7 +119,6 @@ class NewTigerEnvironment:
     
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,
-                'acquired_pattern': acquired_cti,
                 'price_payed': price_payed}
 
 
