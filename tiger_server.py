@@ -184,7 +184,6 @@ def launch(**kwargs):
 
 
     def cleanup():
-      global stop_tiger_threads
       logger.info("Cleaning up before exit")
       return shutdown()
 
@@ -196,7 +195,7 @@ def launch(**kwargs):
 
     @app.post("/initialize")
     async def initialize(kwargs: dict):
-        global traffic_dict, rewards, container_ips
+        global traffic_dict, rewards, container_ips, stop_tiger_threads
         global flow_logger, metrics_logger, controller_brain, smart_switch
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
 
@@ -286,6 +285,7 @@ def launch(**kwargs):
             daemon=True
           )
 
+          stop_tiger_threads = False
           flowstats_req_thread.start()
           inference_thread.start()
 
@@ -296,7 +296,7 @@ def launch(**kwargs):
     signal.signal(signal.SIGTERM, handle_sigterm)
     signal.signal(signal.SIGINT, handle_sigterm)
 
-    
+
     core.openflow.addListenerByName(
         "ConnectionUp", 
         _handle_ConnectionUp)
