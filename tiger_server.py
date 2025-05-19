@@ -49,7 +49,7 @@ import os
 import atexit
 import signal
 from threading import Lock
-
+import time
 
 logger = core.getLogger()
 logger.name = "TigerServer"
@@ -87,10 +87,13 @@ def dpid_to_mac (dpid):
 def periodically_requests_stats(period):
   
   while not stop_tiger_threads:
-
-    for connection in core.openflow._connections.values():
-      connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
-      connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
+    
+    with tiger_lock:
+    
+      for connection in core.openflow._connections.values():
+        connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
+        connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
+    
     logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
     time.sleep(period)
 
@@ -139,21 +142,29 @@ def smart_check(period):
 
   while not stop_tiger_threads:
 
-    epistemic_updates = controller_brain.process_input(
-      flows=list(flow_logger.flows_dict.values()),
-      node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
-    
-    if epistemic_updates is not None:
-        
-        current_knowledge = epistemic_updates['current_knowledge']
-        discovered_attack = epistemic_updates['updated_label']
+    with tiger_lock:
 
-        if 'reset' in epistemic_updates:
-            logger.info(f'Curricula reset taken out')
-        elif discovered_attack is not None:
-            logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
+      epistemic_updates = controller_brain.process_input(
+        flows=list(flow_logger.flows_dict.values()),
+        node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
+      
+      if epistemic_updates is not None:
+          
+          current_knowledge = epistemic_updates['current_knowledge']
+          discovered_attack = epistemic_updates['updated_label']
+
+          if 'reset' in epistemic_updates:
+              logger.info(f'Curricula reset taken out')
+          elif discovered_attack is not None:
+              logger.info(f'Epistemic updates taken out: {discovered_attack} is no more an unknown attack.')
 
     time.sleep(period)
+
+
+def cleanup():
+  logger.info("Cleaning up before exit")
+  
+  return shutdown()
 
 
 def launch(**kwargs):     
@@ -162,7 +173,7 @@ def launch(**kwargs):
 
     
     app = FastAPI(title="TigerServer API", description="API for ML experiments")
-    
+
     @app.get("/")
     async def root():
         logger.info("Root endpoint called")
@@ -178,14 +189,15 @@ def launch(**kwargs):
           return {"status_code": 304, "msg": "TigerServer is already stopped"}
         
         stop_tiger_threads = True
-        inference_thread.join()
-        flowstatreq_thread.join()
+        if inference_thread is not None:
+          inference_thread.join()
+        if flowstatreq_thread is not None:
+          flowstatreq_thread.join()
+        
+        if hasattr(core, "smart_switch"):
+          delattr(core, "smart_switch")
+
         return {"status_code": 200, "msg": "TigerServer is stopped"}
-
-
-    def cleanup():
-      logger.info("Cleaning up before exit")
-      return shutdown()
 
 
     def handle_sigterm(signum, frame):
@@ -260,6 +272,7 @@ def launch(**kwargs):
         
         core.register("smart_switch", smart_switch) 
         core.listen_to_dependencies(smart_switch)
+
 
 
         FLOWSTATS_FREQ_SECS = int(intrusion_detection_args.get("flowstats_freq_secs", 5))
