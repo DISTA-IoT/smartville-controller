@@ -746,9 +746,9 @@ class TigerBrain():
         It uses some support samples from the replay buffers to aid in prototypical learning
         After the known-unknown class inferences and the clustering of unknowns, the agent has 
         performs three different actions for each cluster:
-        1. block it             (usegul action)
-        2. let it pass          (useful action)
-        3. acquire a TCI label  (epistemic action)
+        0. let it pass          (practic action)
+        1. block it             (practic action)
+        2. acquire a TCI label  (epistemic action)
         """
         
         # do not run gradients on the inference modules!
