@@ -1534,62 +1534,7 @@ class TigerBrain():
             if self.online_evaluation:
                 self.evaluate_models()
             
-            """
-            updates_dict = self.intelligence_step()
 
-            if self.current_intelligence_steps % self.intelligence_episode_steps == 0:
-                self.logger_instance.info('Restarting the intelligence episode')
-                updates_dict = self.reset_intelligence()
-
-                # Every 20 mitigation episodes we will update the correspondent target model 
-                if self.current_intelligence_steps % (20 *self.intelligence_episode_steps) == 0:
-                    self.intelligence_agent.update_target_model()
-            """
-
-
-    """
-    def intelligence_step(self):
-
-        self.current_intelligence_steps += 1
-
-        # what was the budget at the time of our last intelligence decision?
-        prev_intelligence_budget_snapshot = self.env.intelligence_budget_snapshot
-
-        # what is our current budget?
-        self.env.intelligence_budget_snapshot = self.env.current_budget
-
-        # get the reward of the last action:
-        prev_reward = self.env.intelligence_budget_snapshot - prev_intelligence_budget_snapshot
-
-        done_signal = self.current_intelligence_steps % self.intelligence_episode_steps == 0
-
-        # get state: (for now fixed)
-        current_state = torch.Tensor([*self.env.get_intelligence_options(),self.env.intelligence_budget_snapshot])
-
-        # now that we have the reward, we can store the previous experience replay tuple
-        self.intelligence_agent.remember(
-            self.env.prev_intelligence_state, 
-            self.env.prev_intelligence_action, 
-            prev_reward, 
-            current_state, # current_state is the previous next state ;)
-            done_signal)
-        
-        # take an action
-        current_action = self.intelligence_agent.act(current_state)
-
-        # performing the action to change  
-        updates_dict = self.perform_epistemic_action(current_action)
-
-        # save the current values for the next step
-        self.env.prev_intelligence_action = current_action
-        self.env.prev_intelligence_state = current_state
-        
-        # train the intelligence agent 
-        self.intelligence_agent.replay()
-
-        # for epistemic updates  
-        return updates_dict
-    """    
     @epistemic_thread_safe 
     def perform_epistemic_action(self, current_action=0):      
         
