@@ -827,6 +827,7 @@ class TigerBrain():
         interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
         number_of_known_classes = logits.shape[1]
 
+
         # 
         # CONFIDENCE MEASUREMENT:
         # 
@@ -927,6 +928,7 @@ class TigerBrain():
         #  
         # COLLECTIVE anomaly detection (i.e., clustering eventual zdas) 
         # 
+
         kr_precision = torch.ones(1)
 
         purchased_mask = torch.zeros(1)
@@ -954,7 +956,7 @@ class TigerBrain():
             # take only the clusters of predicted zdas...
             predicted_decimal_clusters = predicted_decimal_clusters[predicted_online_zda_mask] 
                 
-            # one-hot encode the predicted clusters
+            # one-hot encode the predicted clusters (don't worry about exact class assignments, we just need to group stuff...)
             predicted_clusters_oh = torch.nn.functional.one_hot(
                 predicted_decimal_clusters,
                 num_classes=num_of_predicted_clusters
@@ -975,18 +977,21 @@ class TigerBrain():
                 self.env.current_budget)
             
             # get the potential rewards per cluster 
+            # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
+            # Notice the reward takes into account intersections with good and bad samples
             rewards_per_cluster = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
 
             # get the cluster_passing_mask:
             cluster_passing_mask = cluster_action_signals == 0
 
-            # get the cluster-specific passing rewards  
+            # get the cluster-specific passing rewards
+            # blocking a cluster gives zero or negative reward. For now, its zero:  
             rewards_per_cluster= rewards_per_cluster[~missing_clusters] *  cluster_passing_mask
 
             # benign traffic mask:
             benign_rewards = torch.relu(sample_rewards[predicted_online_zda_mask]) 
 
-            # potential benign rewards in each cluster  
+            # potential benign rewards in each cluster  (this is gonna be useful to penalize blocking good stuff)
             benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
             # blocked benign traffic implies to pay a cost:
