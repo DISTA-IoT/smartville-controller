@@ -755,9 +755,6 @@ class TigerBrain():
         self.classifier.eval()
         self.confidence_decoder.eval()
 
-        # updates_dict helps managing eventual epistemic actions
-        updates_dict  = None
-
         # get zda labels for the online batch
         online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch, mode=INFERENCE)
 
@@ -1189,7 +1186,6 @@ class TigerBrain():
         """
         """
         self.step_counter += 1
-        updates_dict = None
 
         if len(flows) > 0:
             
@@ -1206,12 +1202,11 @@ class TigerBrain():
             # this fella could be toogling because of a new class arriving... 
             with self._lock:
                 if self.batch_processing_allowed:
-                    updates_dict = self.online_inference(batch)
+                    self.online_inference(batch)
             with self._lock:
                 if self.batch_processing_allowed:
                     self.experience_learning()
 
-        return updates_dict        
 
 
     def sample_from_replay_buffers(self, samples_per_class, mode):
