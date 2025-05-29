@@ -34,9 +34,9 @@ class PolicyNet(nn.Module):
         return x
 
 
-class ValueNet(nn.Module):
+class EFENet(nn.Module):
     def __init__(self, state_size, action_size):
-        super(ValueNet, self).__init__()
+        super(EFENet, self).__init__()
         self.fc1 = nn.Linear(state_size, 128)
         self.fc2 = nn.Linear(128, 128)
         self.fc3 = nn.Linear(128, action_size)

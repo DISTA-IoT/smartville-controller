@@ -1,4 +1,4 @@
-from smartController.neural_modules import DQN, PolicyNet, ValueNet
+from smartController.neural_modules import DQN, PolicyNet, EFENet
 import torch.optim as optim
 from collections import deque
 import torch
@@ -11,10 +11,10 @@ import torch.functional as F
 class DAIAgent:
     def __init__(self, kwargs):
         
-        self.valuenet = ValueNet(kwargs['state_size'], kwargs['action_size'])
-        self.target_valuenet = ValueNet(kwargs['state_size'], kwargs['action_size'])
-        self.update_target_valuenet()
-        self.valuenet_optimizer = optim.Adam(self.valuenet.parameters(), lr=kwargs['lr'])
+        self.efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
+        self.target_efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
+        self.update_target_efe_net()
+        self.efe_net_optimizer = optim.Adam(self.efe_net.parameters(), lr=kwargs['lr'])
                 
         self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['lr'])
@@ -25,8 +25,8 @@ class DAIAgent:
         self.value_loss_fn = nn.MSELoss()
 
 
-    def update_target_valuenet(self):
-        self.target_valuenet.load_state_dict(self.valuenet.state_dict())
+    def update_target_efe_net(self):
+        self.target_efe_net.load_state_dict(self.efe_net.state_dict())
 
 
     def remember(self, state, action, reward, next_state, done):
@@ -46,13 +46,15 @@ class DAIAgent:
 
     def train_actor(self, states):
         """
-        Trains the actor (policy network)
+        Trains the actor (policy network) by minimising the VFE
+        WE do not have a POMDP ut only an MDP, so we do not minimise accuracy over observations.
+        HOWEVER, we are missing the entropy term here... @TODO implement entropy regularization here.
         """
         policy_probabilities = self.policynet(states)
 
-        estimated_state_values = self.valuenet(states).detach()
-        values_logprobs = F.log_softmax(estimated_state_values, dim=1)
-        expected_logprobs = torch.sum(policy_probabilities * values_logprobs, dim=1)
+        estimated_efe_values = self.efe_net(states).detach()
+        efe_actions = F.log_softmax(estimated_efe_values, dim=1)
+        expected_logprobs = torch.sum(policy_probabilities * efe_actions, dim=1)
         critic_losses = -expected_logprobs.mean(dim=1)
 
         self.policynet_optimizer.zero_grad()
@@ -63,7 +65,8 @@ class DAIAgent:
 
     def replay(self):
         """
-        Trains the critic (value network)
+        Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
+        In this case, we do not have a transition model to update. we just update the efe network
         """
         if len(self.memory) < self.replay_batch_size:
             return
@@ -78,22 +81,22 @@ class DAIAgent:
                 
                 # Select action using online network
                 policy_probabilities = self.policynet(next_state)
-                estimated_state_values = self.valuenet(next_state)
+                estimated_EFE_values = self.efe_net(next_state)
 
-                # Compute expected value under the policy
-                expected_value = torch.sum(policy_probabilities * estimated_state_values, dim=1)
+                # Compute efe value under the current policy
+                expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=1)
 
                 # Update target
                 target += 0.99 * expected_value.detach()
 
-            target_f = self.valuenet(state).detach()
+            target_f = self.efe_net(state).detach()
             target_f[action] = target
 
-            self.valuenet_optimizer.zero_grad()
-            predicted_values = self.valuenet(state)
+            self.efe_net_optimizer.zero_grad()
+            predicted_values = self.efe_net(state)
             value_losses = self.value_loss_fn(predicted_values, target_f)
             value_losses.backward()
-            self.valuenet_optimizer.step()
+            self.efe_net_optimizer.step()
     
 
 class ValueLearningAgent:
