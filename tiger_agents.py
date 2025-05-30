@@ -14,15 +14,15 @@ class DAIAgent:
         self.efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
         self.target_efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
         self.update_target_efe_net()
-        self.efe_net_optimizer = optim.Adam(self.efe_net.parameters(), lr=kwargs['lr'])
+        self.efe_net_optimizer = optim.Adam(self.efe_net.parameters(), lr=kwargs['learning_rate'])
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
 
         self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
-        self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['lr'])
+        self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
 
-        self.memory = deque(maxlen=kwargs['memory_size'])
+        self.memory = deque(maxlen=kwargs['agent_memory_size'])
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss()
@@ -167,20 +167,20 @@ class DAIAgent:
 
 class ValueLearningAgent:
 
-    def __init__(self, state_size, action_size, replay_batch_size, kwargs):
+    def __init__(self, kwargs):
 
-        self.state_size = state_size
-        self.action_size = action_size
-        self.memory = deque(maxlen=2000)
-        self.gamma = 0.99  # discount rate
-        self.epsilon = 1.0  # exploration rate
-        self.epsilon_min = 0.01
-        self.epsilon_decay = float((kwargs['greedy_decay'] if 'greedy_decay' in kwargs else 0.995))
-        self.model = DQN(state_size, action_size)
-        self.target_model = DQN(state_size, action_size)
+        self.state_size = kwargs['state_size']
+        self.action_size = kwargs['action_size']
+        self.memory = deque(maxlen=kwargs['agent_memory_size'])
+        self.gamma = float(kwargs['agent_discount_rate'])  # discount rate
+        self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
+        self.epsilon_min = float(kwargs['greedy_min'])
+        self.epsilon_decay = float(kwargs['greedy_decay'])
+        self.model = DQN(self.state_size, self.action_size)
+        self.target_model = DQN(self.state_size, self.action_size)
         self.update_target_model()
-        self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
-        self.replay_batch_size = replay_batch_size
+        self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
+        self.replay_batch_size = kwargs['replay_batch_size']
         self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
 
     def update_target_model(self):
