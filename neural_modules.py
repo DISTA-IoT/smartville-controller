@@ -39,7 +39,7 @@ class NEFENet(nn.Module):
         """
         Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
         """
-        super(EFENet, self).__init__()
+        super(NEFENet, self).__init__()
         self.fc1 = nn.Linear(state_size, 128)
         self.fc2 = nn.Linear(128, 128)
         self.fc3 = nn.Linear(128, action_size)
