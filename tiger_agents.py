@@ -24,13 +24,13 @@ class DAIAgent:
 
         self.memory_size = kwargs['agent_memory_size']
         self.memory = deque(maxlen=self.memory_size)
-        self.reset_sequential_memorty()
+        self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss()
         self.state_loss_fn = nn.MSELoss()
 
-    def reset_sequential_memorty(self):
+    def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.memory_size)
 
     def update_target_model(self):
@@ -100,7 +100,7 @@ class DAIAgent:
         self.policynet_optimizer.zero_grad()
         vfe_loss.backward()
         self.policynet_optimizer.step()
-
+        self.reset_sequential_memory()
 
     def replay(self, transition_model=None):
         """
