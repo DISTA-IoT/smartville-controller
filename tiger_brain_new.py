@@ -376,8 +376,7 @@ class TigerBrain():
         self.env.reset()    
         self.init_inference_neural_modules(self.learning_rate, self.seed)
         self.episode_count += 1
-        if self.wbt:
-            self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
+        
 
 
     def init_agents(self, kwargs):
@@ -1075,6 +1074,8 @@ class TigerBrain():
         # eventually reset the environment. 
         if end_signal: 
             self.reset_environment()
+            if self.wbt:
+                self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
             if self.episode_count % 5 == 0:
                 self.mitigation_agent.train_actor()
 
