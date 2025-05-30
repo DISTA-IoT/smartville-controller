@@ -30,12 +30,15 @@ class PolicyNet(nn.Module):
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        x = F.softmax(self.fc3(x), dim=0)
+        x = F.softmax(self.fc3(x), dim=len(x.shape)-1)
         return x
 
 
-class EFENet(nn.Module):
+class NEFENet(nn.Module):
     def __init__(self, state_size, action_size):
+        """
+        Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
+        """
         super(EFENet, self).__init__()
         self.fc1 = nn.Linear(state_size, 128)
         self.fc2 = nn.Linear(128, 128)

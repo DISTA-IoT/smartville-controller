@@ -1,4 +1,4 @@
-from smartController.neural_modules import DQN, PolicyNet, EFENet
+from smartController.neural_modules import DQN, PolicyNet, NEFENet
 import torch.optim as optim
 from collections import deque
 import torch
@@ -11,10 +11,10 @@ import torch.functional as F
 class DAIAgent:
     def __init__(self, kwargs):
         
-        self.efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
-        self.target_efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
-        self.update_target_efe_net()
-        self.efe_net_optimizer = optim.Adam(self.efe_net.parameters(), lr=kwargs['learning_rate'])
+        self.neg_efe_net = NEFENet(kwargs['state_size'], kwargs['action_size'])
+        self.target_neg_efe_net = NEFENet(kwargs['state_size'], kwargs['action_size'])
+        self.update_target_model()
+        self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
@@ -33,8 +33,8 @@ class DAIAgent:
     def reset_sequential_memorty(self):
         self.sequential_memory = deque(maxlen=self.memory_size)
 
-    def update_target_efe_net(self):
-        self.target_efe_net.load_state_dict(self.efe_net.state_dict())
+    def update_target_model(self):
+        self.target_neg_efe_net.load_state_dict(self.neg_efe_net.state_dict())
 
 
     def remember(self, state, action, reward, next_state, done):
@@ -69,17 +69,18 @@ class DAIAgent:
         in the context of bootstrapping the EFE. (not sure)
 
         """
-        critic_losses = 0
+        vfe_loss = 0
 
-        states = list(self.sequential_memory)
+        states = torch.vstack(list(self.sequential_memory))
 
+        
         # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
         policy_probabilities = self.policynet(states) 
         
         # The following 2 loc's correspond to eq (8) (Boltzman sampling)
         # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
-        estimated_efe_values = self.efe_net(states).detach()
-        efe_actions = F.log_softmax(estimated_efe_values, dim=1)
+        estimated_neg_efe_values = self.neg_efe_net(states).detach()
+        efe_actions = torch.log_softmax(estimated_neg_efe_values, dim=1)
 
         # The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)]
         # which divides into two terms:
@@ -87,18 +88,17 @@ class DAIAgent:
         # The following 2 loc's correspond to the first term in eq (7), i.e.:
         # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
         expected_logprobs = torch.sum(policy_probabilities * efe_actions, dim=1)
-        critic_losses -= expected_logprobs.mean(dim=1)
+        vfe_loss -= expected_logprobs.mean()
 
         # The following 2 loc's correspond to the second term in eq (7), i.e.:
         # -E_{Q(s)}\{ H[Q(a|s)] \}
         policy_log_probs = torch.log(policy_probabilities + 1e-8)
         policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1)
         expected_policy_entropy = policy_entropy.mean()
-        critic_losses -= expected_policy_entropy
+        vfe_loss -= expected_policy_entropy
 
         self.policynet_optimizer.zero_grad()
-        critic_loss = critic_losses.mean()
-        critic_loss.backward()
+        vfe_loss.backward()
         self.policynet_optimizer.step()
 
 
@@ -134,7 +134,7 @@ class DAIAgent:
                 # which is a bootstrapping approximation of the last term in equation (16), i.e.:
                 # E_{Q(s_{t+1},a_{t+1})}[\sum_{t+1}^TG(s_{t+1},a_{t+1})]
                 policy_probabilities = self.policynet(next_state)
-                estimated_EFE_values = self.target_efe_net(next_state)                
+                estimated_EFE_values = self.target_neg_efe_net(next_state)                
                 expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=0)
 
                 if self.transitionnet is not None:
@@ -159,11 +159,11 @@ class DAIAgent:
                 # Update target
                 target -= 0.99 * expected_value.detach()
 
-            target_f = self.efe_net(state).detach()
+            target_f = self.neg_efe_net(state).detach()
             target_f[action] = target
 
             self.efe_net_optimizer.zero_grad()
-            predicted_values = self.efe_net(state)
+            predicted_values = self.neg_efe_net(state)
             value_losses = self.value_loss_fn(predicted_values, target_f)
             value_losses.backward()
             self.efe_net_optimizer.step()
