@@ -13,7 +13,7 @@ class DAIAgent:
         
         self.efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
         self.target_efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
-        self.update_target_efe_net()
+        self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.efe_net.parameters(), lr=kwargs['learning_rate'])
         
         self.transitionnet = None
@@ -33,7 +33,7 @@ class DAIAgent:
     def reset_sequential_memorty(self):
         self.sequential_memory = deque(maxlen=self.memory_size)
 
-    def update_target_efe_net(self):
+    def update_target_model(self):
         self.target_efe_net.load_state_dict(self.efe_net.state_dict())
 
 
@@ -69,17 +69,18 @@ class DAIAgent:
         in the context of bootstrapping the EFE. (not sure)
 
         """
-        critic_losses = 0
+        vfe_loss = 0
 
-        states = list(self.sequential_memory)
+        states = torch.vstack(list(self.sequential_memory))
 
+        
         # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
         policy_probabilities = self.policynet(states) 
         
         # The following 2 loc's correspond to eq (8) (Boltzman sampling)
         # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
         estimated_efe_values = self.efe_net(states).detach()
-        efe_actions = F.log_softmax(estimated_efe_values, dim=1)
+        efe_actions = torch.log_softmax(estimated_efe_values, dim=1)
 
         # The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)]
         # which divides into two terms:
@@ -87,18 +88,17 @@ class DAIAgent:
         # The following 2 loc's correspond to the first term in eq (7), i.e.:
         # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
         expected_logprobs = torch.sum(policy_probabilities * efe_actions, dim=1)
-        critic_losses -= expected_logprobs.mean(dim=1)
+        vfe_loss -= expected_logprobs.mean()
 
         # The following 2 loc's correspond to the second term in eq (7), i.e.:
         # -E_{Q(s)}\{ H[Q(a|s)] \}
         policy_log_probs = torch.log(policy_probabilities + 1e-8)
         policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1)
         expected_policy_entropy = policy_entropy.mean()
-        critic_losses -= expected_policy_entropy
+        vfe_loss -= expected_policy_entropy
 
         self.policynet_optimizer.zero_grad()
-        critic_loss = critic_losses.mean()
-        critic_loss.backward()
+        vfe_loss.backward()
         self.policynet_optimizer.step()
 
 

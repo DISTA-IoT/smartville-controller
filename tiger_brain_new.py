@@ -1537,7 +1537,7 @@ class TigerBrain():
                 query_mask=query_mask,
                 phase=TRAINING)
 
-            # Update the target Q Network in the mitigation agent! 
+            # Update the target value network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
             
             if self.online_evaluation:
