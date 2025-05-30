@@ -135,7 +135,7 @@ class DAIAgent:
                 # E_{Q(s_{t+1},a_{t+1})}[\sum_{t+1}^TG(s_{t+1},a_{t+1})]
                 policy_probabilities = self.policynet(next_state)
                 estimated_EFE_values = self.target_efe_net(next_state)                
-                expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=1)
+                expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=0)
 
                 if self.transitionnet is not None:
 
