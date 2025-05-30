@@ -346,6 +346,7 @@ class TigerBrain():
         self.container_ips = kwargs['container_ips']
         self.ips_containers = kwargs['ips_containers']
         self.traffic_dict = kwargs['traffic_dict']
+        self.episode_count = -1
         self.env = NewTigerEnvironment(kwargs)
         self.init_agents(kwargs)
         self.init_intelligence()
@@ -374,6 +375,10 @@ class TigerBrain():
     def reset_environment(self):
         self.env.reset()    
         self.init_inference_neural_modules(self.learning_rate, self.seed)
+        self.episode_count += 1
+        if self.wbt:
+            self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
+
 
     def init_agents(self, kwargs):
         
@@ -1043,7 +1048,6 @@ class TigerBrain():
                     next_states,
                     broadcasted_end_signal):
                 self.mitigation_agent.remember(*experience_tuple)
-
         
 
         # train!
@@ -1069,7 +1073,10 @@ class TigerBrain():
         self.confidence_decoder.train()
 
         # eventually reset the environment. 
-        if end_signal: self.reset_environment()
+        if end_signal: 
+            self.reset_environment()
+            if self.episode_count % 5 == 0:
+                self.mitigation_agent.train_actor()
 
 
     def class_classification_step(

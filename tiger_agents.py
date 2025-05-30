@@ -22,12 +22,16 @@ class DAIAgent:
         self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
 
-        self.memory = deque(maxlen=kwargs['agent_memory_size'])
+        self.memory_size = kwargs['agent_memory_size']
+        self.memory = deque(maxlen=self.memory_size)
+        self.reset_sequential_memorty()
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss()
         self.state_loss_fn = nn.MSELoss()
 
+    def reset_sequential_memorty(self):
+        self.sequential_memory = deque(maxlen=self.memory_size)
 
     def update_target_efe_net(self):
         self.target_efe_net.load_state_dict(self.efe_net.state_dict())
@@ -35,8 +39,9 @@ class DAIAgent:
 
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
+        self.sequential_memory.append((state))
 
-
+    
     def act(self, state):
 
         action_probs = self.policynet(state)
@@ -48,7 +53,7 @@ class DAIAgent:
         return action
     
 
-    def train_actor(self, states):
+    def train_actor(self):
         """
         Trains the actor (policy network) by minimising the VFE.
         
@@ -65,6 +70,8 @@ class DAIAgent:
 
         """
         critic_losses = 0
+
+        states = list(self.sequential_memory)
 
         # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
         policy_probabilities = self.policynet(states) 

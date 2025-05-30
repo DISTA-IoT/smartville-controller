@@ -30,7 +30,7 @@ class PolicyNet(nn.Module):
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        x = F.softmax(self.fc3(x), dim=1)
+        x = F.softmax(self.fc3(x))
         return x
 
 
