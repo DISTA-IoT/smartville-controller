@@ -15,7 +15,10 @@ class DAIAgent:
         self.target_efe_net = EFENet(kwargs['state_size'], kwargs['action_size'])
         self.update_target_efe_net()
         self.efe_net_optimizer = optim.Adam(self.efe_net.parameters(), lr=kwargs['lr'])
-                
+        
+        self.transitionnet = None
+        self.transitionnet_optimizer = None
+
         self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['lr'])
 
@@ -23,6 +26,7 @@ class DAIAgent:
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss()
+        self.state_loss_fn = nn.MSELoss()
 
 
     def update_target_efe_net(self):
@@ -46,16 +50,44 @@ class DAIAgent:
 
     def train_actor(self, states):
         """
-        Trains the actor (policy network) by minimising the VFE
-        WE do not have a POMDP ut only an MDP, so we do not minimise accuracy over observations.
-        HOWEVER, we are missing the entropy term here... @TODO implement entropy regularization here.
-        """
-        policy_probabilities = self.policynet(states)
+        Trains the actor (policy network) by minimising the VFE.
+        
+        NOTE: THIS METHOD SOULD BE DONE ON-POLICY
 
+        With respect to the paper's equation (6) (wich we correct the sign), i.e.:
+
+        VFE =\int Q(s)logp(o|s) + KL(Q(s)||p(s|s_{t-1},a_{t-1})] + E_{Q(s)}[KL[Q(a|s)||p(a|s)]
+
+        - We do not have a POMDP but only an MDP, so we do not minimise accuracy over observations (\int Q(s)logp(o|s) = 1)
+
+        - We are not touching the KL(Q(s)||p(s|s_{t-1},a_{t-1})] term either, because that will be the focus of the critic
+        in the context of bootstrapping the EFE. (not sure)
+
+        """
+        critic_losses = 0
+
+        # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
+        policy_probabilities = self.policynet(states) 
+        
+        # The following 2 loc's correspond to eq (8) (Boltzman sampling)
+        # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
         estimated_efe_values = self.efe_net(states).detach()
         efe_actions = F.log_softmax(estimated_efe_values, dim=1)
+
+        # The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)]
+        # which divides into two terms:
+
+        # The following 2 loc's correspond to the first term in eq (7), i.e.:
+        # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
         expected_logprobs = torch.sum(policy_probabilities * efe_actions, dim=1)
-        critic_losses = -expected_logprobs.mean(dim=1)
+        critic_losses -= expected_logprobs.mean(dim=1)
+
+        # The following 2 loc's correspond to the second term in eq (7), i.e.:
+        # -E_{Q(s)}\{ H[Q(a|s)] \}
+        policy_log_probs = torch.log(policy_probabilities + 1e-8)
+        policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1)
+        expected_policy_entropy = policy_entropy.mean()
+        critic_losses -= expected_policy_entropy
 
         self.policynet_optimizer.zero_grad()
         critic_loss = critic_losses.mean()
@@ -63,10 +95,20 @@ class DAIAgent:
         self.policynet_optimizer.step()
 
 
-    def replay(self):
+    def replay(self, transition_model=None):
         """
         Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
-        In this case, we do not have a transition model to update. we just update the efe network
+        
+        This update is based on equation (17) of the paper, i.e.:
+        
+        \hat{G(s,a)} =  -r(o) +  \int Q(s)[logQ(s) - logQ(s|o)] + G_\phi(s,a)
+        
+        which is equivalent to:
+        
+        -\hat{G(s,a)} =  r(o) -  \int Q(s)[logQ(s) + logQ(s|o)] - G_\phi(s,a)
+
+        This new form is more of a "value" (your policy's value is inversely prop. to the expected free energy)
+        
         """
         if len(self.memory) < self.replay_batch_size:
             return
@@ -75,19 +117,40 @@ class DAIAgent:
 
         for state, action, reward, next_state, done in minibatch:
 
+            # reward = r(o)
             target = reward
             
             if not done:
                 
-                # Select action using online network
+                # The following three LOC's
+                # Compute efe value under the current policy, i.e. they implement G_\phi(s,a)
+                # which is a bootstrapping approximation of the last term in equation (16), i.e.:
+                # E_{Q(s_{t+1},a_{t+1})}[\sum_{t+1}^TG(s_{t+1},a_{t+1})]
                 policy_probabilities = self.policynet(next_state)
-                estimated_EFE_values = self.efe_net(next_state)
-
-                # Compute efe value under the current policy
+                estimated_EFE_values = self.target_efe_net(next_state)                
                 expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=1)
 
+                if self.transitionnet is not None:
+
+                    # if we have a transition network, then we compute the epistemic gain w.r.t to it. 
+                    # These lines approximate  -  \int Q(s)[logQ(s) + logQ(s|o)]
+                    # estimated_next_state = Q(s|o)
+                    estimated_next_state, transitionnet_hiddenstate = self.transitionnet(state, action, transitionnet_hiddenstate)
+                    # state = Q(s) (fully observable MDP)
+                    q_s = state
+                    # approximated_epistemic_gain approximates -\int Q(s)[logQ(s) + logQ(s|o)]
+                    approximated_epistemic_gain = torch.sum(estimated_next_state - q_s) ** 2
+
+                    # we add such an approximation to the target
+                    target -= approximated_epistemic_gain
+
+                    self.transitionnet_optimizer.zero_grad()
+                    transition_loss = self.state_loss_fn(estimated_next_state, next_state)
+                    transition_loss.backward()
+                    self.transitionnet_optimizer.step()
+
                 # Update target
-                target += 0.99 * expected_value.detach()
+                target -= 0.99 * expected_value.detach()
 
             target_f = self.efe_net(state).detach()
             target_f[action] = target
@@ -97,6 +160,9 @@ class DAIAgent:
             value_losses = self.value_loss_fn(predicted_values, target_f)
             value_losses.backward()
             self.efe_net_optimizer.step()
+    
+        # reset the hidden state of the transition model
+        transitionnet_hiddenstate = None
     
 
 class ValueLearningAgent:
