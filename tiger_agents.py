@@ -198,6 +198,11 @@ class ValueLearningAgent:
         self.memory.append((state, action, reward, next_state, done))
 
 
+    def train_actor(self):
+        # added for compatibility TODO implement polimorfism
+        pass
+
+
     def act(self, state):
 
         if torch.rand(1).item() <= self.epsilon:
