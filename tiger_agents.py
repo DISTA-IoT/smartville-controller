@@ -159,7 +159,7 @@ class DAIAgent:
                     # state = Q(s) (fully observable MDP)
                     q_s = state
                     # approximated_epistemic_gain approximates -\int Q(s)[logQ(s) + logQ(s|o)]
-                    approximated_epistemic_gain = torch.sum(estimated_next_state - q_s) ** 2
+                    approximated_epistemic_gain = torch.sum((estimated_next_state - q_s) ** 2)
 
                     # we add such an approximation to the target
                     target -= approximated_epistemic_gain
