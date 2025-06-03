@@ -38,8 +38,16 @@ class DAIAgent:
 
 
     def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
-        self.sequential_memory.append((state))
+        state_to_memorise = state.detach().clone()
+        # print(id(state_to_memorise.untyped_storage()))
+        next_state_to_memorise = next_state.detach().clone()
+        # print(id(next_state_to_memorise.untyped_storage()))
+        self.memory.append((
+            state_to_memorise, 
+            action, 
+            reward, 
+            next_state_to_memorise,
+            done))
 
     
     def act(self, state):
@@ -195,7 +203,16 @@ class ValueLearningAgent:
 
 
     def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        state_to_memorise = state.detach().clone()
+        # print(id(state_to_memorise.untyped_storage()))
+        next_state_to_memorise = next_state.detach().clone()
+        # print(id(next_state_to_memorise.untyped_storage()))
+        self.memory.append((
+            state_to_memorise, 
+            action, 
+            reward, 
+            next_state_to_memorise,
+            done))
 
 
     def train_actor(self):
@@ -215,11 +232,16 @@ class ValueLearningAgent:
     def replay(self):
         if len(self.memory) < self.replay_batch_size:
             return
-        
+        print(f'len of memory: {len(self.memory)}')
         minibatch = random.sample(self.memory, self.replay_batch_size)
         
+        print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
+        print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
+
         for state, action, reward, next_state, done in minibatch:
             target = reward
+
+            print(id(next_state.untyped_storage()))
             
             if not done:
 
