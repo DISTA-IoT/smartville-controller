@@ -130,7 +130,12 @@ class DAIAgent:
         
         minibatch = random.sample(self.memory, self.replay_batch_size)
 
-        for state, action, reward, next_state, done in minibatch:
+        print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
+        print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
+
+        for state, action, reward, next_state, done in minibatch:   
+
+            # print(id(next_state.untyped_storage()))
 
             # reward = r(o)
             target = reward
@@ -230,18 +235,14 @@ class ValueLearningAgent:
 
 
     def replay(self):
+
         if len(self.memory) < self.replay_batch_size:
             return
-        print(f'len of memory: {len(self.memory)}')
+
         minibatch = random.sample(self.memory, self.replay_batch_size)
-        
-        print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
-        print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
 
         for state, action, reward, next_state, done in minibatch:
             target = reward
-
-            print(id(next_state.untyped_storage()))
             
             if not done:
 
