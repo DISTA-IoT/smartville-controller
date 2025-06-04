@@ -48,6 +48,7 @@ class DAIAgent:
             reward, 
             next_state_to_memorise,
             done))
+        self.sequential_memory.append(state_to_memorise)
 
     
     def act(self, state):
