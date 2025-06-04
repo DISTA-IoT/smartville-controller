@@ -63,17 +63,31 @@ class DQN(nn.Module):
         return self.fc3(x)
 
 
+class MLP(nn.Module):
+    def __init__(self, input_size, output_size, dropout):
+        super(MLP, self).__init__()
+        hidden_size = (output_size - input_size) // 2
+        hidden_size = output_size - hidden_size
+        self.fc1 = nn.Linear(input_size, hidden_size)
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.act = nn.LeakyReLU(0.2)
+    def forward(self, x):
+        x = self.act(self.fc1(x))
+        x = self.dropout(x)
+        return self.fc2(x)
+    
 class RecurrentModel(nn.Module):
 
-    def __init__(self, input_size, hidden_size, device='cpu'):
+    def __init__(self, input_size, hidden_size, dropout, recurrent_layers, device='cpu'):
         super(RecurrentModel, self).__init__()
         self.device = device
         self.hidden_size = hidden_size
-        self.gru = nn.GRU(input_size, hidden_size, batch_first=True)
+        self.gru = nn.GRU(input_size, hidden_size, dropout=dropout, num_layers=int(recurrent_layers), batch_first=True)
 
     def forward(self, x):
         # Initialize hidden state
-        h0 = torch.zeros(1, x.size(0), self.hidden_size).to(x.device)
+        h0 = torch.zeros(self.gru.num_layers, x.size(0), self.hidden_size).to(x.device)
         
         # Forward pass through GRU layer
         out, _ = self.gru(x, h0)
@@ -177,23 +191,25 @@ class MulticlassPrototypicalClassifier(nn.Module):
 
 
 class MultiClassFlowClassifier(nn.Module):
-    def __init__(self, input_size, hidden_size, dropout_prob=0.2, kr_heads=8,device='cpu'):
+    def __init__(self, input_size, hidden_size, dropout_prob, kr_heads=8,device='cpu', kwargs=None):
         super(MultiClassFlowClassifier, self).__init__()
         self.device=device
         self.normalizer = nn.BatchNorm1d(input_size)
-        self.rnn = RecurrentModel(input_size, hidden_size, device=self.device)
+        self.encoder = MLP(input_size, hidden_size, dropout_prob)
+        self.rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.kernel_regressor = HighDimKernelRegressor(
-            in_features=hidden_size,
-            out_features=hidden_size,
-            n_heads=kr_heads,
-            dropout=dropout_prob,
-            device=self.device)
+            {'device': self.device,
+            'dropout': dropout_prob,
+            'n_heads': kr_heads,
+            'in_features': hidden_size,
+            'out_features': hidden_size})
         self.classifier = MulticlassPrototypicalClassifier(device=self.device)
 
     def forward(self, x, labels, curr_known_attack_count, query_mask):
         # nn.BatchNorm1d ingests (N,C,L), where N is the batch size, 
         # C is the number of features or channels, and L is the sequence length
         x = self.normalizer(x.permute((0,2,1))).permute((0,2,1))
+        x = self.encoder(x)
         hiddens = self.rnn(x)
         hiddens, predicted_kernel = self.kernel_regressor(hiddens)
         logits  = self.classifier(hiddens, labels, curr_known_attack_count, query_mask)
@@ -201,25 +217,30 @@ class MultiClassFlowClassifier(nn.Module):
 
 
 class TwoStreamMulticlassFlowClassifier(nn.Module):
-    def __init__(self, flow_input_size, second_stream_input_size, hidden_size, dropout_prob=0.2, kr_heads=8, device='cpu'):
+    def __init__(self, flow_input_size, second_stream_input_size, hidden_size, dropout_prob=0.2, kr_heads=8, device='cpu', kwargs=None):
         super(TwoStreamMulticlassFlowClassifier, self).__init__()
         self.device = device
         self.flow_normalizer = nn.BatchNorm1d(flow_input_size)
-        self.flow_rnn = RecurrentModel(flow_input_size, hidden_size, device=self.device)
+        self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
+        self.flow_rnn = RecurrentModel(flow_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
-        self.second_stream_rnn = RecurrentModel(second_stream_input_size, hidden_size, device=self.device)
+        self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
+        self.second_stream_rnn = RecurrentModel(second_stream_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.kernel_regressor = HighDimKernelRegressor(
-            in_features=hidden_size*2,
-            out_features=hidden_size,
-            n_heads=kr_heads,
-            dropout=dropout_prob,
-            device=self.device)
+            {'device': self.device,
+            'dropout': dropout_prob,
+            'n_heads': kr_heads,
+            'in_features': hidden_size,
+            'out_features': hidden_size})
         self.classifier = MulticlassPrototypicalClassifier(device=self.device)
 
     def forward(self, flows, second_domain_feats, labels, curr_known_attack_count, query_mask):
         
         flows = self.flow_normalizer(flows.permute((0,2,1))).permute((0,2,1))
         second_domain_feats = self.second_stream_normalizer(second_domain_feats.permute((0,2,1))).permute((0,2,1))
+
+        flows = self.flow_encoder(flows)
+        second_domain_feats = self.second_stream_encoder(second_domain_feats)
 
         flows = self.flow_rnn(flows)
         second_domain_feats = self.second_stream_rnn(second_domain_feats)
@@ -233,30 +254,35 @@ class TwoStreamMulticlassFlowClassifier(nn.Module):
  
 
 class ThreeStreamMulticlassFlowClassifier(nn.Module):
-    def __init__(self, flow_input_size, second_stream_input_size, third_stream_input_size, hidden_size, dropout_prob=0.2, kr_heads=8, device='cpu'):
+    def __init__(self, flow_input_size, second_stream_input_size, third_stream_input_size, hidden_size, dropout_prob=0.2, kr_heads=8, device='cpu', kwargs=None):
         super(ThreeStreamMulticlassFlowClassifier, self).__init__()
         self.device = device
         self.flow_normalizer = nn.BatchNorm1d(flow_input_size)
-        self.flow_rnn = RecurrentModel(flow_input_size, hidden_size, device=self.device)
+        self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
+        self.flow_rnn = RecurrentModel(flow_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
-        self.second_stream_rnn = RecurrentModel(second_stream_input_size, hidden_size, device=self.device)
+        self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
+        self.second_stream_rnn = RecurrentModel(second_stream_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.third_stream_normalizer = nn.BatchNorm1d(third_stream_input_size)
-        self.third_stream_rnn = RecurrentModel(third_stream_input_size, hidden_size, device=self.device)
+        self.third_stream_encoder = MLP(third_stream_input_size, hidden_size, dropout_prob)
+        self.third_stream_rnn = RecurrentModel(third_stream_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.kernel_regressor = HighDimKernelRegressor(
-            in_features=hidden_size*3,
-            out_features=hidden_size,
-            n_heads=kr_heads,
-            dropout=dropout_prob,
-            device=self.device)
+            {'device': self.device,
+            'dropout': dropout_prob,
+            'n_heads': kr_heads,
+            'in_features': hidden_size,
+            'out_features': hidden_size})
         self.classifier = MulticlassPrototypicalClassifier(device=self.device)
 
     def forward(self, flows, second_domain_feats, third_domain_feats, labels, curr_known_attack_count, query_mask):
         
         flows = self.flow_normalizer(flows.permute((0,2,1))).permute((0,2,1))
         second_domain_feats = self.second_stream_normalizer(second_domain_feats.permute((0,2,1))).permute((0,2,1))
-        if torch.any(third_domain_feats.isnan()):
-            print('hello')
         third_domain_feats = self.third_stream_normalizer(third_domain_feats.permute((0,2,1))).permute((0,2,1))
+
+        flows = self.flow_encoder(flows)
+        second_domain_feats = self.second_stream_encoder(second_domain_feats)
+        third_domain_feats = self.third_stream_encoder(third_domain_feats)
 
         flows = self.flow_rnn(flows)
         second_domain_feats = self.second_stream_rnn(second_domain_feats)
@@ -338,6 +364,27 @@ class HighDimKernelRegressor(nn.Module):
 
     def __init__(
             self,
+            kwargs):
+
+        super(HighDimKernelRegressor, self).__init__()
+
+        self.act = nn.Sigmoid()
+        self.device = kwargs['device']
+
+    def forward(
+            self,
+            hiddens):
+        
+        kernel = self.act(hiddens @ hiddens.T)
+
+        return hiddens, kernel
+
+
+
+class HighDimKernelRegressorOld(nn.Module):
+
+    def __init__(
+            self,
             in_features: int,
             out_features: int,
             n_heads: int,
@@ -347,7 +394,7 @@ class HighDimKernelRegressor(nn.Module):
             share_weights: bool = True,
             device: str = "cpu"):
 
-        super(HighDimKernelRegressor, self).__init__()
+        super(HighDimKernelRegressorOld, self).__init__()
 
         self.device = device
         self.w = nn.Parameter(torch.tensor(1.0))
