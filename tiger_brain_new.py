@@ -311,6 +311,7 @@ class TigerBrain():
         self._lock = threading.Lock()
         self._epistemic_lock = threading.Lock()
         self.eval = eval
+        self.intrusion_detection_kwargs = kwargs
         self.use_packet_feats = kwargs['use_packet_feats'] 
         self.use_node_feats = kwargs['node_features'] 
         self.flow_feat_dim = flow_feat_dim
@@ -376,7 +377,7 @@ class TigerBrain():
     @epistemic_thread_safe
     def reset_environment(self):
         self.env.reset()    
-        self.init_inference_neural_modules(self.learning_rate, self.seed)
+        self.init_inference_neural_modules(self.learning_rate, self.seed, self.intrusion_detection_kwargs)
         self.episode_count += 1
         
 
@@ -448,7 +449,7 @@ class TigerBrain():
             device=self.device)
         
 
-    def init_inference_neural_modules(self, lr, seed):
+    def init_inference_neural_modules(self, lr, seed, kwargs):
         torch.manual_seed(seed)
         self.confidence_decoder = ConfidenceDecoder(device=self.device)
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
@@ -467,7 +468,8 @@ class TigerBrain():
                     hidden_size=self.h_dim,
                     kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
-                    device=self.device)
+                    device=self.device,
+                    kwargs=kwargs)
             
             else: 
 
@@ -477,7 +479,8 @@ class TigerBrain():
                     hidden_size=self.h_dim,
                     kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
-                    device=self.device)
+                    device=self.device,
+                    kwargs=kwargs)
 
         else:
             
@@ -489,7 +492,8 @@ class TigerBrain():
                     hidden_size=self.h_dim,
                     kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
-                    device=self.device)
+                    device=self.device,
+                    kwargs=kwargs)
             else:
 
                 self.classifier = MultiClassFlowClassifier(
@@ -497,7 +501,8 @@ class TigerBrain():
                     hidden_size=self.h_dim,
                     dropout_prob=self.dropout,
                     kr_heads=self.kernel_regressor_heads,
-                    device=self.device)
+                    device=self.device,
+                    kwargs=kwargs)
             
 
         self.check_pretrained()
