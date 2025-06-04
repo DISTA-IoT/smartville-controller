@@ -131,8 +131,8 @@ class DAIAgent:
         
         minibatch = random.sample(self.memory, self.replay_batch_size)
 
-        print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
-        print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
+        # print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
+        # print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
 
         for state, action, reward, next_state, done in minibatch:   
 
