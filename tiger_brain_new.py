@@ -350,6 +350,8 @@ class TigerBrain():
         self.env = NewTigerEnvironment(kwargs)
         self.init_agents(kwargs)
         self.init_intelligence()
+        self.epistemic_agency = kwargs['epistemic_agency']
+        self.save_models_flag = kwargs['save_models']
 
         if self.wbt:
             self.wbl = WandBTracker(
@@ -498,8 +500,7 @@ class TigerBrain():
                     device=self.device)
             
 
-        if self.load_pretrained_inference_module:
-            self.check_pretrained()
+        self.check_pretrained()
 
         params_for_optimizer = \
             list(self.confidence_decoder.parameters()) + \
@@ -520,39 +521,40 @@ class TigerBrain():
 
         if self.use_packet_feats:
             if self.use_node_feats:
-                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_packet_node_classifier_pretrained'
-                self.confidence_decoder_path = self.pretrained_models_dir+'flow_packet_node_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_node_classifier_pretrained_h{self.h_dim}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_node_confidence_decoder_pretrained_h{self.h_dim}'
             else:
-                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_packet_classifier_pretrained'
-                self.confidence_decoder_path = self.pretrained_models_dir+'flow_packet_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_classifier_pretrained_h{self.h_dim}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_confidence_decoder_pretrained_h{self.h_dim}'
         else:
             if self.use_node_feats:
-                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_node_classifier_pretrained'
-                self.confidence_decoder_path = self.pretrained_models_dir+'flow_node_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_node_classifier_pretrained_h{self.h_dim}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_node_confidence_decoder_pretrained_h{self.h_dim}'
             else:    
-                self.classifier_path = self.pretrained_models_dir+'multiclass_flow_classifier_pretrained'
-                self.confidence_decoder_path = self.pretrained_models_dir+'flow_confidence_decoder_pretrained'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_classifier_pretrained_h{self.h_dim}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_confidence_decoder_pretrained_h{self.h_dim}'
 
-        # Check if the file exists
-        if os.path.exists(self.pretrained_models_dir):
+        if self.load_pretrained_inference_module:
+            # Check if the file exists
+            if os.path.exists(self.pretrained_models_dir):
 
-            if os.path.exists(self.classifier_path+'.pt'):
-                # Load the pre-trained weights
-                self.classifier.load_state_dict(torch.load(self.classifier_path+'.pt', weights_only=True))
-                self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.classifier_path}.pt")
-            else:
-                self.logger_instance.info(f"Pre-trained weights not found at {self.classifier_path}.pt")
-                
-            if self.multi_class:
-                if os.path.exists(self.confidence_decoder_path+'.pt'):
-                    self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt', weights_only=True))
-                    self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.confidence_decoder_path}.pt")
+                if os.path.exists(self.classifier_path+'.pt'):
+                    # Load the pre-trained weights
+                    self.classifier.load_state_dict(torch.load(self.classifier_path+'.pt', weights_only=True))
+                    self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.classifier_path}.pt")
                 else:
-                    self.logger_instance.info(f"Pre-trained weights not found at {self.confidence_decoder_path}.pt")             
-             
+                    self.logger_instance.info(f"Pre-trained weights not found at {self.classifier_path}.pt")
+                    
+                if self.multi_class:
+                    if os.path.exists(self.confidence_decoder_path+'.pt'):
+                        self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt', weights_only=True))
+                        self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.confidence_decoder_path}.pt")
+                    else:
+                        self.logger_instance.info(f"Pre-trained weights not found at {self.confidence_decoder_path}.pt")             
+                
 
-        elif self.AI_DEBUG:
-            self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
+            elif self.AI_DEBUG:
+                self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
 
 
     def infer(
@@ -1216,7 +1218,7 @@ class TigerBrain():
 
             # this fella could be toogling because of a new class arriving... 
             with self._lock:
-                if self.batch_processing_allowed:
+                if self.batch_processing_allowed and self.epistemic_agency:
                     self.online_inference(batch)
             with self._lock:
                 if self.batch_processing_allowed:
@@ -1637,6 +1639,12 @@ class TigerBrain():
             self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item()}, step=self.step_counter)
             self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari}, step=self.step_counter)
 
+        if self.save_models_flag:
+            self.check_progress(
+                curr_cs_acc=mean_eval_cs_acc.item(),
+                curr_ad_acc=mean_eval_ad_acc.item(),
+                curr_kr_acc=mean_eval_kr_ari)
+
         """
         if not self.eval:
             self.check_kr_progress(curr_kr_acc=mean_eval_kr_ari)
@@ -1693,19 +1701,29 @@ class TigerBrain():
             self.reset_test_cms()
 
 
+
+    def check_progress(self, curr_cs_acc, curr_ad_acc, curr_kr_acc):
+        self.check_cs_progress(curr_cs_acc)
+        self.check_AD_progress(curr_ad_acc)
+        self.check_kr_progress(curr_kr_acc)
+
+
     def check_cs_progress(self, curr_cs_acc):
-        self.best_cs_accuracy = curr_cs_acc
-        self.save_cs_model()
+        if curr_cs_acc > self.best_cs_accuracy:
+            self.best_cs_accuracy = curr_cs_acc
+            self.save_cs_model()
 
     
     def check_AD_progress(self, curr_ad_acc):
-        self.best_AD_accuracy = curr_ad_acc
-        self.save_ad_model()
+        if curr_ad_acc > self.best_AD_accuracy:
+            self.best_AD_accuracy = curr_ad_acc
+            self.save_ad_model()
 
     
     def check_kr_progress(self, curr_kr_acc):
-        self.best_KR_accuracy = curr_kr_acc
-        self.save_models() 
+        if curr_kr_acc > self.best_KR_accuracy:
+            self.best_KR_accuracy = curr_kr_acc
+            self.save_models()
 
 
     def save_cs_model(self, postfix='single'):
