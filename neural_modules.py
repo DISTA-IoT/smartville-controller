@@ -222,10 +222,10 @@ class TwoStreamMulticlassFlowClassifier(nn.Module):
         self.device = device
         self.flow_normalizer = nn.BatchNorm1d(flow_input_size)
         self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
-        self.flow_rnn = RecurrentModel(flow_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.flow_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
         self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
-        self.second_stream_rnn = RecurrentModel(second_stream_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.second_stream_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.kernel_regressor = HighDimKernelRegressor(
             {'device': self.device,
             'dropout': dropout_prob,
@@ -259,13 +259,13 @@ class ThreeStreamMulticlassFlowClassifier(nn.Module):
         self.device = device
         self.flow_normalizer = nn.BatchNorm1d(flow_input_size)
         self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
-        self.flow_rnn = RecurrentModel(flow_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.flow_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
         self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
-        self.second_stream_rnn = RecurrentModel(second_stream_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.second_stream_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.third_stream_normalizer = nn.BatchNorm1d(third_stream_input_size)
         self.third_stream_encoder = MLP(third_stream_input_size, hidden_size, dropout_prob)
-        self.third_stream_rnn = RecurrentModel(third_stream_input_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.third_stream_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.kernel_regressor = HighDimKernelRegressor(
             {'device': self.device,
             'dropout': dropout_prob,
