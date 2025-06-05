@@ -230,8 +230,8 @@ class TwoStreamMulticlassFlowClassifier(nn.Module):
             {'device': self.device,
             'dropout': dropout_prob,
             'n_heads': kr_heads,
-            'in_features': hidden_size,
-            'out_features': hidden_size})
+            'in_features': hidden_size*2,
+            'out_features': hidden_size*2})
         self.classifier = MulticlassPrototypicalClassifier(device=self.device)
 
     def forward(self, flows, second_domain_feats, labels, curr_known_attack_count, query_mask):
@@ -270,8 +270,8 @@ class ThreeStreamMulticlassFlowClassifier(nn.Module):
             {'device': self.device,
             'dropout': dropout_prob,
             'n_heads': kr_heads,
-            'in_features': hidden_size,
-            'out_features': hidden_size})
+            'in_features': hidden_size*3,
+            'out_features': hidden_size*3})
         self.classifier = MulticlassPrototypicalClassifier(device=self.device)
 
     def forward(self, flows, second_domain_feats, third_domain_feats, labels, curr_known_attack_count, query_mask):
@@ -385,21 +385,14 @@ class HighDimKernelRegressorOld(nn.Module):
 
     def __init__(
             self,
-            in_features: int,
-            out_features: int,
-            n_heads: int,
-            is_concat: bool = False,
-            dropout: float = 0.0,
-            leaky_relu_negative_slope: float = 0.2,
-            share_weights: bool = True,
-            device: str = "cpu"):
+            kwargs):
 
         super(HighDimKernelRegressorOld, self).__init__()
 
-        self.device = device
+        self.device = kwargs['device']
         self.w = nn.Parameter(torch.tensor(1.0))
         self.b = nn.Parameter(torch.tensor(-0.5))
-        self.similarity_network = SimmilarityNet(h_dim=in_features)
+        self.similarity_network = SimmilarityNet(h_dim=kwargs['in_features'])
 
     def forward(
             self,
