@@ -768,6 +768,7 @@ class TigerBrain():
         self.classifier.eval()
         self.confidence_decoder.eval()
 
+    
         # get zda labels for the online batch
         online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch, mode=INFERENCE)
 
@@ -776,9 +777,9 @@ class TigerBrain():
                                 samples_per_class=self.replay_buff_batch_size,
                                 mode=INFERENCE)
         
+        # query masks
         aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
         online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
-
         merged_query_mask = torch.cat([aux_query_mask, online_query_mask])
         
         # we report and compute rewards only over online samples
