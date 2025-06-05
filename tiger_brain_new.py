@@ -334,7 +334,7 @@ class TigerBrain():
         self.use_neural_AD = kwargs['use_neural_AD']
         self.use_neural_KR = kwargs['use_neural_KR']
         self.online_evaluation = kwargs['online_evaluation']
-        self.blocked_benign_cost_factor =  int(kwargs['blocked_benign_cost_factor'])
+        self.bad_classif_cost_factor =  int(kwargs['bad_classif_cost_factor'])
         self.online_eval_rounds = kwargs['online_evaluation_rounds']
         self.load_pretrained_inference_module = kwargs['pretrained_inference']
         self.clustering_loss_backprop = kwargs['clustering_loss_backprop']
@@ -906,12 +906,15 @@ class TigerBrain():
         known_samples_costs = sample_rewards[~predicted_online_zda_mask]
 
         classification_reward = 0
+        
+        correct_classif_rewards = torch.zeros_like(known_samples_costs)
+        bad_classif_costs = torch.zeros_like(known_samples_costs)
 
         if action_signal.item() == 0:
             # Each well classified sample is rewarded positively:        
             correct_classif_rewards = torch.abs(known_samples_costs * known_correct_classification_mask)
             # Incorrectly classified stuff has a cost: 
-            bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask))
+            bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask) * self.bad_classif_cost_factor)
             # total classification reward:  
             classification_reward = (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
 
@@ -949,6 +952,10 @@ class TigerBrain():
         cluster_action_signals = torch.zeros(1)
 
         bought_labels = []
+
+        rewards_per_accepted_clusters = torch.zeros(1)
+        benign_blocking_cost_per_cluster = torch.zeros(1)
+        epistemic_costs = torch.zeros(1)
 
         if num_of_predicted_anomalies > 0:
             # Anomaly clustering is going to be done only if there are predicted anomalies.
@@ -989,17 +996,20 @@ class TigerBrain():
                 known_classification_confidence,
                 self.env.current_budget)
             
+            rewards_per_cluster = torch.zeros_like(cluster_action_signals).float()
+            epistemic_costs = torch.zeros_like(cluster_action_signals).float()
             # get the potential rewards per cluster 
             # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
             # Notice the reward takes into account intersections with good and bad samples
-            rewards_per_cluster = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
+            rewards_per_accepted_clusters = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
 
             # get the cluster_passing_mask:
             cluster_passing_mask = cluster_action_signals == 0
 
             # get the cluster-specific passing rewards
-            # blocking a cluster gives zero or negative reward. For now, its zero:  
-            rewards_per_cluster= rewards_per_cluster[~missing_clusters] *  cluster_passing_mask
+            rewards_per_accepted_clusters = rewards_per_accepted_clusters[~missing_clusters] *  cluster_passing_mask
+
+            rewards_per_cluster += rewards_per_accepted_clusters
 
             # benign traffic mask:
             benign_rewards = torch.relu(sample_rewards[predicted_online_zda_mask]) 
@@ -1008,7 +1018,7 @@ class TigerBrain():
             benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
             # blocked benign traffic implies to pay a cost:
-            benign_blocking_cost_per_cluster = self.blocked_benign_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
+            benign_blocking_cost_per_cluster = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
 
             # subtract the price of neglecting benign traffic
             rewards_per_cluster -= benign_blocking_cost_per_cluster
@@ -1022,6 +1032,7 @@ class TigerBrain():
                 # get information about the change in the curriculum
                 updates_dict = self.perform_epistemic_action()
                 # you'll pay the price of aqcuiring a TCI label:
+                epistemic_costs[epistemic_action_index] -= updates_dict['price_payed']
                 rewards_per_cluster[epistemic_action_index] -= updates_dict['price_payed']
                 bought_labels.append(updates_dict['updated_label'])
             
@@ -1073,7 +1084,18 @@ class TigerBrain():
             self.wbl.log({'known traffic action': action_signal.item(),
                           'cluster actions': cluster_action_signals.tolist(),
                           'classification_reward': classification_reward,
-                          'num_of_anomalies': num_of_predicted_anomalies.item()}, step=self.step_counter)
+                          'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
+                          'correct_classification_rewards': correct_classif_rewards.sum().item(),
+                          'bad_classification_cost': bad_classif_costs.sum().item(),
+                          'rewards_per_accepted_clusters':rewards_per_accepted_clusters.sum().item(),
+                          'rewards_per_blocked_clusters':-benign_blocking_cost_per_cluster.sum().item(),
+                          'num_predicted_knowns': number_of_predicted_known_samples.item(),
+                          'num_predicted_unknowns': num_of_predicted_anomalies.item(),
+                          'known_classif_confidente': known_classification_confidence.item(),
+                          'zda_classif_confidence': zda_confidence.item(),
+                          'epistemic_costs': epistemic_costs.sum().item(),
+                          }, 
+                          step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
