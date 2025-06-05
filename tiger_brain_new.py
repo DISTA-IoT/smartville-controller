@@ -873,10 +873,7 @@ class TigerBrain():
             conf_normalizer += 1
         zda_confidence /= conf_normalizer
 
-        #
-        # Useful signals:
-        # 
-        
+                
         # the reward obtained in this batch 
         batch_reward = torch.zeros(1)
 
