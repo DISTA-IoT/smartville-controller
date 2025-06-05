@@ -374,13 +374,13 @@ class TigerBrain():
         self.replay_buffers = {}
         self.reset_environment()
 
+
     @epistemic_thread_safe
     def reset_environment(self):
         self.env.reset()    
         self.init_inference_neural_modules(self.learning_rate, self.seed, self.intrusion_detection_kwargs)
         self.episode_count += 1
         
-
 
     def init_agents(self, kwargs):
         
