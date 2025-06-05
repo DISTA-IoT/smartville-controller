@@ -259,7 +259,7 @@ def launch(**kwargs):
 
 
 
-        FLOWSTATS_FREQ_SECS = int(intrusion_detection_args.get("flowstats_freq_secs", 5))
+        FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
         if FLOWSTATS_FREQ_SECS > 0:
           core.openflow.addListenerByName(
