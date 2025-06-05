@@ -957,7 +957,7 @@ class TigerBrain():
 
         if num_of_predicted_anomalies > 0:
             # Anomaly clustering is going to be done only if there are predicted anomalies.
-
+            print('num of predicted anomalies: ', num_of_predicted_anomalies)
             if self.use_neural_KR:
                 # use inference modules for clustering...
                 _, predicted_decimal_clusters, kr_precision = self.kernel_regression_step(
@@ -972,11 +972,11 @@ class TigerBrain():
             num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
 
             # take only the clusters of predicted zdas...
-            predicted_decimal_clusters = predicted_decimal_clusters[predicted_online_zda_mask] 
+            anomalous_predicted_decimal_clusters = predicted_decimal_clusters[predicted_online_zda_mask] 
                 
             # one-hot encode the predicted clusters (don't worry about exact class assignments, we just need to group stuff...)
             predicted_clusters_oh = torch.nn.functional.one_hot(
-                predicted_decimal_clusters,
+                anomalous_predicted_decimal_clusters,
                 num_classes=num_of_predicted_clusters
             )
 
@@ -997,12 +997,9 @@ class TigerBrain():
             rewards_per_cluster = torch.zeros_like(cluster_action_signals).float()
             epistemic_costs = torch.zeros_like(cluster_action_signals).float()
             # get the potential rewards per cluster 
-            # The following LOCs take into account every sample, and computes the reward for ACCEPTING each cluster as is.
+            # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
             # Notice the reward takes into account intersections with good and bad samples
-            pos_rewards_predicted_zdas = torch.relu(sample_rewards[predicted_online_zda_mask])
-            neg_rewards_predicted_zdas = -torch.relu(-sample_rewards[predicted_online_zda_mask]*self.bad_classif_cost_factor)
-            rewards_predicted_zdas = pos_rewards_predicted_zdas + neg_rewards_predicted_zdas
-            rewards_per_accepted_clusters = (predicted_clusters_oh * rewards_predicted_zdas.unsqueeze(-1)).sum(0)
+            rewards_per_accepted_clusters = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
 
             # get the cluster_passing_mask:
             cluster_passing_mask = cluster_action_signals == 0
