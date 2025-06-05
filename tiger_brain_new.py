@@ -999,9 +999,12 @@ class TigerBrain():
             rewards_per_cluster = torch.zeros_like(cluster_action_signals).float()
             epistemic_costs = torch.zeros_like(cluster_action_signals).float()
             # get the potential rewards per cluster 
-            # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
+            # The following LOCs take into account every sample, and computes the reward for ACCEPTING each cluster as is.
             # Notice the reward takes into account intersections with good and bad samples
-            rewards_per_accepted_clusters = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
+            pos_rewards_predicted_zdas = torch.relu(sample_rewards[predicted_online_zda_mask])
+            neg_rewards_predicted_zdas = -torch.relu(-sample_rewards[predicted_online_zda_mask]*self.bad_classif_cost_factor)
+            rewards_predicted_zdas = pos_rewards_predicted_zdas + neg_rewards_predicted_zdas
+            rewards_per_accepted_clusters = (predicted_clusters_oh * rewards_predicted_zdas.unsqueeze(-1)).sum(0)
 
             # get the cluster_passing_mask:
             cluster_passing_mask = cluster_action_signals == 0
