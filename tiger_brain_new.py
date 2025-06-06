@@ -912,7 +912,10 @@ class TigerBrain():
             # Each well classified sample is rewarded positively:        
             correct_classif_rewards = torch.abs(known_samples_costs * known_correct_classification_mask)
             # Incorrectly classified stuff has a cost: 
-            bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask) * self.bad_classif_cost_factor)
+            if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
+                bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask))
+            else:
+                bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask) * self.bad_classif_cost_factor)
             # total classification reward:  
             classification_reward = (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
 
