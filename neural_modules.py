@@ -195,9 +195,15 @@ class MultiClassFlowClassifier(nn.Module):
         super(MultiClassFlowClassifier, self).__init__()
         self.device=device
         self.normalizer = nn.BatchNorm1d(input_size)
-        self.encoder = MLP(input_size, hidden_size, dropout_prob)
-        self.rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
-        self.kernel_regressor = HighDimKernelRegressor(
+        rnn_input_dim = input_size
+        self.use_encoder = False
+        if kwargs['use_encoder']:
+            self.use_encoder = True
+            rnn_input_dim = hidden_size
+            self.encoder = MLP(input_size, hidden_size, dropout_prob)
+        self.rnn = RecurrentModel(rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        kernel_regressor_class = DistKernelRegressor if kwargs['kr_type'] == 'dist' else DotProdKernelRegressor            
+        self.kernel_regressor = kernel_regressor_class(
             {'device': self.device,
             'dropout': dropout_prob,
             'n_heads': kr_heads,
@@ -209,7 +215,8 @@ class MultiClassFlowClassifier(nn.Module):
         # nn.BatchNorm1d ingests (N,C,L), where N is the batch size, 
         # C is the number of features or channels, and L is the sequence length
         x = self.normalizer(x.permute((0,2,1))).permute((0,2,1))
-        x = self.encoder(x)
+        if self.use_encoder:
+            x = self.encoder(x)
         hiddens = self.rnn(x)
         hiddens, predicted_kernel = self.kernel_regressor(hiddens)
         logits  = self.classifier(hiddens, labels, curr_known_attack_count, query_mask)
@@ -221,12 +228,21 @@ class TwoStreamMulticlassFlowClassifier(nn.Module):
         super(TwoStreamMulticlassFlowClassifier, self).__init__()
         self.device = device
         self.flow_normalizer = nn.BatchNorm1d(flow_input_size)
-        self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
-        self.flow_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        flow_rnn_input_dim = flow_input_size
+        second_stream_rnn_input_dim = second_stream_input_size
+        self.use_encoder = False
+        if kwargs['use_encoder']:
+            self.use_encoder = True
+            flow_rnn_input_dim = hidden_size
+            second_stream_rnn_input_dim = hidden_size
+            self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
+            self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
+
+        self.flow_rnn = RecurrentModel(flow_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
-        self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
-        self.second_stream_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
-        self.kernel_regressor = HighDimKernelRegressor(
+        self.second_stream_rnn = RecurrentModel(second_stream_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        kernel_regressor_class = DistKernelRegressor if kwargs['kr_type'] == 'dist' else DotProdKernelRegressor 
+        self.kernel_regressor = kernel_regressor_class(
             {'device': self.device,
             'dropout': dropout_prob,
             'n_heads': kr_heads,
@@ -239,8 +255,9 @@ class TwoStreamMulticlassFlowClassifier(nn.Module):
         flows = self.flow_normalizer(flows.permute((0,2,1))).permute((0,2,1))
         second_domain_feats = self.second_stream_normalizer(second_domain_feats.permute((0,2,1))).permute((0,2,1))
 
-        flows = self.flow_encoder(flows)
-        second_domain_feats = self.second_stream_encoder(second_domain_feats)
+        if self.use_encoder:
+            flows = self.flow_encoder(flows)
+            second_domain_feats = self.second_stream_encoder(second_domain_feats)
 
         flows = self.flow_rnn(flows)
         second_domain_feats = self.second_stream_rnn(second_domain_feats)
@@ -258,15 +275,26 @@ class ThreeStreamMulticlassFlowClassifier(nn.Module):
         super(ThreeStreamMulticlassFlowClassifier, self).__init__()
         self.device = device
         self.flow_normalizer = nn.BatchNorm1d(flow_input_size)
-        self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
-        self.flow_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.use_encoder = False
+        flow_rnn_input_dim = flow_input_size
+        second_stream_rnn_input_dim = second_stream_input_size
+        third_stream_rnn_input_dim = third_stream_input_size
+        if kwargs['use_encoder']:
+            self.use_encoder = True
+            self.flow_rnn_input_dim = hidden_size
+            self.second_stream_rnn_input_dim = hidden_size
+            self.third_stream_rnn_input_dim = hidden_size
+            self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
+            self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
+            self.third_stream_encoder = MLP(third_stream_input_size, hidden_size, dropout_prob)
+
+        self.flow_rnn = RecurrentModel(flow_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
-        self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
-        self.second_stream_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.second_stream_rnn = RecurrentModel(second_stream_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
         self.third_stream_normalizer = nn.BatchNorm1d(third_stream_input_size)
-        self.third_stream_encoder = MLP(third_stream_input_size, hidden_size, dropout_prob)
-        self.third_stream_rnn = RecurrentModel(hidden_size, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
-        self.kernel_regressor = HighDimKernelRegressor(
+        self.third_stream_rnn = RecurrentModel(third_stream_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        kernel_regressor_class = DistKernelRegressor if kwargs['kr_type'] == 'dist' else DotProdKernelRegressor 
+        self.kernel_regressor = kernel_regressor_class(
             {'device': self.device,
             'dropout': dropout_prob,
             'n_heads': kr_heads,
@@ -280,9 +308,10 @@ class ThreeStreamMulticlassFlowClassifier(nn.Module):
         second_domain_feats = self.second_stream_normalizer(second_domain_feats.permute((0,2,1))).permute((0,2,1))
         third_domain_feats = self.third_stream_normalizer(third_domain_feats.permute((0,2,1))).permute((0,2,1))
 
-        flows = self.flow_encoder(flows)
-        second_domain_feats = self.second_stream_encoder(second_domain_feats)
-        third_domain_feats = self.third_stream_encoder(third_domain_feats)
+        if self.use_encoder:
+            flows = self.flow_encoder(flows)
+            second_domain_feats = self.second_stream_encoder(second_domain_feats)
+            third_domain_feats = self.third_stream_encoder(third_domain_feats)
 
         flows = self.flow_rnn(flows)
         second_domain_feats = self.second_stream_rnn(second_domain_feats)
@@ -360,13 +389,13 @@ class SimmilarityNet(nn.Module):
         return symm
 
 
-class HighDimKernelRegressor(nn.Module):
+class DotProdKernelRegressor(nn.Module):
 
     def __init__(
             self,
             kwargs):
 
-        super(HighDimKernelRegressor, self).__init__()
+        super(DotProdKernelRegressor, self).__init__()
 
         self.act = nn.Sigmoid()
         self.device = kwargs['device']
@@ -381,13 +410,13 @@ class HighDimKernelRegressor(nn.Module):
 
 
 
-class HighDimKernelRegressorOld(nn.Module):
+class DistKernelRegressor(nn.Module):
 
     def __init__(
             self,
             kwargs):
 
-        super(HighDimKernelRegressorOld, self).__init__()
+        super(DistKernelRegressor, self).__init__()
 
         self.device = kwargs['device']
         self.w = nn.Parameter(torch.tensor(1.0))
