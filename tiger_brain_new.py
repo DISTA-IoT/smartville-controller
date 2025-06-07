@@ -764,6 +764,24 @@ class TigerBrain():
         2. acquire a TCI label  (epistemic action)
         """
         
+        cs_acc = torch.ones(1)
+        ad_acc = torch.ones(1)
+        batch_reward = torch.zeros(1)
+        action_signal = torch.ones(1)
+        classification_reward = 0
+        correct_classif_rewards = torch.zeros(1)
+        bad_classif_costs = torch.zeros(1)
+        known_classification_confidence = torch.zeros(1)
+        zda_confidence = torch.zeros(1)
+        kr_precision = torch.ones(1)
+        purchased_mask = torch.zeros(1)
+        cluster_action_signals = torch.zeros(1)
+        bought_labels = []
+
+        rewards_per_accepted_clusters = torch.zeros(1)
+        benign_blocking_cost_per_cluster = torch.zeros(1)
+        epistemic_costs = torch.zeros(1)
+
         # do not run gradients on the inference modules!
         self.classifier.eval()
         self.confidence_decoder.eval()
@@ -812,46 +830,51 @@ class TigerBrain():
         num_of_online_samples = online_batch.zda_labels.shape[0] 
         # and we know those were in the last positions of the merged batch: 
         predicted_online_zda_mask = predicted_zda_mask[-num_of_online_samples:]  
-          
-        #  
-        # CLASSIFICATION OF KNOWN TRAFFIC: 
-        # rewards need to be given if classification is good, (as if we were accepting/blocking stuff...)
-        # notice we select only traffic classified as known using the inverse of the anomaly-classified mask
-        # i.e., the ~predicted_online_zda_mask mask
-        #
-        online_class_labels = merged_batch.class_labels[-num_of_online_samples:][~predicted_online_zda_mask].squeeze(-1)
-        online_class_preds = logits[-num_of_online_samples:][~predicted_online_zda_mask].max(1)[1]
-        known_correct_classification_mask = online_class_labels == online_class_preds
- 
-        # classif. accuracy (only for reporting purposes) 
-        cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
-        if self.wbt: self.wbl.log({INFERENCE+'_'+CS_ACC: cs_acc.item()}, step=self.step_counter)
-
         # how many online samples are we classifying as known? 
         number_of_predicted_known_samples = (~predicted_online_zda_mask).sum()
-
         # how many of them are we classifying as anomalies instead? 
         num_of_predicted_anomalies = predicted_online_zda_mask.sum()
+        
+        
 
-        #
-        # Computing confidence on known-class classification:
-        # take the polarisation-degree of your inferences. 
-        #  
-        # analysing only the logits of samples predicted as known: 
-        interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
-        number_of_known_classes = logits.shape[1]
+        if number_of_predicted_known_samples > 0:
+
+            #
+            #  
+            # CLASSIFICATION OF KNOWN TRAFFIC: 
+            # rewards need to be given if classification is good, (as if we were accepting/blocking stuff...)
+            # notice we select only traffic classified as known using the inverse of the anomaly-classified mask
+            # i.e., the ~predicted_online_zda_mask mask
+            #
+            online_class_labels = merged_batch.class_labels[-num_of_online_samples:][~predicted_online_zda_mask].squeeze(-1)
+            online_class_preds = logits[-num_of_online_samples:][~predicted_online_zda_mask].max(1)[1]
+            known_correct_classification_mask = online_class_labels == online_class_preds
+    
+            # classif. accuracy (only for reporting purposes) 
+            cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
+            if self.wbt: self.wbl.log({INFERENCE+'_'+CS_ACC: cs_acc.item()}, step=self.step_counter)
+
+            
+
+            #
+            # Computing confidence on known-class classification:
+            # take the polarisation-degree of your inferences. 
+            #  
+            # analysing only the logits of samples predicted as known: 
+            interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
+            number_of_known_classes = logits.shape[1]
 
 
-        # 
-        # CONFIDENCE MEASUREMENT:
-        # 
-        # Conf. of multiclass classification: 
-        # we compute the ratio of the average max logits with those of the other logits:  
-        non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
-        non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
-        mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
-        mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
-        known_classification_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values)
+            # 
+            # CONFIDENCE MEASUREMENT:
+            # 
+            # Conf. of multiclass classification: 
+            # we compute the ratio of the average max logits with those of the other logits:  
+            non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
+            non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
+            mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
+            mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
+            known_classification_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values)
 
         # Conf. of anomaly detection:
         # We say you're an anomaly if the logit is greater or equals than 0.5
@@ -861,7 +884,7 @@ class TigerBrain():
         online_non_anomaly_pred_logits = online_anomaly_logits[~predicted_online_zda_mask]
         online_anomaly_pred_logits = online_anomaly_logits[predicted_online_zda_mask]
         
-        zda_confidence = 0
+        
         conf_normalizer = 0
         if online_non_anomaly_pred_logits.shape[0] > 0: 
             # we do think there are some known samples:
@@ -874,8 +897,7 @@ class TigerBrain():
         zda_confidence /= conf_normalizer
 
                 
-        # the reward obtained in this batch 
-        batch_reward = torch.zeros(1)
+        
 
         # natural language labels
         nl_labels = self.encoder.inverse_transform(
@@ -884,83 +906,75 @@ class TigerBrain():
         # sample-specific rewards:
         sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])
 
-        #
-        # Acting over the known traffic:
-        # One state vector is assembled which has a zeros centroid. 
-        # Actions do not change anything in the system, apart of the rewards: 
-        # If you accept it, you'll get the reward based on the classification accuracy. 
-        # For the other actions, no reward is given.
 
-        action_signal, state_vecs = self.act( 
-            torch.zeros(1, hidden_vectors.shape[1]),
-            num_of_predicted_anomalies,
-            zda_confidence,
-            number_of_predicted_known_samples,
-            known_classification_confidence,
-            self.env.current_budget
+        if number_of_predicted_known_samples > 0:
+            #
+            # Acting over the known traffic:
+            # One state vector is assembled which has a zeros centroid. 
+            # Actions do not change anything in the system, apart of the rewards: 
+            # If you accept it, you'll get the reward based on the classification accuracy. 
+            # For the other actions, no reward is given.
+
+            action_signal, state_vecs = self.act( 
+                torch.zeros(1, hidden_vectors.shape[1]),
+                num_of_predicted_anomalies,
+                zda_confidence,
+                number_of_predicted_known_samples,
+                known_classification_confidence,
+                self.env.current_budget
+                )
+            
+            # Computing the rewads for known traffic: 
+            known_samples_costs = sample_rewards[~predicted_online_zda_mask]
+
+            
+            
+            correct_classif_rewards = torch.zeros_like(known_samples_costs)
+            bad_classif_costs = torch.zeros_like(known_samples_costs)
+
+            if action_signal.item() == 0:
+                # Each well classified sample is rewarded positively:        
+                correct_classif_rewards = torch.abs(known_samples_costs * known_correct_classification_mask)
+                # Incorrectly classified stuff has a cost: 
+                if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
+                    bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask))
+                else:
+                    bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask) * self.bad_classif_cost_factor)
+                # total classification reward:  
+                classification_reward = (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
+
+            # update the current budget 
+            self.env.current_budget += classification_reward
+            
+            # the new state is a copy of the old one: 
+            new_state = state_vecs[0].detach().clone()
+            # but changing the current budget: 
+            new_state[-1] = self.env.current_budget 
+
+            # an episode ends if the budget ends... 
+            end_signal = self.env.has_episode_ended(self.step_counter)
+
+            # store the experience tuple:          
+            self.mitigation_agent.remember(
+                state_vecs[0].detach(),
+                action_signal,
+                classification_reward,
+                new_state,
+                end_signal
             )
-        
-        # Computing the rewads for known traffic: 
-        known_samples_costs = sample_rewards[~predicted_online_zda_mask]
-
-        classification_reward = 0
-        
-        correct_classif_rewards = torch.zeros_like(known_samples_costs)
-        bad_classif_costs = torch.zeros_like(known_samples_costs)
-
-        if action_signal.item() == 0:
-            # Each well classified sample is rewarded positively:        
-            correct_classif_rewards = torch.abs(known_samples_costs * known_correct_classification_mask)
-            # Incorrectly classified stuff has a cost: 
-            if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-                bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask))
-            else:
-                bad_classif_costs = -torch.abs(known_samples_costs * (~known_correct_classification_mask) * self.bad_classif_cost_factor)
-            # total classification reward:  
-            classification_reward = (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
-
-        # update the current budget 
-        self.env.current_budget += classification_reward
-        
-        # the new state is a copy of the old one: 
-        new_state = state_vecs[0].detach().clone()
-        # but changing the current budget: 
-        new_state[-1] = self.env.current_budget 
-
-        # an episode ends if the budget ends... 
-        end_signal = self.env.has_episode_ended(self.step_counter)
-
-        # store the experience tuple:          
-        self.mitigation_agent.remember(
-            state_vecs[0].detach(),
-            action_signal,
-            classification_reward,
-            new_state,
-            end_signal
-        )
-        
-        # add the good classification reward to the batch reward (only for reporting purposes)
-        batch_reward += classification_reward
+            
+            # add the good classification reward to the batch reward (only for reporting purposes)
+            batch_reward += classification_reward
         
         #  
         # COLLECTIVE anomaly detection (i.e., clustering eventual zdas) 
         # 
 
-        kr_precision = torch.ones(1)
-
-        purchased_mask = torch.zeros(1)
-
-        cluster_action_signals = torch.zeros(1)
-
-        bought_labels = []
-
-        rewards_per_accepted_clusters = torch.zeros(1)
-        benign_blocking_cost_per_cluster = torch.zeros(1)
-        epistemic_costs = torch.zeros(1)
+        
 
         if num_of_predicted_anomalies > 0:
             # Anomaly clustering is going to be done only if there are predicted anomalies.
-            print('num of predicted anomalies: ', num_of_predicted_anomalies)
+
             if self.use_neural_KR:
                 # use inference modules for clustering...
                 _, predicted_decimal_clusters, kr_precision = self.kernel_regression_step(
