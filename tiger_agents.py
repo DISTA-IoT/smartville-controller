@@ -1,4 +1,4 @@
-from smartController.neural_modules import DQN, PolicyNet, NEFENet
+from smartController.neural_modules import DQN, PolicyNet, NEFENet, TransitionNet
 import torch.optim as optim
 from collections import deque
 import torch
@@ -18,6 +18,12 @@ class DAIAgent:
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
+        self.transitionnet_hiddenstate = None
+
+        if kwargs['use_transition_model']:
+            self.transitionnet = TransitionNet(kwargs)
+            self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
+            self.transitionnet_hiddenstate = torch.zeros(kwargs['recurrent_layers'], kwargs['h_dim'])
 
         self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
@@ -156,7 +162,8 @@ class DAIAgent:
                     # if we have a transition network, then we compute the epistemic gain w.r.t to it. 
                     # These lines approximate  -  \int Q(s)[logQ(s) + logQ(s|o)]
                     # estimated_next_state = Q(s|o)
-                    estimated_next_state, transitionnet_hiddenstate = self.transitionnet(state, action, transitionnet_hiddenstate)
+                    estimated_next_state, self.transitionnet_hiddenstate = self.transitionnet(state, action, self.transitionnet_hiddenstate)
+                    self.transitionnet_hiddenstate = self.transitionnet_hiddenstate.detach()
                     # state = Q(s) (fully observable MDP)
                     q_s = state
                     # approximated_epistemic_gain approximates -\int Q(s)[logQ(s) + logQ(s|o)]

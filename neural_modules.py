@@ -371,6 +371,30 @@ class KernelRegressionLoss(nn.Module):
         return (self.r_w * repulsive_CE_term) + (self.a_w * attractive_CE_term)
 
 
+
+class TransitionNet(nn.Module):
+
+    def __init__(
+            self,
+            kwargs):
+        super(TransitionNet, self).__init__()
+        self.state_size = kwargs['state_size']
+        self.recurrent_layers = int(kwargs['recurrent_layers'])
+        self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
+        self.fc1 = nn.Linear(kwargs['state_size'] + kwargs['action_size'], kwargs['h_dim'])
+        if self.recurrent_layer_1 > 0:
+            self.recurrent_layer_1 = nn.GRU(kwargs['h_dim'], kwargs['h_dim'], kwargs['recurrent_layers'], batch_first=True)
+        self.fc2 = nn.Linear(kwargs['h_dim'], kwargs['state_size'])
+
+    def forward(self, x, h):
+        x_res = self.fc1(x)
+        x_res = self.act(x_res)
+        if self.recurrent_layer_1 > 0:
+            x_res, h = self.recurrent_layer_1(x_res, h)
+        x_res = self.fc2(x_res)
+        return x[:,:self.state_size] + x_res, h
+
+
 class SimmilarityNet(nn.Module):
     def __init__(
             self,
