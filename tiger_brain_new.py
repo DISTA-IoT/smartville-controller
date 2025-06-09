@@ -1155,6 +1155,9 @@ class TigerBrain():
                 sample_rewards
                 )
 
+        # for keeping track of episode-stats:
+        self.env.episode_rewards.append(self.batch_reward.item())
+        self.env.episode_budgets.append(self.env.current_budget)
 
         # train!
         self.mitigation_agent.replay()     
@@ -1191,11 +1194,14 @@ class TigerBrain():
 
         # eventually reset the environment. 
         if self.env.has_episode_ended(self.step_counter): 
-            self.reset_environment()
             if self.wbt:
                 self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
+                self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
+                self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
             if self.episode_count % 5 == 0:
                 self.mitigation_agent.train_actor()
+            self.reset_environment()
+            
 
 
     def class_classification_step(
