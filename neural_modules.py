@@ -35,14 +35,14 @@ class PolicyNet(nn.Module):
 
 
 class NEFENet(nn.Module):
-    def __init__(self, state_size, action_size):
+    def __init__(self, kwargs):
         """
         Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
         """
         super(NEFENet, self).__init__()
-        self.fc1 = nn.Linear(state_size, 128)
-        self.fc2 = nn.Linear(128, 128)
-        self.fc3 = nn.Linear(128, action_size)
+        self.fc1 = nn.Linear(kwargs['state_size'], kwargs['state_size']*2)
+        self.fc2 = nn.Linear(kwargs['state_size']*2, kwargs['h_dim'])
+        self.fc3 = nn.Linear(kwargs['h_dim'], kwargs['action_size'])
 
     def forward(self, x):
         x = torch.relu(self.fc1(x))
@@ -378,21 +378,25 @@ class TransitionNet(nn.Module):
             self,
             kwargs):
         super(TransitionNet, self).__init__()
-        self.state_size = kwargs['state_size']
+
+        self.transition_input_size = kwargs['proprioceptive_state_size'] + kwargs['action_size']
         self.recurrent_layers = int(kwargs['recurrent_layers'])
         self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
-        self.fc1 = nn.Linear(kwargs['state_size'] + kwargs['action_size'], kwargs['h_dim'])
-        if self.recurrent_layer_1 > 0:
-            self.recurrent_layer_1 = nn.GRU(kwargs['h_dim'], kwargs['h_dim'], kwargs['recurrent_layers'], batch_first=True)
-        self.fc2 = nn.Linear(kwargs['h_dim'], kwargs['state_size'])
+        self.fc1 = nn.Linear(self.transition_input_size, kwargs['h_dim'])
+        self.fc2 = nn.Linear(kwargs['h_dim'], kwargs['proprioceptive_state_size'])
 
-    def forward(self, x, h):
+    def forward(self, x):
+        
+        # compatibility with batch processing
+        if len(x.shape) < 2:
+            x = x.unsqueeze(0)
+        
         x_res = self.fc1(x)
         x_res = self.act(x_res)
-        if self.recurrent_layer_1 > 0:
-            x_res, h = self.recurrent_layer_1(x_res, h)
+        x_res = self.act(x_res)
         x_res = self.fc2(x_res)
-        return x[:,:self.state_size] + x_res, h
+        
+        return x_res
 
 
 class SimmilarityNet(nn.Module):

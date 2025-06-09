@@ -11,19 +11,24 @@ import torch.functional as F
 class DAIAgent:
     def __init__(self, kwargs):
         
-        self.neg_efe_net = NEFENet(kwargs['state_size'], kwargs['action_size'])
-        self.target_neg_efe_net = NEFENet(kwargs['state_size'], kwargs['action_size'])
+        self.action_size = kwargs['action_size']
+        self.neg_efe_net = NEFENet(kwargs)
+        self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
-        self.transitionnet_hiddenstate = None
 
         if kwargs['use_transition_model']:
+
+            state_size = kwargs['state_size']
+            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+            self.proprioceptive_state_size = state_size - hidden_state_size
+            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+
             self.transitionnet = TransitionNet(kwargs)
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
-            self.transitionnet_hiddenstate = torch.zeros(kwargs['recurrent_layers'], kwargs['h_dim'])
 
         self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
@@ -33,8 +38,8 @@ class DAIAgent:
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
-        self.value_loss_fn = nn.MSELoss()
-        self.state_loss_fn = nn.MSELoss()
+        self.value_loss_fn = nn.MSELoss(reduction='sum')
+        self.state_loss_fn = nn.MSELoss(reduction='sum')
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.memory_size)
@@ -117,7 +122,8 @@ class DAIAgent:
         self.policynet_optimizer.step()
         self.reset_sequential_memory()
 
-    def replay(self, transition_model=None):
+
+    def replay(self):
         """
         Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
         
@@ -135,10 +141,19 @@ class DAIAgent:
         if len(self.memory) < self.replay_batch_size:
             return
         
+        minibatch_states = []
+        minibatch_proprioceptive_states = []
+        minibatch_actions = []
+        minibatch_next_states = []
+        minibatch_neg_efes_targets = []
+        
         minibatch = random.sample(self.memory, self.replay_batch_size)
 
         # print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
         # print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
+
+        self.transitionnet.eval()
+        self.neg_efe_net.eval()
 
         for state, action, reward, next_state, done in minibatch:   
 
@@ -146,7 +161,14 @@ class DAIAgent:
 
             # reward = r(o)
             target = reward
-            
+
+            action_onehot = torch.zeros(self.action_size)
+            action_onehot[action] = 1
+
+            proprioceptive_state = state[-self.proprioceptive_state_size:]
+            next_proprioceptive_state = next_state[-self.proprioceptive_state_size:]
+                    
+
             if not done:
                 
                 # The following three LOC's
@@ -158,39 +180,61 @@ class DAIAgent:
                 expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=0)
 
                 if self.transitionnet is not None:
-
                     # if we have a transition network, then we compute the epistemic gain w.r.t to it. 
                     # These lines approximate  -  \int Q(s)[logQ(s) + logQ(s|o)]
                     # estimated_next_state = Q(s|o)
-                    estimated_next_state, self.transitionnet_hiddenstate = self.transitionnet(state, action, self.transitionnet_hiddenstate)
-                    self.transitionnet_hiddenstate = self.transitionnet_hiddenstate.detach()
-                    # state = Q(s) (fully observable MDP)
-                    q_s = state
-                    # approximated_epistemic_gain approximates -\int Q(s)[logQ(s) + logQ(s|o)]
-                    approximated_epistemic_gain = torch.sum((estimated_next_state - q_s) ** 2)
+                    estimated_next_proprioceptive_state = self.transitionnet(torch.cat([proprioceptive_state, action_onehot]))
+                                        
+                    # approximated_epistemic_gain approximates \int Q(s)[logQ(s) + logQ(s|o)] 
+                    # state = Q(s), cuz we're on a fully observable MDP
+                    approximated_epistemic_gain = torch.sum((next_proprioceptive_state - estimated_next_proprioceptive_state.detach()) ** 2)
 
-                    # we add such an approximation to the target
+                    # we subtrack such an approximation to the target
                     target -= approximated_epistemic_gain
-
-                    self.transitionnet_optimizer.zero_grad()
-                    transition_loss = self.state_loss_fn(estimated_next_state, next_state)
-                    transition_loss.backward()
-                    self.transitionnet_optimizer.step()
-
+                
                 # Update target
                 target -= 0.99 * expected_value.detach()
 
+            
             target_f = self.neg_efe_net(state).detach()
             target_f[action] = target
+        
+            s = state.detach().clone()
+            minibatch_states.append(s)
 
-            self.efe_net_optimizer.zero_grad()
-            predicted_values = self.neg_efe_net(state)
-            value_losses = self.value_loss_fn(predicted_values, target_f)
-            value_losses.backward()
-            self.efe_net_optimizer.step()
-    
-        # reset the hidden state of the transition model
-        transitionnet_hiddenstate = None
+            p = proprioceptive_state.detach().clone()
+            minibatch_proprioceptive_states.append(p)
+
+            next_p = next_proprioceptive_state.detach().clone()
+            minibatch_next_states.append(next_p)
+            
+            a = action_onehot.detach().clone()
+            minibatch_actions.append(a)
+            
+            minibatch_neg_efes_targets.append(target_f)
+
+        minibatch_states = torch.vstack(minibatch_states)
+        minibatch_proprioceptive_states = torch.vstack(minibatch_proprioceptive_states)
+        minibatch_actions = torch.vstack(minibatch_actions)
+        minibatch_next_states = torch.vstack(minibatch_next_states)
+        minibatch_neg_efes_targets = torch.vstack(minibatch_neg_efes_targets)
+
+        # train the transition network:
+        self.transitionnet.train()
+        inputs_to_transitionnet = torch.hstack([minibatch_proprioceptive_states, minibatch_actions])
+        estimated_next_proprioceptive_states = self.transitionnet(inputs_to_transitionnet)
+        self.transitionnet_optimizer.zero_grad()
+        transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, minibatch_next_states)
+        transition_loss.backward()
+        self.transitionnet_optimizer.step()
+
+        # train the value network
+        self.neg_efe_net.train()
+        predicted_values = self.neg_efe_net(minibatch_states)
+        self.efe_net_optimizer.zero_grad()
+        value_losses = self.value_loss_fn(predicted_values, minibatch_neg_efes_targets)
+        value_losses.backward()
+        self.efe_net_optimizer.step()
     
 
 class ValueLearningAgent:

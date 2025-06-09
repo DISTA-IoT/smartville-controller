@@ -1198,7 +1198,7 @@ class TigerBrain():
                 self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
                 self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
                 self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
-            if self.episode_count % 5 == 0:
+            if self.episode_count % self.intrusion_detection_kwargs['actor_train_interval_episodes'] == 0:
                 self.mitigation_agent.train_actor()
             self.reset_environment()
             
