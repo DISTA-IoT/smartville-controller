@@ -653,8 +653,9 @@ class TigerBrain():
                 curr_buff_len = len(buffers[class_idx]) 
                 buff_lengths.append((class_label, curr_buff_len))
       
-            self.batch_processing_allowed = torch.all(
-                    torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
+            if len(buff_lengths) > 1:
+                self.batch_processing_allowed = torch.all(
+                        torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
 
             if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
 
