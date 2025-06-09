@@ -88,6 +88,8 @@ class NewTigerEnvironment:
 
     def reset(self):
         self.logger.info('TIGER ENV: restarting episode!')
+        self.episode_rewards = []
+        self.episode_budgets = []
         self.restart_budget()
         self.reset_intelligence()
 
