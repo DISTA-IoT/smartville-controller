@@ -833,7 +833,6 @@ class TigerBrain():
             self.zda_confidence /= conf_normalizer
 
         
-
     def act_on_known_traffic(
             self, 
             num_of_predicted_anomalies,
@@ -917,7 +916,7 @@ class TigerBrain():
 
         if self.use_neural_KR:
             # use inference modules for clustering...
-            _, predicted_decimal_clusters, kr_precision = self.kernel_regression_step(
+            _, predicted_decimal_clusters, kr_precision = self.kernel_regression_evaluation(
                 predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:], 
                 one_hot_labels[-num_of_online_samples:],
                 INFERENCE)
@@ -1529,7 +1528,7 @@ class TigerBrain():
         return os_loss, cummulative_os_acc
     
 
-    def kernel_regression_step(self, predicted_kernel, one_hot_labels, mode):
+    def kernel_regression_evaluation(self, predicted_kernel, one_hot_labels, mode):
 
         if self.kernel_regression:
             
@@ -1613,7 +1612,7 @@ class TigerBrain():
             loss += zda_detection_loss
 
         # clusterise everything you have labels about. 
-        kr_loss, predicted_clusters, _ = self.kernel_regression_step(
+        kr_loss, predicted_clusters, _ = self.kernel_regression_evaluation(
             predicted_kernel, 
             one_hot_labels, 
             TRAINING)
@@ -1731,7 +1730,7 @@ class TigerBrain():
                 accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
                 mode=INFERENCE)
             
-            _, predicted_clusters, kr_precision = self.kernel_regression_step(
+            _, predicted_clusters, kr_precision = self.kernel_regression_evaluation(
                 predicted_kernel, 
                 one_hot_labels,
                 INFERENCE)         
