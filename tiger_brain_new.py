@@ -1114,14 +1114,6 @@ class TigerBrain():
                 num_of_online_samples, 
                 number_of_predicted_known_samples
                 )
-        
-        self.evaluate_zda_confidence(
-            zda_predictions, 
-            predicted_online_zda_mask, 
-            num_of_online_samples
-        )
-
-        if number_of_predicted_known_samples > 0:
 
             action_signal, correct_classif_rewards, bad_classif_costs = self.act_on_known_traffic(
                 num_of_predicted_anomalies, 
@@ -1132,7 +1124,11 @@ class TigerBrain():
                 sample_rewards
                 )
             
-        
+        self.evaluate_zda_confidence(
+            zda_predictions, 
+            predicted_online_zda_mask, 
+            num_of_online_samples
+        )
         # Anomaly clustering is going to be done only if there are predicted anomalies.
         if num_of_predicted_anomalies > 0:
 
