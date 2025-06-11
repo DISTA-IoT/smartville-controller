@@ -91,6 +91,7 @@ class NewTigerEnvironment:
         self.episode_rewards = []
         self.episode_budgets = []
         self.epistemic_actions = 0
+        self.steps_done = 0
         self.restart_budget()
         self.reset_intelligence()
 

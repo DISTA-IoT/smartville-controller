@@ -1200,6 +1200,7 @@ class TigerBrain():
                 self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
                 self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
                 self.wbl.log({'epistemic_actions_per_episode': self.env.epistemic_actions}, step=self.step_counter)
+                self.wbl.log({'steps_per_episode': self.env.steps_done}, step=self.step_counter)
 
             if self.episode_count % self.intrusion_detection_kwargs['actor_train_interval_episodes'] == 0:
                 self.mitigation_agent.train_actor()
@@ -1318,6 +1319,7 @@ class TigerBrain():
         action_per_cluster = [] 
         for state_vec in state_vecs:
             action_per_cluster.append(self.mitigation_agent.act(state_vec))
+            self.env.steps_done += 1
 
         return torch.Tensor(action_per_cluster).to(torch.long), state_vecs.detach()
 
