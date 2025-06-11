@@ -849,6 +849,8 @@ class TigerBrain():
         # If you accept it, you'll get the reward based on the classification accuracy. 
         # For the other actions, no reward is given.
 
+        classification_reward = 0
+
         state_vec = self.assembly_state_vectors(
             torch.zeros(1, hidden_vectors.shape[1]),
             num_of_predicted_anomalies,
@@ -860,8 +862,6 @@ class TigerBrain():
     
         # Computing the rewads for known traffic: 
         known_samples_costs = sample_rewards[~predicted_online_zda_mask]
-
-        
         
         correct_classif_rewards = torch.zeros_like(known_samples_costs)
         bad_classif_costs = torch.zeros_like(known_samples_costs)
@@ -875,10 +875,10 @@ class TigerBrain():
             else:
                 bad_classif_costs = -torch.abs(known_samples_costs * (~cs_correct_classif_mask) * self.bad_classif_cost_factor)
             # total classification reward:  
-            self.classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
+            classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
 
         # update the current budget 
-        self.env.current_budget += self.classification_reward
+        self.env.current_budget += classification_reward
         
         # the new state is a copy of the old one: 
         new_state = state_vec.detach().clone()
@@ -892,15 +892,25 @@ class TigerBrain():
         self.mitigation_agent.remember(
             state_vec.detach(),
             action_signal,
-            self.classification_reward,
+            classification_reward,
             new_state,
             end_signal
         )
-        
-        # add the good classification reward to the batch reward (only for reporting purposes)
-        self.batch_reward += self.classification_reward
-        
-        return action_signal, correct_classif_rewards, bad_classif_costs
+
+        # for keeping track of episode-stats:
+        self.env.episode_rewards.append(classification_reward)
+        self.env.episode_budgets.append(self.env.current_budget)
+
+        # reporting
+        if self.wbt:
+            self.wbl.log({
+                AGENT+'_'+'reward': classification_reward,
+                AGENT+'_'+'budget': self.env.current_budget,
+                'classification_reward': classification_reward,
+                'correct_classification_rewards': correct_classif_rewards.sum().item(),
+                'bad_classification_cost': bad_classif_costs.sum().item(),
+                'known traffic action': action_signal.item(),
+            },step=self.step_counter)
     
 
     def collective_anomaly_detection(
@@ -1016,38 +1026,47 @@ class TigerBrain():
             # you'll pay the price of aqcuiring a TCI label:
             epistemic_costs[epistemic_action_index] -= updates_dict['price_payed']
             rewards_per_cluster[epistemic_action_index] -= updates_dict['price_payed']
-        
-        # update the batch reward with pure clustering rewards 
-        self.batch_reward += rewards_per_cluster.sum().item()   
 
-        # update the current budget
-        self.env.current_budget += rewards_per_cluster.sum().item()
 
-        # ask again if the budget is over: 
-        end_signal = self.env.has_episode_ended(self.step_counter)
-
-        # broadcast the end signal for attaching to centroids: 
-        broadcasted_end_signal = torch.Tensor([end_signal] * cluster_action_signals.shape[0])
-
-        # the state is going to be assemled using the new budget.
-        broadcasted_new_budget = torch.Tensor([self.env.current_budget] * cluster_action_signals.shape[0] ) 
-        
-        # we can approximate the new state with the previous one, but changing the budget. 
-        next_states = torch.hstack(
-            [state_vecs[:, :-1], 
-                broadcasted_new_budget.unsqueeze(-1)]
-                )
-
-        # collect experience tuples for training: 
-        for experience_tuple in zip(
+        # collect experience tuples for training:
+        for idx, (state, action, reward) in enumerate(zip(
                 state_vecs, 
                 cluster_action_signals,
-                rewards_per_cluster,
-                next_states,
-                broadcasted_end_signal):
-            self.mitigation_agent.remember(*experience_tuple)
+                rewards_per_cluster)):
 
-        return cluster_action_signals, epistemic_costs, rewards_per_accepted_clusters, benign_blocking_cost_per_cluster
+            # update the budget:
+            self.env.current_budget += reward
+            
+            # Approx. next-state as before:
+            next_state = state.detach().clone()
+            next_state[-1] = self.env.current_budget
+
+            # ask again if the budget is over: 
+            end_signal = torch.Tensor([self.env.has_episode_ended(self.step_counter)])
+
+            self.mitigation_agent.remember(
+                    state.detach(),
+                    action,
+                    reward,
+                    next_state,
+                    end_signal
+            )
+
+            # for keeping track of episode-stats:
+            self.env.episode_rewards.append(reward.item())
+            self.env.episode_budgets.append(self.env.current_budget)
+
+            # reporting
+            if self.wbt:
+                self.wbl.log({
+                    AGENT+'_'+'reward': reward,
+                    AGENT+'_'+'budget': self.env.current_budget,
+                    'clustering_reward': reward,
+                    'Epistemic Actions taken': int(purchased_mask[idx].item()),
+                    'epistemic_costs': epistemic_costs[idx].item(),
+                    'rewards_per_accepted_clusters':rewards_per_accepted_clusters[idx].item(),
+                    'rewards_per_blocked_clusters':-benign_blocking_cost_per_cluster[idx].item(),
+                },step=self.step_counter)
 
                 
     def online_inference(
@@ -1065,15 +1084,10 @@ class TigerBrain():
 
         self.cs_classif_confidence = torch.zeros(1)
         self.zda_confidence = torch.zeros(1)
-        self.classification_reward = 0
-        self.batch_reward = torch.zeros(1)
-
+        
         cs_acc = torch.ones(1)
         ad_acc = torch.ones(1)
-        action_signal = torch.ones(1)
-        cluster_action_signals = torch.zeros(1)
-        correct_classif_rewards = torch.zeros(1)
-        bad_classif_costs = torch.zeros(1)
+        
         rewards_per_accepted_clusters = torch.zeros(1)
         benign_blocking_cost_per_cluster = torch.zeros(1)
         epistemic_costs = torch.zeros(1)          
@@ -1130,7 +1144,7 @@ class TigerBrain():
                 number_of_predicted_known_samples
                 )
 
-            action_signal, correct_classif_rewards, bad_classif_costs = self.act_on_known_traffic(
+            self.act_on_known_traffic(
                 num_of_predicted_anomalies, 
                 number_of_predicted_known_samples, 
                 cs_correct_classif_mask,
@@ -1156,7 +1170,7 @@ class TigerBrain():
                 hidden_vectors
             )
             
-            cluster_action_signals, epistemic_costs, rewards_per_accepted_clusters, benign_blocking_cost_per_cluster = self.act_on_unknown_clusters(
+            self.act_on_unknown_clusters(
                 predicted_clusters_oh, 
                 centroids, 
                 missing_clusters, 
@@ -1166,9 +1180,7 @@ class TigerBrain():
                 sample_rewards
                 )
 
-        # for keeping track of episode-stats:
-        self.env.episode_rewards.append(self.batch_reward.item())
-        self.env.episode_budgets.append(self.env.current_budget)
+        
 
         # train!
         self.mitigation_agent.replay()     
@@ -1176,27 +1188,15 @@ class TigerBrain():
         if self.AI_DEBUG: 
             self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
                                         f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
-                                        f'Online {INFERENCE} batch reward: {self.batch_reward.item()} \n'+\
                                         f'Online {INFERENCE} current budget: {self.env.current_budget} \n'+\
                                         f'Online {INFERENCE} KR accuracy: {kr_precision}')
         
         if self.wbt:
-            self.wbl.log({AGENT+'_'+'reward': self.batch_reward.item()}, step=self.step_counter)
-            self.wbl.log({AGENT+'_'+'budget': self.env.current_budget}, step=self.step_counter)
-            self.wbl.log({'Epistemic Actions taken': (1 if epistemic_costs.sum() != 0 else 0)}, step=self.step_counter)
-            self.wbl.log({'known traffic action': action_signal.item(),
-                          'cluster actions': cluster_action_signals.tolist(),
-                          'classification_reward': self.classification_reward,
-                          'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
-                          'correct_classification_rewards': correct_classif_rewards.sum().item(),
-                          'bad_classification_cost': bad_classif_costs.sum().item(),
-                          'rewards_per_accepted_clusters':rewards_per_accepted_clusters.sum().item(),
-                          'rewards_per_blocked_clusters':-benign_blocking_cost_per_cluster.sum().item(),
+            self.wbl.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
                           'num_predicted_knowns': number_of_predicted_known_samples.item(),
                           'num_predicted_unknowns': num_of_predicted_anomalies.item(),
                           'known_classif_confidente': self.cs_classif_confidence.item(),
                           'zda_classif_confidence': self.zda_confidence.item(),
-                          'epistemic_costs': epistemic_costs.sum().item(),
                           }, 
                           step=self.step_counter)
         # re-activate gradient tracking on inference modules: 
