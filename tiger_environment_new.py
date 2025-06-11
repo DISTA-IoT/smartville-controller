@@ -90,6 +90,7 @@ class NewTigerEnvironment:
         self.logger.info('TIGER ENV: restarting episode!')
         self.episode_rewards = []
         self.episode_budgets = []
+        self.epistemic_actions = 0
         self.restart_budget()
         self.reset_intelligence()
 
@@ -113,6 +114,7 @@ class NewTigerEnvironment:
             self.current_knowledge['updated_labels'].append(acquired_cti)
             price_payed = self.cti_prices[acquired_cti]
             self.update_cti_options()
+            self.epistemic_actions += 1
         else:
             acquired_cti = None
             # TODO shall we penalize here??

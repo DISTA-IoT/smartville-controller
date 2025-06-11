@@ -973,8 +973,11 @@ class TigerBrain():
         cluster_passing_mask = cluster_action_signals == 0
 
         # get the cluster-specific passing rewards
-        rewards_per_accepted_clusters = rewards_per_accepted_clusters[~missing_clusters] *  cluster_passing_mask
-
+        if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
+            rewards_per_accepted_clusters = rewards_per_accepted_clusters[~missing_clusters] *  cluster_passing_mask
+        elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
+            rewards_per_accepted_clusters = 3 * rewards_per_accepted_clusters[~missing_clusters] *  cluster_passing_mask
+        
         rewards_per_cluster += rewards_per_accepted_clusters
 
         # benign traffic mask:
@@ -984,8 +987,11 @@ class TigerBrain():
         benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
         # blocked benign traffic implies to pay a cost:
-        benign_blocking_cost_per_cluster = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
-
+        if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
+            benign_blocking_cost_per_cluster = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
+        elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
+            benign_blocking_cost_per_cluster = 3 * self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long))
+        
         # subtract the price of neglecting benign traffic
         rewards_per_cluster -= benign_blocking_cost_per_cluster
 
@@ -1193,6 +1199,8 @@ class TigerBrain():
                 self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
                 self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
                 self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
+                self.wbl.log({'epistemic_actions_per_episode': self.env.epistemic_actions}, step=self.step_counter)
+
             if self.episode_count % self.intrusion_detection_kwargs['actor_train_interval_episodes'] == 0:
                 self.mitigation_agent.train_actor()
             self.reset_environment()
