@@ -849,12 +849,14 @@ class TigerBrain():
         # If you accept it, you'll get the reward based on the classification accuracy. 
         # For the other actions, no reward is given.
 
-        action_signal, state_vecs = self.act( 
+        state_vec = self.assembly_state_vectors(
             torch.zeros(1, hidden_vectors.shape[1]),
             num_of_predicted_anomalies,
             number_of_predicted_known_samples,
             self.env.current_budget
-            )
+            )[0]
+
+        action_signal = self.act(state_vec)
     
         # Computing the rewads for known traffic: 
         known_samples_costs = sample_rewards[~predicted_online_zda_mask]
@@ -879,7 +881,7 @@ class TigerBrain():
         self.env.current_budget += self.classification_reward
         
         # the new state is a copy of the old one: 
-        new_state = state_vecs[0].detach().clone()
+        new_state = state_vec.detach().clone()
         # but changing the current budget: 
         new_state[-1] = self.env.current_budget 
 
@@ -888,7 +890,7 @@ class TigerBrain():
 
         # store the experience tuple:          
         self.mitigation_agent.remember(
-            state_vecs[0].detach(),
+            state_vec.detach(),
             action_signal,
             self.classification_reward,
             new_state,
@@ -955,12 +957,20 @@ class TigerBrain():
             sample_rewards
             ):
 
-        # decide if blocking or accepting each unknown... 
-        cluster_action_signals, state_vecs = self.act( 
+
+        state_vecs = self.assembly_state_vectors(
             centroids[~missing_clusters],
             num_of_predicted_anomalies,
             number_of_predicted_known_samples,
             self.env.current_budget)
+
+        action_per_cluster = []
+
+        for state_vec in state_vecs:
+            # decide if blocking or accepting each unknown...
+            action_per_cluster.append(self.act(state_vec))
+
+        cluster_action_signals = torch.hstack(action_per_cluster)
         
         rewards_per_cluster = torch.zeros_like(cluster_action_signals).float()
         epistemic_costs = torch.zeros_like(cluster_action_signals).float()
@@ -1290,16 +1300,15 @@ class TigerBrain():
 
         return centroids, missing_clusters
 
-   
-    def act(
+
+    def assembly_state_vectors(
             self, 
             centroids, 
-            num_of_anomalies,
-            number_of_known_samples_in_batch,
+            num_of_anomalies, 
+            number_of_known_samples_in_batch, 
             curr_budget):
         
         # the state vectors are gonna be composed of the hidden centroids + broadcasted scalars.
-         
         broadcasted_num_of_anomalies = torch.Tensor([num_of_anomalies] * centroids.shape[0])
         broadcasted_zda_confidence = torch.Tensor([self.zda_confidence] * centroids.shape[0])
         bc_num_of_known_samples = torch.Tensor([number_of_known_samples_in_batch] * centroids.shape[0])
@@ -1316,18 +1325,23 @@ class TigerBrain():
             broadcasted_budget.unsqueeze(-1)]
             )
 
-        action_per_cluster = [] 
-        for state_vec in state_vecs:
-            action_per_cluster.append(self.mitigation_agent.act(state_vec))
-            self.env.steps_done += 1
+        return state_vecs
+   
+    def act(
+            self, 
+            state_vec):
 
-        return torch.Tensor(action_per_cluster).to(torch.long), state_vecs.detach()
+        self.env.steps_done += 1
+        self.step_counter += 1
+        action = self.mitigation_agent.act(state_vec)
+
+        return torch.Tensor([action]).long()
 
 
     def process_input(self, flows, node_feats: dict = None):
         """
         """
-        self.step_counter += 1
+        
 
         if len(flows) > 0:
             
