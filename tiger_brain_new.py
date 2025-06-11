@@ -987,16 +987,16 @@ class TigerBrain():
         # get the potential rewards per cluster 
         # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
         # Notice the reward takes into account intersections with good and bad samples
-        rewards_per_accepted_clusters = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
+        rewards_per_clusters_if_accepted = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
 
         # get the cluster_passing_mask:
         cluster_passing_mask = cluster_action_signals == 0
 
         # get the cluster-specific passing rewards
         if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-            rewards_per_accepted_clusters = rewards_per_accepted_clusters[~missing_clusters] *  cluster_passing_mask
+            rewards_per_accepted_clusters = rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
         elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-            rewards_per_accepted_clusters = 3 * rewards_per_accepted_clusters[~missing_clusters] *  cluster_passing_mask
+            rewards_per_accepted_clusters = 3 * rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
         
         rewards_per_cluster += rewards_per_accepted_clusters
 

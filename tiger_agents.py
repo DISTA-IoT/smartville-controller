@@ -152,8 +152,9 @@ class DAIAgent:
         # print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
         # print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
 
-        self.transitionnet.eval()
+        
         self.neg_efe_net.eval()
+        if self.transitionnet is not None: self.transitionnet.eval()
 
         for state, action, reward, next_state, done in minibatch:   
 
