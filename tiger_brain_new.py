@@ -1164,6 +1164,7 @@ class TigerBrain():
             predicted_online_zda_mask, 
             num_of_online_samples
         )
+        
         # Anomaly clustering is going to be done only if there are predicted anomalies.
         if num_of_predicted_anomalies > 0:
 
@@ -1186,8 +1187,6 @@ class TigerBrain():
                 sample_rewards
                 )
 
-        
-
         # train!
         self.mitigation_agent.replay()     
 
@@ -1205,6 +1204,7 @@ class TigerBrain():
                           'zda_classif_confidence': self.zda_confidence.item(),
                           }, 
                           step=self.step_counter)
+            
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
