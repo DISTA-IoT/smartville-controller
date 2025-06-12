@@ -106,7 +106,8 @@ class NewTigerEnvironment:
         price_payed = 0
         # get the label corresponding to the attack we want to purchase info about 
         acquired_cti = list(self.current_cti_options.keys())[current_action]
-
+        self.epistemic_actions += 1
+        
         # if the action corresponds to a placeholder, it means we did not buy anything. 
         if 'placeholder' not in acquired_cti:
 
@@ -115,7 +116,7 @@ class NewTigerEnvironment:
             self.current_knowledge['updated_labels'].append(acquired_cti)
             price_payed = self.cti_prices[acquired_cti]
             self.update_cti_options()
-            self.epistemic_actions += 1
+            
         else:
             acquired_cti = None
             # TODO shall we penalize here??

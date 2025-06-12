@@ -89,10 +89,11 @@ class DAIAgent:
         in the context of bootstrapping the EFE. (not sure)
 
         """
+        self.neg_efe_net.eval()
+
         vfe_loss = 0
 
         states = torch.vstack(list(self.sequential_memory))
-
         
         # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
         policy_probabilities = self.policynet(states) 
@@ -143,8 +144,8 @@ class DAIAgent:
         
         minibatch_states = []
         minibatch_proprioceptive_states = []
+        minibatch_next_proprioceptive_states = []
         minibatch_actions = []
-        minibatch_next_states = []
         minibatch_neg_efes_targets = []
         
         minibatch = random.sample(self.memory, self.replay_batch_size)
@@ -152,8 +153,10 @@ class DAIAgent:
         # print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
         # print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
 
-        self.transitionnet.eval()
+        
         self.neg_efe_net.eval()
+        self.target_neg_efe_net.eval()
+        if self.transitionnet is not None: self.transitionnet.eval()
 
         for state, action, reward, next_state, done in minibatch:   
 
@@ -165,9 +168,10 @@ class DAIAgent:
             action_onehot = torch.zeros(self.action_size)
             action_onehot[action] = 1
 
-            proprioceptive_state = state[-self.proprioceptive_state_size:]
-            next_proprioceptive_state = next_state[-self.proprioceptive_state_size:]
-                    
+            
+            if self.transitionnet is not None:
+                proprioceptive_state = state[-self.proprioceptive_state_size:]
+                next_proprioceptive_state = next_state[-self.proprioceptive_state_size:]
 
             if not done:
                 
@@ -180,6 +184,7 @@ class DAIAgent:
                 expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=0)
 
                 if self.transitionnet is not None:
+
                     # if we have a transition network, then we compute the epistemic gain w.r.t to it. 
                     # These lines approximate  -  \int Q(s)[logQ(s) + logQ(s|o)]
                     # estimated_next_state = Q(s|o)
@@ -199,34 +204,39 @@ class DAIAgent:
             target_f = self.neg_efe_net(state).detach()
             target_f[action] = target
         
+            minibatch_neg_efes_targets.append(target_f)
+
             s = state.detach().clone()
             minibatch_states.append(s)
 
-            p = proprioceptive_state.detach().clone()
-            minibatch_proprioceptive_states.append(p)
-
-            next_p = next_proprioceptive_state.detach().clone()
-            minibatch_next_states.append(next_p)
-            
             a = action_onehot.detach().clone()
             minibatch_actions.append(a)
             
-            minibatch_neg_efes_targets.append(target_f)
+            if self.transitionnet is not None:
+
+                p = proprioceptive_state.detach().clone()
+                minibatch_proprioceptive_states.append(p)
+
+                next_p = next_proprioceptive_state.detach().clone()
+                minibatch_next_proprioceptive_states.append(next_p)
+
 
         minibatch_states = torch.vstack(minibatch_states)
-        minibatch_proprioceptive_states = torch.vstack(minibatch_proprioceptive_states)
         minibatch_actions = torch.vstack(minibatch_actions)
-        minibatch_next_states = torch.vstack(minibatch_next_states)
         minibatch_neg_efes_targets = torch.vstack(minibatch_neg_efes_targets)
 
-        # train the transition network:
-        self.transitionnet.train()
-        inputs_to_transitionnet = torch.hstack([minibatch_proprioceptive_states, minibatch_actions])
-        estimated_next_proprioceptive_states = self.transitionnet(inputs_to_transitionnet)
-        self.transitionnet_optimizer.zero_grad()
-        transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, minibatch_next_states)
-        transition_loss.backward()
-        self.transitionnet_optimizer.step()
+        if self.transitionnet is not None:
+            minibatch_proprioceptive_states = torch.vstack(minibatch_proprioceptive_states)
+            minibatch_next_proprioceptive_states = torch.vstack(minibatch_next_proprioceptive_states)
+
+            # train the transition network:
+            self.transitionnet.train()
+            inputs_to_transitionnet = torch.hstack([minibatch_proprioceptive_states, minibatch_actions])
+            estimated_next_proprioceptive_states = self.transitionnet(inputs_to_transitionnet)
+            self.transitionnet_optimizer.zero_grad()
+            transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, minibatch_next_proprioceptive_states)
+            transition_loss.backward()
+            self.transitionnet_optimizer.step()
 
         # train the value network
         self.neg_efe_net.train()
