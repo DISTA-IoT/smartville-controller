@@ -842,17 +842,20 @@ class TigerBrain():
             predicted_online_zda_mask,
             sample_rewards
             ):
-        #
-        # Acting over the known traffic:
-        # One state vector is assembled which has a zeros centroid. 
-        # Actions do not change anything in the system, apart of the rewards: 
-        # If you accept it, you'll get the reward based on the classification accuracy. 
-        # For the other actions, no reward is given.
+        """
+        Acting over the known traffic:
+        One state vector is assembled which has a zeros centroid. 
+        Actions do not change anything in the system, apart of the rewards: 
+        If you accept it, you'll get the reward based on the classification accuracy. 
+        For the other actions, a penalty is given
+        """
 
         classification_reward = 0
 
+        empty_state_vec = torch.zeros(1, hidden_vectors.shape[1])
+
         state_vec = self.assembly_state_vectors(
-            torch.zeros(1, hidden_vectors.shape[1]),
+            empty_state_vec,
             num_of_predicted_anomalies,
             number_of_predicted_known_samples,
             self.env.current_budget
@@ -869,6 +872,7 @@ class TigerBrain():
         
         correct_classif_rewards = torch.zeros_like(known_samples_costs)
         bad_classif_costs = torch.zeros_like(known_samples_costs)
+        no_confidence_penalty = 0
 
         if action_signal.item() == 0:
             # Each well classified sample is rewarded positively:        
@@ -880,6 +884,9 @@ class TigerBrain():
                 bad_classif_costs = -torch.abs(known_samples_costs * (~cs_correct_classif_mask) * self.bad_classif_cost_factor)
             # total classification reward:  
             classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
+        else:
+            no_confidence_penalty = -self.intrusion_detection_kwargs['no_confidence_penalty']
+            classification_reward = no_confidence_penalty
 
         # update the current budget 
         self.env.current_budget += classification_reward
@@ -914,6 +921,7 @@ class TigerBrain():
                 'correct_classification_rewards': correct_classif_rewards.sum().item(),
                 'bad_classification_cost': bad_classif_costs.sum().item(),
                 'known traffic action': action_signal.item(),
+                'no_cofindence_penalty': no_confidence_penalty
             },step=self.step_counter)
     
 
@@ -1164,7 +1172,7 @@ class TigerBrain():
             predicted_online_zda_mask, 
             num_of_online_samples
         )
-        
+
         # Anomaly clustering is going to be done only if there are predicted anomalies.
         if num_of_predicted_anomalies > 0:
 
