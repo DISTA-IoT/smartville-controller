@@ -89,10 +89,11 @@ class DAIAgent:
         in the context of bootstrapping the EFE. (not sure)
 
         """
+        self.neg_efe_net.eval()
+
         vfe_loss = 0
 
         states = torch.vstack(list(self.sequential_memory))
-
         
         # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
         policy_probabilities = self.policynet(states) 
@@ -154,6 +155,7 @@ class DAIAgent:
 
         
         self.neg_efe_net.eval()
+        self.target_neg_efe_net.eval()
         if self.transitionnet is not None: self.transitionnet.eval()
 
         for state, action, reward, next_state, done in minibatch:   

@@ -859,6 +859,10 @@ class TigerBrain():
             )[0]
 
         action_signal = self.act(state_vec)
+                
+        # advance the game steps:
+        self.env.steps_done += 1
+        self.step_counter += 1
     
         # Computing the rewads for known traffic: 
         known_samples_costs = sample_rewards[~predicted_online_zda_mask]
@@ -1041,6 +1045,10 @@ class TigerBrain():
             next_state = state.detach().clone()
             next_state[-1] = self.env.current_budget
 
+            # advance the game steps:
+            self.env.steps_done += 1
+            self.step_counter += 1
+
             # ask again if the budget is over: 
             end_signal = torch.Tensor([self.env.has_episode_ended(self.step_counter)])
 
@@ -1068,6 +1076,8 @@ class TigerBrain():
                     'rewards_per_blocked_clusters':-benign_blocking_cost_per_cluster[idx].item(),
                 },step=self.step_counter)
 
+            
+
                 
     def online_inference(
             self, 
@@ -1087,10 +1097,6 @@ class TigerBrain():
         
         cs_acc = torch.ones(1)
         ad_acc = torch.ones(1)
-        
-        rewards_per_accepted_clusters = torch.zeros(1)
-        benign_blocking_cost_per_cluster = torch.zeros(1)
-        epistemic_costs = torch.zeros(1)          
         kr_precision = torch.ones(1)
         
         # do not run gradients on the inference modules!
@@ -1331,8 +1337,6 @@ class TigerBrain():
             self, 
             state_vec):
 
-        self.env.steps_done += 1
-        self.step_counter += 1
         action = self.mitigation_agent.act(state_vec)
 
         return torch.Tensor([action]).long()
