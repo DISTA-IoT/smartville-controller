@@ -930,7 +930,7 @@ class TigerBrain():
                 'correct_classification_rewards': correct_classif_rewards.sum().item(),
                 'bad_classification_cost': bad_classif_costs.sum().item(),
                 'known traffic action': action_signal.item(),
-                'no_cofindence_penalty': no_confidence_penalty
+                'no_confidence_penalty': no_confidence_penalty
             },step=self.step_counter)
     
 
