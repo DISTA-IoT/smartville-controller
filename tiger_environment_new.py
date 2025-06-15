@@ -20,7 +20,7 @@ class NewTigerEnvironment:
         self.max_episode_steps = kwargs['max_episode_steps'] 
         self.cti_price_factor = float(kwargs['cti_price_factor'] if 'cti_price_factor' in kwargs else 20)
         self.cti_prices = self.get_cti_prices()
-    
+        self.useless_epistemic_penalty = int(kwargs['useless_epistemic_penalty'])
 
     def reset_intelligence(self):
         
@@ -119,9 +119,8 @@ class NewTigerEnvironment:
             
         else:
             acquired_cti = None
-            # TODO shall we penalize here??
-            # price_payed = big money??
-            pass
+            price_payed -= self.useless_epistemic_penalty
+            
     
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,
