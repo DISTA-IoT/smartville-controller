@@ -119,7 +119,7 @@ class NewTigerEnvironment:
             
         else:
             acquired_cti = None
-            price_payed -= self.useless_epistemic_penalty
+            price_payed = self.useless_epistemic_penalty
             
     
         return {'updated_label': acquired_cti,
