@@ -396,8 +396,9 @@ class TigerBrain():
         # 2. mean confidence of anomaly inference.  
         # 3. number of known classes inferred in the batch
         # 4. mean confidence of known class classification
-        # 5. current system budget 
-        self.state_space_dim += 5
+        # 5. available CTI options (boolean flag)
+        # 6. current system budget
+        self.state_space_dim += 6
 
         agent_class = ValueLearningAgent if kwargs['agent'] in ['DQN', 'DDQN'] else DAIAgent
 
@@ -1336,6 +1337,7 @@ class TigerBrain():
         broadcasted_zda_confidence = torch.Tensor([self.zda_confidence] * centroids.shape[0])
         bc_num_of_known_samples = torch.Tensor([number_of_known_samples_in_batch] * centroids.shape[0])
         bc_classif_conf = torch.Tensor([self.cs_classif_confidence] * centroids.shape[0])
+        broadcasted_eaa = torch.Tensor([self.env.epistemic_actions_available] * centroids.shape[0])
         broadcasted_budget = torch.Tensor([curr_budget] * centroids.shape[0])
 
         # get state vectors
@@ -1345,6 +1347,7 @@ class TigerBrain():
             broadcasted_zda_confidence.unsqueeze(-1),
             bc_num_of_known_samples.unsqueeze(-1),
             bc_classif_conf.unsqueeze(-1),
+            broadcasted_eaa.unsqueeze(-1),
             broadcasted_budget.unsqueeze(-1)]
             )
 

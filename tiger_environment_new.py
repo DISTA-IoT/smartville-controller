@@ -61,10 +61,11 @@ class NewTigerEnvironment:
             # do we still have so many unknowns? 
             if idx < len(self.current_knowledge['G2s']):
                 self.current_cti_options[self.current_knowledge['G2s'][idx]] = self.cti_prices[self.current_knowledge['G2s'][idx]]
+                self.epistemic_actions_available = int(True)
             else:
                 # if we do not have unknowns anymore, then lets put a placeholder in the state space (with high cost).  
                 self.current_cti_options[f'placeholder_{idx}'] = 100 
-
+                self.epistemic_actions_available = int(False)
 
     def get_intelligence_options(self):
         """
