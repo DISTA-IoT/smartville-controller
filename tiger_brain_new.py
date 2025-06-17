@@ -1012,7 +1012,10 @@ class TigerBrain():
         rewards_per_clusters_if_accepted = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
 
         # get the cluster_passing_mask:
-        cluster_passing_mask = cluster_action_signals == 0
+        if self.intrusion_detection_kwargs['epistemic_is_blocking']:
+            cluster_passing_mask = cluster_action_signals == 0
+        else:
+            cluster_passing_mask = torch.logical_or(cluster_action_signals == 0,cluster_action_signals == 2)
 
         # get the cluster-specific passing rewards
         if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
