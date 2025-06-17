@@ -89,10 +89,12 @@ class SmartSwitch(EventMixin):
     self._expire_timer = Timer(5, self._handle_expiration, recurring=True)
 
     self.flow_logger = flow_logger
+    self.openflow_packets_received = 0
     self.logger.info(f"SmartSwitch initialized!!")
 
 
   def _handle_expiration(self):
+    self.logger.debug("Handling expiration")
     # Called by a timer so that we can remove old items.
     to_delete_flows = []
 
@@ -187,6 +189,9 @@ class SmartSwitch(EventMixin):
                                  packet_id,
                                  type):
 
+      self.logger.debug(f"Adding new flow rule to:{switch_id}"+\
+                f"source_ip_addr: {source_ip_addr} dest_ip_addr: {dest_ip_addr} ")
+      
       actions = []
       actions.append(of.ofp_action_dl_addr.set_dst(dest_mac_addr))
       actions.append(of.ofp_action_output(port = outgoing_port))
@@ -261,6 +266,7 @@ class SmartSwitch(EventMixin):
     First, track this buffer so that we can try to resend it later, when we will learn the destination.
     Second, ARP for the destination, which should ultimately result in it responding and us learning where it is
     """
+    self.logger.warning(f"Switch {switch_id} received unknown IP packet from port {incomming_port}")
 
     packet = packet_in_event.parsed
     source_mac_addr = packet.src
@@ -294,7 +300,7 @@ class SmartSwitch(EventMixin):
     
   
   def try_creating_flow_rule(self, switch_id,incomming_port, packet_in_event):
-      
+      self.logger.debug("try_creating_flow_rule")
       packet = packet_in_event.parsed
       source_ip_addr = packet.next.srcip
       dest_ip_addr = packet.next.dstip
@@ -307,6 +313,7 @@ class SmartSwitch(EventMixin):
           if outgoing_port != incomming_port:
               
               dest_mac_addr = self.arpTables[switch_id][dest_ip_addr].mac
+
               self.add_ip_to_ip_flow_matching_rule(
                                 switch_id,
                                 source_ip_addr, 
@@ -459,6 +466,8 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_openflow_PacketIn(self, event):
+    self.logger.debug('handling openflow packet_in_event')
+    self.openflow_packets_received += 1
     switch_id = event.connection.dpid
     incomming_port = event.port
     try:

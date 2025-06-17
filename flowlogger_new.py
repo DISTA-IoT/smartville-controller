@@ -108,11 +108,14 @@ class FlowLogger(object):
         if partial_flow_id in self.packet_cache.keys():
             # A tensor already exists:
             curr_packets_circ_buff = self.packet_cache[partial_flow_id]
+            self.logger_instance.debug(f"Updated circular packet buffer for {partial_flow_id}") 
         else:
            # Create new circular buffer:
            curr_packets_circ_buff = CircularBuffer(
               buffer_size=self.packet_buffer_len, 
               feature_size=self.packet_feat_dim)
+           self.logger_instance.debug(f"Created circular packet buffer for {partial_flow_id}") 
+
 
         curr_packets_circ_buff.add(packet_tensor)
         self.packet_cache[partial_flow_id] = curr_packets_circ_buff
@@ -182,6 +185,7 @@ class FlowLogger(object):
     def _handle_flowstats_received (self, event, current_knowledge, traffic_dict, ips_containers):
       self.logger_instance.debug("FlowStatsReceived")
       stats = flow_stats_to_list(event.stats)
+      self.logger_instance.debug(f"Received {len(stats)} flow stats")
       for sender_flow in stats:
         self.process_received_flow(
            flow=sender_flow,

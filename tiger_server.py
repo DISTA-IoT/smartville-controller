@@ -94,6 +94,7 @@ def periodically_requests_stats(period):
         connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
     
     logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
+    logger.debug(f"{smart_switch.openflow_packets_received} OpenFlow packets received")
     time.sleep(period)
 
 
