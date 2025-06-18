@@ -30,7 +30,7 @@ class DAIAgent:
             self.transitionnet = TransitionNet(kwargs)
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
-        self.policynet = PolicyNet(kwargs['state_size'], kwargs['action_size'])
+        self.policynet = PolicyNet(kwargs)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
 
         self.memory_size = kwargs['agent_memory_size']
@@ -64,7 +64,7 @@ class DAIAgent:
     
     def act(self, state):
 
-        action_probs = self.policynet(state)
+        action_probs = self.policynet(state).squeeze()
         
         # sample from a categorical distribution 
         m = distributions.Categorical(action_probs)
@@ -179,8 +179,8 @@ class DAIAgent:
                 # Compute efe value under the current policy, i.e. they implement G_\phi(s,a)
                 # which is a bootstrapping approximation of the last term in equation (16), i.e.:
                 # E_{Q(s_{t+1},a_{t+1})}[\sum_{t+1}^TG(s_{t+1},a_{t+1})]
-                policy_probabilities = self.policynet(next_state)
-                estimated_EFE_values = self.target_neg_efe_net(next_state)                
+                policy_probabilities = self.policynet(next_state).squeeze() 
+                estimated_EFE_values = self.target_neg_efe_net(next_state).squeeze()                
                 expected_value = torch.sum(policy_probabilities * estimated_EFE_values, dim=0)
 
                 if self.transitionnet is not None:
@@ -201,7 +201,7 @@ class DAIAgent:
                 target -= 0.99 * expected_value.detach()
 
             
-            target_f = self.neg_efe_net(state).detach()
+            target_f = self.neg_efe_net(state).detach().squeeze()
             target_f[action] = target
         
             minibatch_neg_efes_targets.append(target_f)
@@ -258,8 +258,8 @@ class ValueLearningAgent:
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
         self.epsilon_min = float(kwargs['greedy_min'])
         self.epsilon_decay = float(kwargs['greedy_decay'])
-        self.model = DQN(self.state_size, self.action_size)
-        self.target_model = DQN(self.state_size, self.action_size)
+        self.model = DQN(kwargs)
+        self.target_model = DQN(kwargs)
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
         self.replay_batch_size = kwargs['replay_batch_size']
@@ -292,7 +292,7 @@ class ValueLearningAgent:
         if torch.rand(1).item() <= self.epsilon:
             return random.randrange(self.action_size)
         
-        q_values = self.model(state)
+        q_values = self.model(state).squeeze()
         return q_values.max(0)[1].item()
 
 
@@ -312,20 +312,20 @@ class ValueLearningAgent:
 
                 if self.algorithm == 'DQN':  
                     # take the max Q-value from target network
-                    target += self.gamma * torch.max(self.target_model(next_state)).item()
+                    target += self.gamma * torch.max(self.target_model(next_state).squeeze()).item()
                 elif self.algorithm == 'DDQN':
                     # Select action using online network
-                    next_action = self.model(next_state).max(0)[1].item()
+                    next_action = self.model(next_state).squeeze().max(0)[1].item()
                     # Evaluate using target network
-                    target += self.gamma * self.target_model(next_state)[next_action].item()  
+                    target += self.gamma * self.target_model(next_state).squeeze()[next_action].item()  
         
             
-            target_f = self.model(state).detach()
+            target_f = self.model(state).detach().squeeze()
             target_f[action] = target
 
 
             self.optimizer.zero_grad()
-            loss = nn.MSELoss()(self.model(state), target_f)
+            loss = nn.MSELoss()(self.model(state).squeeze(), target_f)
             loss.backward()
             self.optimizer.step()
 
