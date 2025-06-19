@@ -1691,12 +1691,12 @@ class TigerBrain():
         # update weights
         self.optimizer.step()
 
-
+        """
         if self.AI_DEBUG: 
             # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
             # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
             self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
-
+        """
 
         if self.step_counter % self.report_step_freq == 0:
             self.report(
