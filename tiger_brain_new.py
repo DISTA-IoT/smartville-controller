@@ -1212,10 +1212,12 @@ class TigerBrain():
         self.mitigation_agent.replay()     
 
         if self.AI_DEBUG: 
-            self.logger_instance.info(f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
-                                        f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
+            self.logger_instance.info(# f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
+                                      # f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
                                         f'Online {INFERENCE} current budget: {self.env.current_budget} \n'+\
-                                        f'Online {INFERENCE} KR accuracy: {kr_precision}')
+                                      # f'Online {INFERENCE} KR accuracy: {kr_precision}'
+                                      ''
+                                      )
         
         if self.wbt:
             self.wbl.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
