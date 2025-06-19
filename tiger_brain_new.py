@@ -349,16 +349,18 @@ class TigerBrain():
         self.traffic_dict = kwargs['traffic_dict']
         self.episode_count = -1
         self.env = NewTigerEnvironment(kwargs)
+        if self.wbt:
+            self.wbl = WandBTracker(
+                wanb_project_name=wb_project_name,
+                run_name=wb_run_name,
+                config_dict=kwargs).wb_logger
+        kwargs['wbl'] = self.wbl   
         self.init_agents(kwargs)
         self.init_intelligence()
         self.epistemic_agency = kwargs['epistemic_agency']
         self.save_models_flag = kwargs['save_models']
 
-        if self.wbt:
-            self.wbl = WandBTracker(
-                wanb_project_name=wb_project_name,
-                run_name=wb_run_name,
-                config_dict=kwargs).wb_logger        
+             
 
     
     def init_intelligence(self):
@@ -852,23 +854,23 @@ class TigerBrain():
 
         classification_reward = 0
 
+        # create an empty centroid:
+        empty_state_vec = -1*torch.ones(1, hidden_vectors.shape[1])
+        # add the proprioceptive info:
+        state_vec = self.assembly_state_vectors(
+            empty_state_vec,
+            num_of_predicted_anomalies,
+            number_of_predicted_known_samples,
+            self.env.current_budget
+            )[0]
+
         if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == True:
-            # we just accept the known traffic TODO an agent could decide this as in the TIGER paper
-            action_signal = torch.Tensor([0])
+            # we just accept the known traffic (for the ACID paper)
+            action_signal = torch.Tensor([0]).long()
         else:
-        
-            empty_state_vec = torch.zeros(1, hidden_vectors.shape[1])
-
-            state_vec = self.assembly_state_vectors(
-                empty_state_vec,
-                num_of_predicted_anomalies,
-                number_of_predicted_known_samples,
-                self.env.current_budget
-                )[0]
-
+            # an agent decides this (as in the TIGER paper)
             action_signal = self.act(state_vec)
               
-
         # advance the game steps:
         self.env.steps_done += 1
         self.step_counter += 1
@@ -897,25 +899,24 @@ class TigerBrain():
         # update the current budget 
         self.env.current_budget += classification_reward
         
-        if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == False:
-        
-            # the new state is a copy of the old one: 
-            new_state = state_vec.detach().clone()
-            # but changing the current budget: 
-            new_state[-1] = self.env.current_budget 
+        # We NEED to consider CS classification as a game step, otherwise the agent could learn not
+        # to buy CTI insights in order to avoid the CS classification and play 
+        # the new state is a copy of the old one: 
+        new_state = state_vec.detach().clone()
+        # but changing the current budget: 
+        new_state[-1] = self.env.current_budget 
 
-            # an episode ends if the budget ends... 
-            end_signal = self.env.has_episode_ended(self.step_counter)
+        # an episode ends if the budget ends... 
+        end_signal = self.env.has_episode_ended(self.step_counter)
 
-            # store the experience tuple:          
-            self.mitigation_agent.remember(
-                state_vec.detach(),
-                action_signal,
-                classification_reward,
-                new_state,
-                end_signal
-            )
-        
+        # store the experience tuple:          
+        self.mitigation_agent.remember(
+            state_vec.detach(),
+            action_signal,
+            torch.Tensor([classification_reward]),
+            new_state,
+            end_signal
+        )
             
         # for keeping track of episode-stats:
         self.env.episode_rewards.append(classification_reward)
@@ -1208,7 +1209,7 @@ class TigerBrain():
                 )
 
         # train!
-        self.mitigation_agent.replay()     
+        self.mitigation_agent.replay(self.step_counter)     
 
         if self.AI_DEBUG: 
             self.logger_instance.info(# f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
@@ -1241,7 +1242,7 @@ class TigerBrain():
                 self.wbl.log({'steps_per_episode': self.env.steps_done}, step=self.step_counter)
 
             if self.episode_count % self.intrusion_detection_kwargs['actor_train_interval_episodes'] == 0:
-                self.mitigation_agent.train_actor()
+                self.mitigation_agent.train_actor(self.step_counter)
             self.reset_environment()
             
 
