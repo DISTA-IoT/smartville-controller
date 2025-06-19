@@ -291,7 +291,7 @@ class DAIAgent:
 class ValueLearningAgent:
 
     def __init__(self, kwargs):
-
+        self.wbl = kwargs['wbl']
         self.state_size = kwargs['state_size']
         self.action_size = kwargs['action_size']
         self.memory = deque(maxlen=kwargs['agent_memory_size'])
@@ -305,6 +305,7 @@ class ValueLearningAgent:
         self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
         self.replay_batch_size = kwargs['replay_batch_size']
         self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
+        self.value_loss_fn = nn.MSELoss(reduction='mean')
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -339,6 +340,8 @@ class ValueLearningAgent:
 
         minibatch = random.sample(self.memory, self.replay_batch_size)
 
+        preds = []
+        targets = []
         # print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
         # print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
         for state, action, reward, next_state, done in minibatch:
@@ -356,16 +359,21 @@ class ValueLearningAgent:
                     target += self.gamma * self.target_model(next_state).squeeze()[next_action].item()  
         
             
-            target_f = self.model(state).detach().squeeze()
+            target_f = self.model(state).detach().squeeze().clone()
             target_f[action] = target
 
+            preds.append(self.model(state).squeeze())
+            targets.append(target_f)
 
-            self.optimizer.zero_grad()
-            loss = nn.MSELoss()(self.model(state).squeeze(), target_f)
-            loss.backward()
-            self.optimizer.step()
+        preds = torch.vstack(preds)
+        targets = torch.vstack(targets)
 
-            self.wbl.log({'value_loss': loss.item()}, step=step)
+        self.optimizer.zero_grad()
+        loss = self.value_loss_fn(preds, targets)
+        loss.backward()
+        self.optimizer.step()
+
+        self.wbl.log({'value_loss': loss.item()}, step=step)
 
 
         if self.epsilon > self.epsilon_min:

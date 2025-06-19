@@ -899,26 +899,24 @@ class TigerBrain():
         # update the current budget 
         self.env.current_budget += classification_reward
         
-        # We NEED to consider CS classification as a game step, otherwise the agent could learn not
-        # to buy CTI insights in order to avoid the CS classification and play 
-        # the new state is a copy of the old one: 
-        new_state = state_vec.detach().clone()
-        # but changing the current budget: 
-        new_state[-1] = self.env.current_budget 
 
-        # an episode ends if the budget ends... 
-        end_signal = self.env.has_episode_ended(self.step_counter)
-
-        # store the experience tuple:          
-        self.mitigation_agent.remember(
-            state_vec.detach(),
-            action_signal,
-            torch.Tensor([classification_reward]),
-            new_state,
-            end_signal,
-            self.step_counter
-        )
+        if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == True: 
+            new_state = state_vec.detach().clone()
+            # but changing the current budget: 
+            new_state[-1] = self.env.current_budget 
+            # an episode ends if the budget ends... 
+            end_signal = self.env.has_episode_ended(self.step_counter)
+            # store the experience tuple:          
+            self.mitigation_agent.remember(
+                state_vec.detach(),
+                action_signal,
+                torch.Tensor([classification_reward]),
+                new_state,
+                end_signal,
+                self.step_counter
+            )
             
+
         # for keeping track of episode-stats:
         self.env.episode_rewards.append(classification_reward)
         self.env.episode_budgets.append(self.env.current_budget)
@@ -1019,6 +1017,9 @@ class TigerBrain():
             cluster_passing_mask = torch.logical_or(cluster_action_signals == 0,cluster_action_signals == 2)
 
         # get the cluster-specific passing rewards
+        # we take only the penalties, cuz if we take positive rewards here, we may want to never but CTI labels.
+        rewards_per_clusters_if_accepted = -torch.relu(-rewards_per_clusters_if_accepted)
+
         if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
             rewards_per_accepted_clusters = rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
         elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
