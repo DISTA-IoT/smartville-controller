@@ -788,7 +788,6 @@ class TigerBrain():
 
         # classif. accuracy (only for reporting purposes) 
         cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
-        if self.wbt: self.wbl.log({INFERENCE+'_'+CS_ACC: cs_acc.item()}, step=self.step_counter)
 
         #
         # Computing confidence on known-class classification:
