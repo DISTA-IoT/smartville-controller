@@ -5,8 +5,6 @@ import torch
 import random
 import torch.nn as nn
 import torch.distributions as distributions
-import torch.functional as F
-
 
 class DAIAgent:
     def __init__(self, kwargs):
