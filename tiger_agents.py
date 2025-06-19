@@ -39,6 +39,7 @@ class DAIAgent:
 
         self.memory_size = kwargs['agent_memory_size']
         self.memory = deque(maxlen=self.memory_size)
+        self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
@@ -46,13 +47,13 @@ class DAIAgent:
         self.state_loss_fn = nn.MSELoss(reduction='sum')
 
     def reset_sequential_memory(self):
-        self.sequential_memory = deque(maxlen=self.memory_size)
+        self.sequential_memory = deque(maxlen=self.sequential_memory_size)
 
     def update_target_model(self):
         self.target_neg_efe_net.load_state_dict(self.neg_efe_net.state_dict())
 
 
-    def remember(self, state, action, reward, next_state, done):
+    def remember(self, state, action, reward, next_state, done, step):
         state_to_memorise = state.detach().clone()
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
@@ -64,6 +65,8 @@ class DAIAgent:
             next_state_to_memorise,
             done))
         self.sequential_memory.append(state_to_memorise)
+        if len(self.sequential_memory) == self.sequential_memory_size:
+            self.train_actor(step)
 
     
     def act(self, state):
@@ -307,7 +310,7 @@ class ValueLearningAgent:
         self.target_model.load_state_dict(self.model.state_dict())
 
 
-    def remember(self, state, action, reward, next_state, done):
+    def remember(self, state, action, reward, next_state, done, step):
         state_to_memorise = state.detach().clone()
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
@@ -318,11 +321,6 @@ class ValueLearningAgent:
             reward, 
             next_state_to_memorise,
             done))
-
-
-    def train_actor(self, step):
-        # added for compatibility TODO implement polimorfism
-        pass
 
 
     def act(self, state):

@@ -915,7 +915,8 @@ class TigerBrain():
             action_signal,
             torch.Tensor([classification_reward]),
             new_state,
-            end_signal
+            end_signal,
+            self.step_counter
         )
             
         # for keeping track of episode-stats:
@@ -1078,7 +1079,8 @@ class TigerBrain():
                     action,
                     reward,
                     next_state,
-                    end_signal
+                    end_signal,
+                    self.step_counter
             )
 
             # for keeping track of episode-stats:
@@ -1239,10 +1241,7 @@ class TigerBrain():
                 self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
                 self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
                 self.wbl.log({'epistemic_actions_per_episode': self.env.epistemic_actions}, step=self.step_counter)
-                self.wbl.log({'steps_per_episode': self.env.steps_done}, step=self.step_counter)
-
-            if self.episode_count % self.intrusion_detection_kwargs['actor_train_interval_episodes'] == 0:
-                self.mitigation_agent.train_actor(self.step_counter)
+                self.wbl.log({'steps_per_episode': self.env.steps_done}, step=self.step_counter)                
             self.reset_environment()
             
 
