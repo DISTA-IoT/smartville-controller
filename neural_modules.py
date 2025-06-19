@@ -430,6 +430,35 @@ class TransitionNet(nn.Module):
         return x_res
 
 
+class VariationalTransitionNet(nn.Module):
+    def __init__(self, kwargs):
+        super().__init__()
+        
+        input_dim = kwargs['proprioceptive_state_size'] + kwargs['action_size']
+        hidden_dim = kwargs['h_dim']
+        output_dim = kwargs['proprioceptive_state_size']
+        leakyrelu_alpha = kwargs.get('leakyrelu_alpha', 0.01)
+
+        self.act = nn.LeakyReLU(leakyrelu_alpha)
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc_mean = nn.Linear(hidden_dim, output_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        if len(x.shape) < 2:
+            x = x.unsqueeze(0)
+
+        h = self.act(self.fc1(x))
+        mean = self.fc_mean(h)
+        logvar = self.fc_logvar(h)
+
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        sample = mean + eps * std
+
+        return sample, mean, logvar
+    
+    
 class SimmilarityNet(nn.Module):
     def __init__(
             self,
