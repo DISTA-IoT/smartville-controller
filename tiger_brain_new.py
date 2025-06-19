@@ -900,7 +900,8 @@ class TigerBrain():
         self.env.current_budget += classification_reward
         
 
-        if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == True: 
+        if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == False: 
+            
             new_state = state_vec.detach().clone()
             # but changing the current budget: 
             new_state[-1] = self.env.current_budget 
