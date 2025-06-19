@@ -81,12 +81,6 @@ class NewTigerEnvironment:
             return True
         return False
 
-
-    def has_intelligence_episode_ended(self):
-        # TODO do we need to frame these episodes to converge?
-        return False
-
-
     def reset(self):
         self.logger.info('TIGER ENV: restarting episode!')
         self.episode_rewards = []
