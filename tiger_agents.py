@@ -306,6 +306,8 @@ class ValueLearningAgent:
         self.replay_batch_size = kwargs['replay_batch_size']
         self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
+        self.device = kwargs['device']
+
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
@@ -340,41 +342,50 @@ class ValueLearningAgent:
 
         minibatch = random.sample(self.memory, self.replay_batch_size)
 
-        preds = []
-        targets = []
-        # print(len(set([id(tuplesita[0].untyped_storage()) for tuplesita in minibatch ])))
-        # print(len(set([id(tuplesita[3].untyped_storage()) for tuplesita in minibatch ])))
-        for state, action, reward, next_state, done in minibatch:
-            target = reward
-            
-            if not done:
-
-                if self.algorithm == 'DQN':  
-                    # take the max Q-value from target network
-                    target += self.gamma * torch.max(self.target_model(next_state).squeeze()).item()
-                elif self.algorithm == 'DDQN':
-                    # Select action using online network
-                    next_action = self.model(next_state).squeeze().max(0)[1].item()
-                    # Evaluate using target network
-                    target += self.gamma * self.target_model(next_state).squeeze()[next_action].item()  
+        # Unpack and stack transitions
+        states, actions, rewards, next_states, dones = zip(*minibatch)
         
-            
-            target_f = self.model(state).detach().squeeze().clone()
-            target_f[action] = target
+        # Convert to tensors and move to device
+        states      = torch.stack(states).to(self.device)              # shape: [B, state_dim]
+        actions     = torch.tensor(actions, dtype=torch.long, device=self.device)  # shape: [B]
+        rewards     = torch.tensor(rewards, dtype=torch.float32, device=self.device)  # shape: [B]
+        next_states = torch.stack(next_states).to(self.device)         # shape: [B, state_dim]
+        dones       = torch.tensor(dones, dtype=torch.bool, device=self.device)     # shape: [B]
 
-            preds.append(self.model(state).squeeze())
-            targets.append(target_f)
+        # Compute Q-values for current states using online model
+        q_values = self.model(states)                                  # shape: [B, action_dim]
+        q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1) # shape: [B]
 
-        preds = torch.vstack(preds)
-        targets = torch.vstack(targets)
+        # Compute target Q-values
+        with torch.no_grad():
+            if self.algorithm == 'DQN':
+                # Use target network to get max Q-values of next states
+                next_q_values = self.target_model(next_states).max(1)[0]  # shape: [B]
+            elif self.algorithm == 'DDQN':
+                # Action selection from online model
+                next_actions = self.model(next_states).max(1)[1]          # shape: [B]
+                # Evaluation from target model
+                next_q_values = self.target_model(next_states).gather(1, next_actions.unsqueeze(1)).squeeze(1)
+            else:
+                raise ValueError(f"Unknown algorithm: {self.algorithm}")
 
+            # Zero-out next Q-values for terminal states
+            next_q_values[dones] = 0.0
+
+            # Bellman target
+            target_q_values = rewards + self.gamma * next_q_values  # shape: [B]
+
+        # Compute loss
+        loss = self.value_loss_fn(q_values, target_q_values)
+
+        # Optimize model
         self.optimizer.zero_grad()
-        loss = self.value_loss_fn(preds, targets)
         loss.backward()
         self.optimizer.step()
 
+        # Log
         self.wbl.log({'value_loss': loss.item()}, step=step)
 
-
+        # Epsilon decay
         if self.epsilon > self.epsilon_min:
-            self.epsilon *= self.epsilon_decay
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
