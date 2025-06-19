@@ -1021,7 +1021,7 @@ class TigerBrain():
         if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
             rewards_per_accepted_clusters = rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
         elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-            rewards_per_accepted_clusters = 3 * rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
+            rewards_per_accepted_clusters = self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
         
         rewards_per_cluster += rewards_per_accepted_clusters
 
@@ -1035,7 +1035,7 @@ class TigerBrain():
         if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
             benign_blocking_cost_per_cluster = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
         elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-            benign_blocking_cost_per_cluster = 3 * self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long))
+            benign_blocking_cost_per_cluster = self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long))
         
         # subtract the price of neglecting benign traffic
         rewards_per_cluster -= benign_blocking_cost_per_cluster
