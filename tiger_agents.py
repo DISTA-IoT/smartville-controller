@@ -30,6 +30,7 @@ class DAIAgent:
 
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs)
+                self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
                 self.transitionnet = TransitionNet(kwargs)
                 
@@ -199,7 +200,7 @@ class DAIAgent:
             # approx_epistemic_loss approximates \int Q(s)[logQ(s) + logQ(s|o)] 
             # state = Q(s), cuz we're on a fully observable MDP     
             if self.variational_t_model:
-                estimated_next_proprioceptive_states, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+                _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
                 # Compute analytical KL divergence 
                 epistemic_losses = 0.5 * torch.sum(
                         eps_logvars.exp() + (eps_means - next_proprioceptive_states)**2 - 1 - eps_logvars,
@@ -245,8 +246,11 @@ class DAIAgent:
                     l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
                     dim=1
                 ).mean()
+                
 
-                transition_loss = reconstruction_loss + self.epistemic_regularisation_factor * kl_div
+                transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
+                self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
+                self.wbl.log({'state kl_div': kl_div.item()}, step=step)
         
             else:
                 estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
