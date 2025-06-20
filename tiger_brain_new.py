@@ -906,7 +906,7 @@ class TigerBrain():
             # but changing the current budget: 
             new_state[-1] = self.env.current_budget 
             # an episode ends if the budget ends... 
-            end_signal = self.env.has_episode_ended(self.step_counter)
+            end_signal = torch.tensor([self.env.has_episode_ended(self.step_counter)], dtype=torch.long)
             # store the experience tuple:          
             self.mitigation_agent.remember(
                 state_vec.detach(),
@@ -1074,7 +1074,7 @@ class TigerBrain():
             self.step_counter += 1
 
             # ask again if the budget is over: 
-            end_signal = torch.Tensor([self.env.has_episode_ended(self.step_counter)])
+            end_signal = torch.tensor([self.env.has_episode_ended(self.step_counter)], dtype=torch.long)
 
             self.mitigation_agent.remember(
                     state.detach(),
