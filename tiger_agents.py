@@ -156,10 +156,10 @@ class DAIAgent:
     def replay(self, step):
         """
         Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
-        This update is based on equation (17) of the Millidge's paper, which in our paper is:
-        \hat{G(s_t,a_t)} =  -r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] + G_\phi(s_t,a_t)
+        This update is based on equation (17) of the Millidge's paper (after the sign correction), which in our paper is:
+        \hat{G(s_t,a_t)} =  -r(o) -  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] + G_\phi(s_t,a_t)
         which is equivalent to:
-        -\hat{G(s_t,a_t)} =  r(o) -  \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
+        -\hat{G(s_t,a_t)} =  r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
         This new form is more of a "value" (a policy's value is inversely prop. to the expected free energy)
         """
         if len(self.memory) < self.replay_batch_size:
@@ -182,7 +182,7 @@ class DAIAgent:
 
 
         targets = rewards.clone()
-        epistemic_losses = torch.zeros_like(rewards)
+        epistemic_gains = torch.zeros_like(rewards)
         self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
 
 
@@ -197,7 +197,7 @@ class DAIAgent:
             if self.variational_t_model:
                 _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
                 # Analytical KL divergence.
-                epistemic_losses = 0.5 * torch.sum(
+                epistemic_gains = 0.5 * torch.sum(
                     (1 / torch.exp(eps_logvars)) + ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
                     - 1 + eps_logvars,
                     dim=1,
@@ -205,12 +205,12 @@ class DAIAgent:
                 )
             else:
                 estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                epistemic_losses = torch.sum(
+                epistemic_gains = torch.sum(
                         (estimated_next_proprioceptive_states - next_proprioceptive_states) ** 2,
                         dim=1,
                         keepdim=True)
 
-            targets -= self.epistemic_regularisation_factor * epistemic_losses.detach()
+            targets += self.epistemic_regularisation_factor * epistemic_gains.detach()
 
 
         # Bootstrapped G(s,a) term
@@ -257,7 +257,7 @@ class DAIAgent:
             self.transitionnet_optimizer.step()
 
             self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
-            self.wbl.log({'epistemic_gain': -epistemic_losses.mean().item()}, step=step)
+            self.wbl.log({'epistemic_gain': epistemic_gains.mean().item()}, step=step)
 
 
         # train the EFE value network (critic)
