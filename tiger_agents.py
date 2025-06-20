@@ -199,7 +199,7 @@ class DAIAgent:
                 # Analytical KL divergence.
                 epistemic_gains = 0.5 * torch.sum(
                     (1 / torch.exp(eps_logvars)) + ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
-                    - 1 + eps_logvars,
+                    - 1 - eps_logvars,
                     dim=1,
                     keepdim=True
                 )
