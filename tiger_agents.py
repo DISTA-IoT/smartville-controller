@@ -15,6 +15,7 @@ class DAIAgent:
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
+        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
@@ -212,7 +213,7 @@ class DAIAgent:
                         dim=1,
                         keepdim=True)
 
-            targets -= epistemic_losses.detach()
+            targets -= self.epistemic_regularisation_factor * epistemic_losses.detach()
 
 
         # Bootstrapped G(s,a) term
@@ -234,8 +235,23 @@ class DAIAgent:
         # Train transition model
         if self.transitionnet is not None:
             self.transitionnet.train()
-            estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-            transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
+            if self.variational_t_model:
+                _, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
+
+                # Use means for deterministic target comparison
+                reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
+                # KL divergence to standard normal
+                kl_div = 0.5 * torch.sum(
+                    l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
+                    dim=1
+                ).mean()
+
+                transition_loss = reconstruction_loss + self.epistemic_regularisation_factor * kl_div
+        
+            else:
+                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
+                transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
+
             self.transitionnet_optimizer.zero_grad()
             transition_loss.backward()
             self.transitionnet_optimizer.step()
