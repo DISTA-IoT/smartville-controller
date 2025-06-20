@@ -30,6 +30,7 @@ class DAIAgent:
 
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs)
+                self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
                 self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
                 self.transitionnet = TransitionNet(kwargs)
@@ -155,17 +156,11 @@ class DAIAgent:
     def replay(self, step):
         """
         Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
-        
-        This update is based on equation (17) of the paper, i.e.:
-        
-        \hat{G(s,a)} =  -r(o) +  \int Q(s)[logQ(s) - logQ(s|o)] + G_\phi(s,a)
-        
+        This update is based on equation (17) of the Millidge's paper, which in our paper is:
+        \hat{G(s_t,a_t)} =  -r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] + G_\phi(s_t,a_t)
         which is equivalent to:
-        
-        -\hat{G(s,a)} =  r(o) -  \int Q(s)[logQ(s) + logQ(s|o)] - G_\phi(s,a)
-
-        This new form is more of a "value" (your policy's value is inversely prop. to the expected free energy)
-        
+        -\hat{G(s_t,a_t)} =  r(o) -  \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
+        This new form is more of a "value" (a policy's value is inversely prop. to the expected free energy)
         """
         if len(self.memory) < self.replay_batch_size:
             return
@@ -188,25 +183,26 @@ class DAIAgent:
 
         targets = rewards.clone()
         epistemic_losses = torch.zeros_like(rewards)
-        
+        self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+
+
         if self.transitionnet is not None:
             proprioceptive_states = states[:, -self.proprioceptive_state_size:]
             next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
             transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
             
-            # if we have a transition network, then we compute the epistemic gain w.r.t to it. 
-            # These lines approximate  -  \int Q(s)[logQ(s) + logQ(s|o)]
-            # estimated_next_state = Q(s|o)
-            # approx_epistemic_loss approximates \int Q(s)[logQ(s) + logQ(s|o)] 
-            # state = Q(s), cuz we're on a fully observable MDP     
+            # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
+            # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting}
+            # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}  
             if self.variational_t_model:
                 _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
-                # Compute analytical KL divergence 
+                # Analytical KL divergence.
                 epistemic_losses = 0.5 * torch.sum(
-                        eps_logvars.exp() + (eps_means - next_proprioceptive_states)**2 - 1 - eps_logvars,
-                        dim=1,
-                        keepdim=True
-                        )
+                    (1 / torch.exp(eps_logvars)) + ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
+                    - 1 + eps_logvars,
+                    dim=1,
+                    keepdim=True
+                )
             else:
                 estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
                 epistemic_losses = torch.sum(
@@ -237,21 +233,21 @@ class DAIAgent:
         if self.transitionnet is not None:
             self.transitionnet.train()
             if self.variational_t_model:
-                _, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
+                estimated_next_proprioceptive_states, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
 
-                # Use means for deterministic target comparison
-                reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
-                # KL divergence to standard normal
-                kl_div = 0.5 * torch.sum(
-                    l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
-                    dim=1
-                ).mean()
-                
-
-                transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
-                self.wbl.log({'state kl_div': kl_div.item()}, step=step)
-        
+                if self.variational_variational_transition_loss:
+                    # Use means for deterministic target comparison
+                    reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
+                    # KL divergence to standard normal
+                    kl_div = 0.5 * torch.sum(
+                        l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
+                        dim=1
+                    ).mean()
+                    transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
+                    self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
+                    self.wbl.log({'state kl_div': kl_div.item()}, step=step)
+                else:
+                    transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
             else:
                 estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
                 transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
@@ -273,7 +269,7 @@ class DAIAgent:
         self.efe_net_optimizer.step()
     
         self.wbl.log({'value_loss': value_loss.item()}, step=step)
-        self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+        
 
         
 
