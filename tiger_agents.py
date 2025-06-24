@@ -186,8 +186,8 @@ class DAIAgent:
             transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
             
             # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
-            # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting}
-            # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}  
+            # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
+            # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
             if self.variational_t_model:
                 _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
                 # Analytical KL divergence.
