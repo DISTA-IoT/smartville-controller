@@ -200,7 +200,7 @@ class DAIAgent:
             else:
                 estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
                 epistemic_gains = torch.sum(
-                        (estimated_next_proprioceptive_states - next_proprioceptive_states) ** 2,
+                        (next_proprioceptive_states - estimated_next_proprioceptive_states) ** 2,
                         dim=1,
                         keepdim=True)
 
