@@ -97,43 +97,37 @@ class DAIAgent:
     def train_actor(self, step):
         """
         Trains the actor (policy network) by minimising the VFE.
-        
         NOTE: THIS METHOD SOULD BE DONE ON-POLICY
-
-        With respect to the paper's equation (6) (wich we correct the sign), i.e.:
-
-        VFE =\int Q(s)logp(o|s) + KL(Q(s)||p(s|s_{t-1},a_{t-1})] + E_{Q(s)}[KL[Q(a|s)||p(a|s)]
+        With respect to the paper's equation (6) (of Millidge's paper (DAI as Variational Policy Gradients).
+        we correct the sign of the equation, i.e.:
+        VFE = - \int Q(s)logp(o|s) + KL(Q(s)||p(s|s_{t-1},a_{t-1})] + E_{Q(s)}[KL[Q(a|s)||p(a|s)]
 
         - We do not have a POMDP but only an MDP, so we do not minimise accuracy over observations (\int Q(s)logp(o|s) = 1)
-
         - We are not touching the KL(Q(s)||p(s|s_{t-1},a_{t-1})] term either, because that will be the focus of the critic
-        in the context of bootstrapping the EFE. (not sure)
-
+        in the context of bootstrapping the EFE.
+        - So we focus in  The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)], which is itself divided into two terms:
+            in eq. (7)
         """
+
         self.neg_efe_net.eval()
 
-        vfe_loss = 0
-
+        vfe = 0
+        # batching the states
         states = torch.vstack(list(self.sequential_memory))
-        
-        # The following corresponds Q(a_t | s_t) in eq (6) of Millidge's paper (DAI as Variational Policy Gradients)
+        # The following corresponds Q(a_t | s_t) in eq. (6) 
         policy_probabilities = self.policynet(states) 
-        
-        # The following 2 loc's correspond to eq (8) (Boltzman sampling)
+        # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
         # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
         estimated_neg_efe_values = self.neg_efe_net(states).detach()
         efe_actions = torch.log_softmax(
             self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
 
-        # The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)]
-        # which divides into two terms:
-
         # The following 2 loc's correspond to the first term in eq (7), i.e.:
         # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
-        # This is kind of performance measure, that is why we subtract it 
-        # (because we want to MINIMISE the loss function, i.e., maximise the performance)
-        expected_logprobs = torch.sum(policy_probabilities * efe_actions, dim=1)
-        vfe_loss -= expected_logprobs.mean()
+        # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
+        # We need to maximise this energy by minimising VFE which is the negative of this fella.
+        energies = torch.sum(policy_probabilities * efe_actions, dim=1)
+        vfe -= energies.mean()
 
         # The following 2 loc's correspond to the second term in eq (7), i.e.:
         # -E_{Q(s)}\{ H[Q(a|s)] \}
@@ -141,16 +135,16 @@ class DAIAgent:
         policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
         policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1)
         expected_policy_entropy = policy_entropy.mean()
-        vfe_loss -= self.entropy_reg_coefficient * expected_policy_entropy
+        vfe -= self.entropy_reg_coefficient * expected_policy_entropy
 
         self.policynet_optimizer.zero_grad()
-        vfe_loss.backward()
+        vfe.backward()
         self.policynet_optimizer.step()
         self.reset_sequential_memory()
 
-        self.wbl.log({'actor_loss': vfe_loss.item()}, step=step)
+        self.wbl.log({'actor_loss': vfe.item()}, step=step)
         self.wbl.log({'actor_entropy': expected_policy_entropy.item()}, step=step) # maximise this (it is positive)
-        self.wbl.log({'actor_performance': expected_logprobs.mean().item()}, step=step) # maximise this (it is positive)
+        self.wbl.log({'actor_performance': energies.mean().item()}, step=step) # maximise this (it is positive)
 
 
     def replay(self, step):
