@@ -1241,6 +1241,7 @@ class TigerBrain():
             if self.wbt:
                 self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
                 self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
+                self.wbl.log({'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum()}, step=self.step_counter)
                 self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
                 self.wbl.log({'epistemic_actions_per_episode': self.env.epistemic_actions}, step=self.step_counter)
                 self.wbl.log({'steps_per_episode': self.env.steps_done}, step=self.step_counter)                
