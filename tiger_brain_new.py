@@ -1393,6 +1393,8 @@ class TigerBrain():
             with self._lock:
                 if self.batch_processing_allowed:
                     self.experience_learning()
+                if not self.epistemic_agency:
+                    self.step_counter += 1
 
 
 
