@@ -32,7 +32,7 @@ from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment_new import NewTigerEnvironment
-from smartController.tiger_agents import ValueLearningAgent, DAIAgent
+from smartController.tiger_agents import ValueLearningAgent, DAIAgent, DAIAgent_SE
 from functools import wraps
 
 # List of colors
@@ -402,7 +402,18 @@ class TigerBrain():
         # 6. current system budget
         self.state_space_dim += 6
 
-        agent_class = ValueLearningAgent if kwargs['agent'] in ['DQN', 'DDQN'] else DAIAgent
+        if kwargs['agent'] == 'DQN':
+            agent_class = ValueLearningAgent
+        elif kwargs['agent'] == 'DDQN':
+            agent_class = ValueLearningAgent
+        elif kwargs['agent'] == 'DAI':
+            agent_class = DAIAgent
+        elif kwargs['agent'] == 'DAI_SE':
+            agent_class = DAIAgent_SE
+        else:
+            raise ValueError('Unknown agent type: {}'.format(kwargs['agent']))
+        
+
 
         kwargs['action_size'] = 3  # block, pass or TCI acquisition
         kwargs['state_size'] = self.state_space_dim # the "current_budget" scalar is part of the state space  

@@ -142,9 +142,9 @@ class DAIAgent:
         self.policynet_optimizer.step()
         self.reset_sequential_memory()
 
-        self.wbl.log({'actor_loss': vfe.item()}, step=step)
-        self.wbl.log({'actor_entropy': expected_policy_entropy.item()}, step=step) # maximise this (it is positive)
-        self.wbl.log({'actor_performance': energies.mean().item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'actor_loss': vfe.item()}, step=step)
+        if self.wbl: self.wbl.log({'actor_entropy': expected_policy_entropy.item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'actor_performance': energies.mean().item()}, step=step) # maximise this (it is positive)
 
 
     def replay(self, step):
@@ -177,7 +177,7 @@ class DAIAgent:
 
         targets = rewards.clone()
         epistemic_gains = torch.zeros_like(rewards)
-        self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+        if self.wbl: self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
 
 
         if self.transitionnet is not None:
@@ -238,8 +238,8 @@ class DAIAgent:
                         dim=1
                     ).mean()
                     transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                    self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
-                    self.wbl.log({'state kl_div': kl_div.item()}, step=step)
+                    if self.wbl: self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
+                    if self.wbl: self.wbl.log({'state kl_div': kl_div.item()}, step=step)
                 else:
                     transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
             else:
@@ -250,8 +250,8 @@ class DAIAgent:
             transition_loss.backward()
             self.transitionnet_optimizer.step()
 
-            self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
-            self.wbl.log({'epistemic_gain': epistemic_gains.mean().item()}, step=step)
+            if self.wbl: self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
+            if self.wbl: self.wbl.log({'epistemic_gain': epistemic_gains.mean().item()}, step=step)
 
 
         # train the EFE value network (critic)
@@ -262,10 +262,234 @@ class DAIAgent:
         value_loss.backward()
         self.efe_net_optimizer.step()
     
-        self.wbl.log({'value_loss': value_loss.item()}, step=step)
+        if self.wbl: self.wbl.log({'value_loss': value_loss.item()}, step=step)
         
 
+class DAIAgent_SE:
+    def __init__(self, kwargs):
         
+        self.wbl = kwargs['wbl']
+        self.action_size = kwargs['action_size']
+        self.neg_efe_net = NEFENet(kwargs)
+        self.target_neg_efe_net = NEFENet(kwargs)
+        self.update_target_model()
+        self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
+        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
+        
+        self.transitionnet = None
+        self.transitionnet_optimizer = None
+        self.variational_t_model = kwargs['variational_tmodel']
+
+        if kwargs['use_transition_model']:
+
+            state_size = kwargs['state_size']
+            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+            self.proprioceptive_state_size = state_size - hidden_state_size
+            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+
+            if self.variational_t_model:
+                self.transitionnet = VariationalTransitionNet(kwargs)
+                self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
+                self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
+            else:
+                self.transitionnet = TransitionNet(kwargs)
+                
+            self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
+
+        self.policynet = PolicyNet(kwargs)
+        self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
+        self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
+        self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
+
+        self.memory_size = kwargs['agent_memory_size']
+        self.memory = deque(maxlen=self.memory_size)
+        self.sequential_memory_size = kwargs['actor_train_interval_steps']
+        self.reset_sequential_memory()
+        self.replay_batch_size = kwargs['replay_batch_size']
+
+        self.value_loss_fn = nn.MSELoss(reduction='sum')
+        self.state_loss_fn = nn.MSELoss(reduction='sum')
+        
+
+    def reset_sequential_memory(self):
+        self.sequential_memory = deque(maxlen=self.sequential_memory_size)
+
+    def update_target_model(self):
+        self.target_neg_efe_net.load_state_dict(self.neg_efe_net.state_dict())
+
+
+    def remember(self, state, action, reward, next_state, done, step):
+        state_to_memorise = state.detach().clone()
+        # print(id(state_to_memorise.untyped_storage()))
+        next_state_to_memorise = next_state.detach().clone()
+        # print(id(next_state_to_memorise.untyped_storage()))
+        self.memory.append((
+            state_to_memorise, 
+            action, 
+            reward, 
+            next_state_to_memorise,
+            done))
+        self.sequential_memory.append(state_to_memorise)
+        if len(self.sequential_memory) == self.sequential_memory_size:
+            self.train_actor(step)
+
+    
+    def act(self, state):
+        with torch.no_grad():
+            """
+            action_probs = self.policynet(state).squeeze()
+            """
+            
+            neg_efe = self.neg_efe_net(state)
+            log_action_probs = torch.log_softmax(
+                self.temperature_for_action_sampling * neg_efe,
+                dim=-1).squeeze()
+            action_probs = log_action_probs.exp()
+        
+            # sample from a categorical distribution 
+            m = distributions.Categorical(action_probs)
+            action = m.sample().item()
+
+        return action
+    
+
+    def train_actor(self, step):
+        # this trains not the actor but the perceptvie model
+        vfe = 0
+        
+        # batching the states
+        states = torch.vstack(list(self.sequential_memory))
+        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
+        estimated_neg_efe_values = self.neg_efe_net(states).detach()
+        efe_actions = torch.log_softmax(
+            self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(dim=1)[1]
+        action_onehots = torch.nn.functional.one_hot(efe_actions, self.action_size).float()
+        transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
+
+        self.transitionnet.train()
+        predicted_observations = self.transitionnet(transition_inputs)
+        observations_log_probs = torch.log(
+            torch.clamp(predicted_observations, min=1e-8))
+        transition_entropy = torch.sum(predicted_observations * observations_log_probs)
+        
+        vfe -= transition_entropy * self.entropy_reg_coefficient
+        if self.wbl: self.wbl.log({'perceptive_entropy': transition_entropy.item()}, step=step) # maximise this (it is positive)
+
+        transition_consistency =  torch.sum(proprioceptive_states[1:] * observations_log_probs[:-1])
+        if self.wbl: self.wbl.log({'perceptive_consistency': transition_entropy.item()}, step=step) # maximise this (it is positive)
+        vfe -= transition_consistency
+
+        self.transitionnet_optimizer.zero_grad()
+        vfe.backward()
+        self.transitionnet_optimizer.step()
+        self.reset_sequential_memory()
+
+        if self.wbl: self.wbl.log({'perceptive_loss': vfe.item()}, step=step)
+
+
+    def replay(self, step):
+
+        if len(self.memory) < self.replay_batch_size:
+            return
+
+        self.neg_efe_net.eval()
+        self.target_neg_efe_net.eval()
+        if self.transitionnet is not None: self.transitionnet.eval()
+
+        # Unpack minibatch
+        minibatch = random.sample(self.memory, self.replay_batch_size)
+        states, actions, rewards, next_states, dones = zip(*minibatch)
+
+        states = torch.stack(states)
+        next_states = torch.stack(next_states)
+        actions = torch.tensor(actions, dtype=torch.long)
+        action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
+        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
+
+
+        targets = rewards.clone()
+        active_epistemic_gains = torch.zeros_like(rewards)
+        if self.wbl: self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+
+        predicted_actions =self.policynet(states).detach()
+
+        active_epistemic_gains = torch.sum(
+                (predicted_actions - action_onehots) ** 2,
+                dim=1,
+                keepdim=True)
+
+        targets += self.epistemic_regularisation_factor * active_epistemic_gains.detach()
+
+
+        with torch.no_grad():
+            # Action selection from online model
+            estimated_neg_efe_values = self.neg_efe_net(states).detach()
+            efe_actions = torch.log_softmax(
+                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
+            next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+
+            targets -=(~dones) * 0.99 * next_efe_values
+
+        # Prepare targets for all actions
+        target_neg_efes = self.neg_efe_net(states).detach()
+        target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
+
+
+        # train the EFE value network (critic)
+        self.neg_efe_net.train()
+        predicted_values = self.neg_efe_net(states)
+        value_loss = self.value_loss_fn(predicted_values, target_neg_efes)
+        self.efe_net_optimizer.zero_grad()
+        value_loss.backward()
+        self.efe_net_optimizer.step()
+    
+        if self.wbl: self.wbl.log({'value_loss': value_loss.item()}, step=step)
+
+        # train the policy network:
+        self.policynet.train()
+        predicted_actions = self.policynet(states)
+        policy_loss = torch.sum((predicted_actions - action_onehots) ** 2)
+        self.policynet_optimizer.zero_grad()
+        policy_loss.backward()
+        self.policynet_optimizer.step()
+
+        if self.wbl: self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
+
+        # Train transition model
+        if self.transitionnet is not None:
+            proprioceptive_states = states[:, -self.proprioceptive_state_size:]
+            next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
+            transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
+            
+            self.transitionnet.train()
+            if self.variational_t_model:
+                estimated_next_proprioceptive_states, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
+
+                if self.variational_variational_transition_loss:
+                    # Use means for deterministic target comparison
+                    reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
+                    # KL divergence to standard normal
+                    kl_div = 0.5 * torch.sum(
+                        l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
+                        dim=1
+                    ).mean()
+                    transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
+                    if self.wbl: self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
+                    if self.wbl: self.wbl.log({'state kl_div': kl_div.item()}, step=step)
+                else:
+                    transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
+            else:
+                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
+                transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
+
+            self.transitionnet_optimizer.zero_grad()
+            transition_loss.backward()
+            self.transitionnet_optimizer.step()
+
+            if self.wbl: self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
+
+            
 
 class ValueLearningAgent:
 
