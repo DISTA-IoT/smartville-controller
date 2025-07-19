@@ -368,16 +368,18 @@ class DAIAgent_SE:
 
         self.transitionnet.train()
         predicted_observations = self.transitionnet(transition_inputs)
-        observations_log_probs = torch.log(
-            torch.clamp(predicted_observations, min=1e-8))
-        transition_entropy = torch.sum(predicted_observations * observations_log_probs)
         
-        vfe -= transition_entropy * self.entropy_reg_coefficient
-        if self.wbl: self.wbl.log({'perceptive_entropy': transition_entropy.item()}, step=step) # maximise this (it is positive)
+        # Perception consistency (cross entropy ≈ −MSE/2)
+        perceptive_consistency = -0.5 * ((proprioceptive_states[1:] - predicted_observations[:-1]) ** 2).sum(dim=1).mean()
 
-        transition_consistency =  torch.sum(proprioceptive_states[1:] * observations_log_probs[:-1])
-        if self.wbl: self.wbl.log({'perceptive_consistency': transition_entropy.item()}, step=step) # maximise this (it is positive)
-        vfe -= transition_consistency
+        # Perception neutrality (entropy proxy using batch variance)
+        batch_var = predicted_observations.var(dim=0) + 1e-6
+        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
+
+        
+        vfe = - perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
+        if self.wbl: self.wbl.log({'perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
 
         self.transitionnet_optimizer.zero_grad()
         vfe.backward()
