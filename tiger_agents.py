@@ -771,42 +771,9 @@ class DDAIAgent:
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
-
-        if self.wbl: self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
-
-        # Train transition model
-        if self.transitionnet is not None:
-            transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
-            
-            self.transitionnet.train()
-            if self.variational_t_model:
-                estimated_next_proprioceptive_states, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
-
-                if self.variational_variational_transition_loss:
-                    # Use means for deterministic target comparison
-                    reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
-                    # KL divergence to standard normal
-                    kl_div = 0.5 * torch.sum(
-                        l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
-                        dim=1
-                    ).mean()
-                    transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                    if self.wbl: self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
-                    if self.wbl: self.wbl.log({'state kl_div': kl_div.item()}, step=step)
-                else:
-                    transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
-            else:
-                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
-
-            self.transitionnet_optimizer.zero_grad()
-            transition_loss.backward()
-            self.transitionnet_optimizer.step()
-
-            if self.wbl: 
-                self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
         
         if self.wbl: 
+            self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
 
             
