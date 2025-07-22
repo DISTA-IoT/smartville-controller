@@ -52,7 +52,7 @@ class FullDAIAgent:
 
         self.value_loss_fn = nn.MSELoss(reduction='sum')
         self.state_loss_fn = nn.MSELoss(reduction='sum')
-        
+        self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.sequential_memory_size)
@@ -98,82 +98,7 @@ class FullDAIAgent:
     
 
     def train_actor(self, step):
-        """
-        Trains the actor (policy network) by minimising the VFE.
-        NOTE: THIS METHOD SOULD BE DONE ON-POLICY
-        With respect to the paper's equation (6) (of Millidge's paper (DAI as Variational Policy Gradients).
-        we correct the sign of the equation, i.e.:
-        VFE = - \int Q(s)logp(o|s) + KL(Q(s)||p(s|s_{t-1},a_{t-1})] + E_{Q(s)}[KL[Q(a|s)||p(a|s)]
-
-        - We do not have a POMDP but only an MDP, so we do not minimise accuracy over observations (\int Q(s)logp(o|s) = 1)
-        - We are not touching the KL(Q(s)||p(s|s_{t-1},a_{t-1})] term either, because that will be the focus of the critic
-        in the context of bootstrapping the EFE.
-        - So we focus in  The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)], which is itself divided into two terms:
-            in eq. (7)
-        """
-
-        self.neg_efe_net.eval()
-        self.policynet.train()
-        self.transitionnet.train()
-
-        vfe = 0
-        # batching the states
-        states = torch.vstack(list(self.sequential_memory))
-        # The following corresponds Q(a_t | s_t) in eq. (6) 
-        policy_probabilities = self.policynet(states) 
-        # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
-        # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
-        estimated_neg_efe_values = self.neg_efe_net(states).detach()
-        efe_actions = torch.log_softmax(
-            self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
-
-        # The following 2 loc's correspond to the first term in eq (7), i.e.:
-        # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
-        # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
-        # We need to maximise this energy by minimising VFE which is the negative of this fella.
-        policy_consistency = torch.sum(policy_probabilities * efe_actions, dim=1).mean()
-
-        # The following 2 loc's correspond to the second term in eq (7), i.e.:
-        # -E_{Q(s)}\{ H[Q(a|s)] \}
-        # Also here, we want to maximise the entropy, that's why substract it from the loss.
-        policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
-        policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1).mean()
-        actor_loss = -policy_consistency - self.entropy_reg_coefficient * policy_entropy
-        
-        # perceptive model
-        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
-        action_onehots = torch.nn.functional.one_hot(efe_actions.max(dim=1)[1], self.action_size).float()
-        transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
-        predicted_observations = self.transitionnet(transition_inputs)
-
-        # Perception consistency (cross entropy ≈ −MSE/2)
-        perceptive_consistency = -0.5 * ((proprioceptive_states[1:] - predicted_observations[:-1]) ** 2).sum(dim=1).mean()
-
-        # Perception neutrality (entropy proxy using batch variance)
-        batch_var = predicted_observations.var(dim=0) + 1e-6
-        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
-
-        perceptive_loss = -perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
-
-        vfe = actor_loss + perceptive_loss
-        
-
-        self.policynet_optimizer.zero_grad()
-        self.transitionnet_optimizer.zero_grad()
-        vfe.backward()
-        self.transitionnet_optimizer.step()
-        self.policynet_optimizer.step()
-        self.reset_sequential_memory()
-
-        if self.wbl:
-            self.wbl.log({'actor_loss': actor_loss.item()}, step=step)
-            self.wbl.log({'perceptive_loss': perceptive_loss.item()}, step=step)
-            self.wbl.log({'perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'actor_entropy': policy_entropy.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'actor_performance': policy_consistency.mean().item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'vfe': vfe.item()}, step=step)
-
+        pass
 
     def replay(self, step):
         """
@@ -216,8 +141,8 @@ class FullDAIAgent:
             action_onehots_all = torch.eye(self.action_size)  # [A, A]
             expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
             expanded_states = proprioceptive_states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
-            transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
-            predicted_nexts = self.transitionnet(transition_inputs) # [B*A, S']
+            expanded_transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
+            predicted_nexts = self.transitionnet(expanded_transition_inputs) # [B*A, S']
         
             # Compute log P(o_next | o_current, a)
             log_likelihoods = -F.mse_loss(
@@ -243,7 +168,7 @@ class FullDAIAgent:
 
         
         perceptive_epistemic_gains = torch.zeros_like(rewards)
-            # Vectorized computation of active epistemic gain
+        # Vectorized computation of perceptive epistemic gain
         with torch.no_grad():
             # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
             # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
@@ -290,11 +215,70 @@ class FullDAIAgent:
         value_loss.backward()
         self.efe_net_optimizer.step()
     
+
+        # perceptive and policy model training through VFE:
+        self.neg_efe_net.eval()
+        self.policynet.train()
+        self.transitionnet.train()
+        vfe = 0
+
+        # The following corresponds Q(a_t | s_t) in eq. (6) 
+        policy_probabilities = self.policynet(states) 
+
+        if self.surrogate_policy_consistency:
+            policy_consistency = -0.5 * torch.sum((policy_probabilities - action_onehots) ** 2).sum(dim=1).mean()
+        else:
+            # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
+            # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
+            estimated_neg_efe_values = self.neg_efe_net(states).detach()
+            efe_actions = torch.log_softmax(
+                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+
+            # The following 2 loc's correspond to the first term in eq (7), i.e.:
+            # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
+            # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
+            # We need to maximise this energy by minimising VFE which is the negative of this fella.
+            policy_consistency = torch.sum(policy_probabilities * efe_actions, dim=1).mean()
+                    
+
+        # The following 2 loc's correspond to the second term in eq (7), i.e.:
+        # -E_{Q(s)}\{ H[Q(a|s)] \}
+        # Also here, we want to maximise the entropy, that's why substract it from the loss.
+        policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
+        policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1).mean()
+        actor_loss = -policy_consistency - self.entropy_reg_coefficient * policy_entropy
+        
+        # perceptive model
+        predicted_observations = self.transitionnet(transition_inputs)
+        # Perception consistency (cross entropy ≈ −MSE/2)
+        perceptive_consistency = -0.5 * ((next_proprioceptive_states - predicted_observations) ** 2).sum(dim=1).mean()
+
+        # Perception neutrality (entropy proxy using batch variance)
+        batch_var = predicted_observations.var(dim=0) + 1e-6
+        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
+        perceptive_loss = -perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
+
+        vfe = actor_loss + perceptive_loss
+
+        self.policynet_optimizer.zero_grad()
+        self.transitionnet_optimizer.zero_grad()
+        vfe.backward()
+        self.transitionnet_optimizer.step()
+        self.policynet_optimizer.step()
+        self.reset_sequential_memory()
+
         if self.wbl: 
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
             self.wbl.log({'epistemic_gain': perceptive_epistemic_gains.mean().item()}, step=step)
             self.wbl.log({'active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({'actor_loss': actor_loss.item()}, step=step)
+            self.wbl.log({'perceptive_loss': perceptive_loss.item()}, step=step)
+            self.wbl.log({'perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'actor_entropy': policy_entropy.item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'actor_performance': policy_consistency.mean().item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'vfe': vfe.item()}, step=step)
 
 
 class DAIAgent:
