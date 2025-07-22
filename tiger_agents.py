@@ -4,6 +4,7 @@ from collections import deque
 import torch
 import random
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributions as distributions
 
 
@@ -555,7 +556,7 @@ class DAIAgent:
         if self.wbl: self.wbl.log({'value_loss': value_loss.item()}, step=step)
         
 
-class DAIAgent_SE:
+class DDAIAgent:
     def __init__(self, kwargs):
         
         self.wbl = kwargs['wbl']
@@ -698,20 +699,45 @@ class DAIAgent_SE:
         action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
-
+        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
+        next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
+            
 
         targets = rewards.clone()
         active_epistemic_gains = torch.zeros_like(rewards)
-        if self.wbl: self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+        
+        # Vectorized computation of active epistemic gain
+        with torch.no_grad():
+            action_probs_prior =self.policynet(states)   # [B, A]
 
-        predicted_actions =self.policynet(states).detach()
+            # Compute transition log-likelihoods for ALL actions
+            action_onehots_all = torch.eye(self.action_size)  # [A, A]
+            expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
+            expanded_states = proprioceptive_states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
+            transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
+            predicted_nexts = self.transitionnet(transition_inputs) # [B*A, S']
+        
+            # Compute log P(o_next | o_current, a)
+            log_likelihoods = -F.mse_loss(
+                predicted_nexts, 
+                next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
+                reduction='none'
+            ).sum(dim=1).view(self.replay_batch_size, self.action_size)  # [B, A]
+            
+            # Bayes' rule: Q(a|s,s') ∝ P(s'|s,a) * Q(a|s)
+            log_posterior = log_likelihoods + torch.log(action_probs_prior + 1e-8)
+            action_probs_posterior = torch.softmax(log_posterior, dim=1)
 
-        active_epistemic_gains = torch.sum(
-                (predicted_actions - action_onehots) ** 2,
-                dim=1,
-                keepdim=True)
+            # KL divergence: Σ posterior * log(posterior/prior)
+            kl_div = (action_probs_posterior * 
+                    (torch.log(action_probs_posterior + 1e-8) - 
+                    torch.log(action_probs_prior + 1e-8))
+                    ).sum(dim=1, keepdim=True)  # [B, 1]
+            
+            # active epistemic gain
+            active_epistemic_gains = kl_div
 
-        targets += self.epistemic_regularisation_factor * active_epistemic_gains.detach()
+        targets += self.epistemic_regularisation_factor * active_epistemic_gains
 
 
         with torch.no_grad():
@@ -750,8 +776,6 @@ class DAIAgent_SE:
 
         # Train transition model
         if self.transitionnet is not None:
-            proprioceptive_states = states[:, -self.proprioceptive_state_size:]
-            next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
             transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
             
             self.transitionnet.train()
@@ -779,7 +803,11 @@ class DAIAgent_SE:
             transition_loss.backward()
             self.transitionnet_optimizer.step()
 
-            if self.wbl: self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
+            if self.wbl: 
+                self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
+        
+        if self.wbl: 
+            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
 
             
 

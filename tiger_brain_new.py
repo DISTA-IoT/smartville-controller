@@ -32,7 +32,7 @@ from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment_new import NewTigerEnvironment
-from smartController.tiger_agents import ValueLearningAgent, DAIAgent, DAIAgent_SE, FullDAIAgent
+from smartController.tiger_agents import ValueLearningAgent, DAIAgent, DDAIAgent, FullDAIAgent
 from functools import wraps
 
 # List of colors
@@ -408,8 +408,8 @@ class TigerBrain():
             agent_class = ValueLearningAgent
         elif kwargs['agent'] == 'DAI':
             agent_class = DAIAgent
-        elif kwargs['agent'] == 'DAI_SE':
-            agent_class = DAIAgent_SE
+        elif kwargs['agent'] == 'DDAI':
+            agent_class = DDAIAgent
         elif kwargs['agent'] == 'FULL_DAI':
             agent_class = FullDAIAgent
         else:
