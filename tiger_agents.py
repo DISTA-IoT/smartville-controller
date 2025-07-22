@@ -201,52 +201,50 @@ class FullDAIAgent:
         action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
-
-
+        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
+        next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
+        transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
+            
         targets = rewards.clone()
-        perceptive_epistemic_gains = torch.zeros_like(rewards)
+        active_epistemic_gains = torch.zeros_like(rewards)
+        
+        # Vectorized computation of active epistemic gain
+        with torch.no_grad():
+            action_probs_prior =self.policynet(states)   # [B, A]
+
+            # Compute transition log-likelihoods for ALL actions
+            action_onehots_all = torch.eye(self.action_size)  # [A, A]
+            expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
+            expanded_states = proprioceptive_states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
+            transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
+            predicted_nexts = self.transitionnet(transition_inputs) # [B*A, S']
+        
+            # Compute log P(o_next | o_current, a)
+            log_likelihoods = -F.mse_loss(
+                predicted_nexts, 
+                next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
+                reduction='none'
+            ).sum(dim=1).view(self.replay_batch_size, self.action_size)  # [B, A]
+            
+            # Bayes' rule: Q(a|s,s') ∝ P(s'|s,a) * Q(a|s)
+            log_posterior = log_likelihoods + torch.log(action_probs_prior + 1e-8)
+            action_probs_posterior = torch.softmax(log_posterior, dim=1)
+
+            # KL divergence: Σ posterior * log(posterior/prior)
+            kl_div = (action_probs_posterior * 
+                    (torch.log(action_probs_posterior + 1e-8) - 
+                    torch.log(action_probs_prior + 1e-8))
+                    ).sum(dim=1, keepdim=True)  # [B, 1]
+            
+            # active epistemic gain
+            active_epistemic_gains = kl_div
+
+        targets += self.epistemic_regularisation_factor * active_epistemic_gains
 
         
-        # Train transition model
-        if self.transitionnet is not None:
-            self.transitionnet.train()
-            proprioceptive_states = states[:, -self.proprioceptive_state_size:]
-            next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
-            transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
-            
-            if self.variational_t_model:
-                estimated_next_proprioceptive_states, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
-
-                if self.variational_variational_transition_loss:
-                    # Use means for deterministic target comparison
-                    reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
-                    # KL divergence to standard normal
-                    kl_div = 0.5 * torch.sum(
-                        l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
-                        dim=1
-                    ).mean()
-                    transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                    if self.wbl: 
-                        self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
-                        self.wbl.log({'state kl_div': kl_div.item()}, step=step)
-                else:
-                    transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
-            else:
-                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
-
-            self.transitionnet_optimizer.zero_grad()
-            transition_loss.backward()
-            self.transitionnet_optimizer.step()
-
-            if self.wbl: self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
-
-        #
-        # train the value network:
-        #
-
-        if self.transitionnet is not None:
-            self.transitionnet.eval()
+        perceptive_epistemic_gains = torch.zeros_like(rewards)
+            # Vectorized computation of active epistemic gain
+        with torch.no_grad():
             # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
             # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
             # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
@@ -296,6 +294,8 @@ class FullDAIAgent:
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
             self.wbl.log({'epistemic_gain': perceptive_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({'active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
+
 
 class DAIAgent:
     def __init__(self, kwargs):
