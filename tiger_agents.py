@@ -226,7 +226,7 @@ class FullDAIAgent:
         policy_probabilities = self.policynet(states) 
 
         if self.surrogate_policy_consistency:
-            policy_consistency = -0.5 * torch.sum((policy_probabilities - action_onehots) ** 2).sum(dim=1).mean()
+            policy_consistency = -0.5 * ((policy_probabilities - action_onehots) ** 2).sum(dim=1).mean()
         else:
             # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
             # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
