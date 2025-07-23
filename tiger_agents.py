@@ -773,6 +773,171 @@ class DDAIAgent:
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
             
 
+
+class DAIAgent_SE:
+    def __init__(self, kwargs):
+        
+        self.wbl = kwargs['wbl']
+        self.action_size = kwargs['action_size']
+        self.neg_efe_net = NEFENet(kwargs)
+        self.target_neg_efe_net = NEFENet(kwargs)
+        self.update_target_model()
+        self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
+        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
+        
+        self.transitionnet = None
+        self.transitionnet_optimizer = None
+        self.variational_t_model = kwargs['variational_tmodel']
+
+        if kwargs['use_transition_model']:
+
+            state_size = kwargs['state_size']
+            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+            self.proprioceptive_state_size = state_size - hidden_state_size
+            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+
+            if self.variational_t_model:
+                self.transitionnet = VariationalTransitionNet(kwargs)
+                self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
+                self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
+            else:
+                self.transitionnet = TransitionNet(kwargs)
+                
+            self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
+
+        self.policynet = PolicyNet(kwargs)
+        self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
+        self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
+        self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
+
+        self.memory_size = kwargs['agent_memory_size']
+        self.memory = deque(maxlen=self.memory_size)
+        self.sequential_memory_size = kwargs['actor_train_interval_steps']
+        self.reset_sequential_memory()
+        self.replay_batch_size = kwargs['replay_batch_size']
+
+        self.value_loss_fn = nn.MSELoss(reduction='sum')
+        self.state_loss_fn = nn.MSELoss(reduction='sum')
+        
+
+    def reset_sequential_memory(self):
+        self.sequential_memory = deque(maxlen=self.sequential_memory_size)
+
+    def update_target_model(self):
+        self.target_neg_efe_net.load_state_dict(self.neg_efe_net.state_dict())
+
+
+    def remember(self, state, action, reward, next_state, done, step):
+        state_to_memorise = state.detach().clone()
+        # print(id(state_to_memorise.untyped_storage()))
+        next_state_to_memorise = next_state.detach().clone()
+        # print(id(next_state_to_memorise.untyped_storage()))
+        self.memory.append((
+            state_to_memorise, 
+            action, 
+            reward, 
+            next_state_to_memorise,
+            done))
+        self.sequential_memory.append(state_to_memorise)
+        if len(self.sequential_memory) == self.sequential_memory_size:
+            self.train_actor(step)
+
+    
+    def act(self, state):
+        with torch.no_grad():
+            """
+            action_probs = self.policynet(state).squeeze()
+            """
+            
+            neg_efe = self.neg_efe_net(state)
+            log_action_probs = torch.log_softmax(
+                self.temperature_for_action_sampling * neg_efe,
+                dim=-1).squeeze()
+            action_probs = log_action_probs.exp()
+        
+            # sample from a categorical distribution 
+            m = distributions.Categorical(action_probs)
+            action = m.sample().item()
+
+        return action
+    
+
+    def train_actor(self, step):
+        self.reset_sequential_memory()
+
+
+    def replay(self, step):
+
+        if len(self.memory) < self.replay_batch_size:
+            return
+
+        self.neg_efe_net.eval()
+        self.target_neg_efe_net.eval()
+        if self.transitionnet is not None: self.transitionnet.eval()
+
+        # Unpack minibatch
+        minibatch = random.sample(self.memory, self.replay_batch_size)
+        states, actions, rewards, next_states, dones = zip(*minibatch)
+
+        states = torch.stack(states)
+        next_states = torch.stack(next_states)
+        actions = torch.tensor(actions, dtype=torch.long)
+        action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
+        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
+
+
+        targets = rewards.clone()
+        surrogate_active_epistemic_gains = torch.zeros_like(rewards)
+         
+
+        predicted_actions =self.policynet(states).detach()
+
+        surrogate_active_epistemic_gains = torch.sum(
+                (predicted_actions - action_onehots) ** 2,
+                dim=1,
+                keepdim=True)
+
+        targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains.detach()
+
+
+        with torch.no_grad():
+            # Action selection from online model
+            estimated_neg_efe_values = self.neg_efe_net(states).detach()
+            efe_actions = torch.log_softmax(
+                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
+            next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+
+            targets -=(~dones) * 0.99 * next_efe_values
+
+        # Prepare targets for all actions
+        target_neg_efes = self.neg_efe_net(states).detach()
+        target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
+
+
+        # train the EFE value network (critic)
+        self.neg_efe_net.train()
+        predicted_values = self.neg_efe_net(states)
+        value_loss = self.value_loss_fn(predicted_values, target_neg_efes)
+        self.efe_net_optimizer.zero_grad()
+        value_loss.backward()
+        self.efe_net_optimizer.step()
+    
+
+        # train the policy network:
+        self.policynet.train()
+        predicted_actions = self.policynet(states)
+        policy_loss = torch.sum((predicted_actions - action_onehots) ** 2)
+        self.policynet_optimizer.zero_grad()
+        policy_loss.backward()
+        self.policynet_optimizer.step()
+
+        if self.wbl: 
+            self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
+            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step)
+            self.wbl.log({'value_loss': value_loss.item()}, step=step)
+
+
 class ValueLearningAgent:
 
     def __init__(self, kwargs):
