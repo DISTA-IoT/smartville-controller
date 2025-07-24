@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torch.distributions as distributions
 
 
-class FullDAIAgent:
+class DAIF_Agent:
     def __init__(self, kwargs):
         
         self.wbl = kwargs['wbl']
@@ -284,7 +284,7 @@ class FullDAIAgent:
             self.wbl.log({'vfe': vfe.item()}, step=step)
 
 
-class DAIAgent:
+class DAIP_Agent:
     def __init__(self, kwargs):
         
         self.wbl = kwargs['wbl']
@@ -550,10 +550,9 @@ class DAIAgent:
         if self.wbl: 
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+       
 
-        
-
-class DDAIAgent:
+class DAIA_Agent:
     def __init__(self, kwargs):
         
         self.wbl = kwargs['wbl']
@@ -775,10 +774,9 @@ class DDAIAgent:
             self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
-            
+            self.wbl.log({'active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
 
-
-class DAIAgent_SE:
+class DAISA_Agent:
     def __init__(self, kwargs):
         
         self.wbl = kwargs['wbl']
@@ -940,10 +938,14 @@ class DAIAgent_SE:
             self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step)
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
-
+            self.wbl.log({'active_epistemic_gain': surrogate_active_epistemic_gains.mean().item()}, step=step)
 
 class ValueLearningAgent:
-
+    """
+    Note this fella uses episoln greedy exploration. To use a Boltzmann exploration policy, use the
+    DAIP_Agent with no transition model or with 0 epistemic reg factor, (or with both these conditions)...
+    AND OVBIOUSLY without using the policy to act. I.E. the use_critic_to_act flag must be TRUE.
+    """
     def __init__(self, kwargs):
         self.wbl = kwargs['wbl']
         self.state_size = kwargs['state_size']
