@@ -23,12 +23,12 @@ class FullDAIAgent:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
+        state_size = kwargs['state_size']
+        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        self.proprioceptive_state_size = state_size - hidden_state_size
+        kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+        
         if kwargs['use_transition_model']:
-
-            state_size = kwargs['state_size']
-            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
-            self.proprioceptive_state_size = state_size - hidden_state_size
-            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs)
@@ -299,12 +299,12 @@ class DAIAgent:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
+        state_size = kwargs['state_size']
+        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        self.proprioceptive_state_size = state_size - hidden_state_size
+        kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+        
         if kwargs['use_transition_model']:
-
-            state_size = kwargs['state_size']
-            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
-            self.proprioceptive_state_size = state_size - hidden_state_size
-            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs)
@@ -568,12 +568,12 @@ class DDAIAgent:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
+        state_size = kwargs['state_size']
+        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        self.proprioceptive_state_size = state_size - hidden_state_size
+        kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+        
         if kwargs['use_transition_model']:
-
-            state_size = kwargs['state_size']
-            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
-            self.proprioceptive_state_size = state_size - hidden_state_size
-            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs)
@@ -793,12 +793,12 @@ class DAIAgent_SE:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
+        state_size = kwargs['state_size']
+        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        self.proprioceptive_state_size = state_size - hidden_state_size
+        kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
+        
         if kwargs['use_transition_model']:
-
-            state_size = kwargs['state_size']
-            hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
-            self.proprioceptive_state_size = state_size - hidden_state_size
-            kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs)
