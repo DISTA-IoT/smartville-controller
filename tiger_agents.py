@@ -392,7 +392,11 @@ class DAIAgent:
         - So we focus in  The last term in paper's eq (6) is E_{Q(s)}[KL[Q(a|s)||p(a|s)], which is itself divided into two terms:
             in eq. (7)
         """
-
+        if self.use_critic_to_act:
+            # If we are using the critic to act, we do not train the actor
+            self.reset_sequential_memory()
+            return
+        
         self.neg_efe_net.eval()
 
         vfe = 0
@@ -465,7 +469,7 @@ class DAIAgent:
         epistemic_gains = torch.zeros_like(rewards)
         
         # Vectorized computation of perceptive epistemic gain
-        if self.transitionnet is not None:
+        if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
             transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
             
             # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
@@ -513,7 +517,7 @@ class DAIAgent:
         self.efe_net_optimizer.step()
     
         # Train transition model
-        if self.transitionnet is not None:
+        if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
             self.transitionnet.train()
             if self.variational_t_model:
                 estimated_next_proprioceptive_states, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
