@@ -427,7 +427,59 @@ class TransitionNet(nn.Module):
         x_res = self.act(x_res)
         x_res = self.fc2(x_res)
         
-        return x_res
+        return x_res    
+
+
+
+class NewTransitionNet(nn.Module):
+
+    def __init__(
+            self,
+            kwargs):
+        super(NewTransitionNet, self).__init__()
+        
+        self.action_size = kwargs['action_size']
+        self.proprioceptive_state_size = kwargs['proprioceptive_state_size']
+        self.state_size = kwargs['state_size']
+
+        self.transition_input_size = kwargs['state_size'] + kwargs['action_size']
+        self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
+
+
+        self.action_stream_fc1 = nn.Linear(self.action_size, kwargs['h_dim']//4)
+        self.action_stream_fc2 = nn.Linear(kwargs['h_dim']//4, kwargs['h_dim']//8)
+
+        self.exteroceptive_state_stream_fc1 = nn.Linear(kwargs['state_size'] - self.proprioceptive_state_size, kwargs['h_dim']// 4)
+        self.exteroceptive_state_stream_fc2 = nn.Linear(kwargs['h_dim'] // 4, kwargs['h_dim']// 8)
+
+        self.final_fc_1 = nn.Linear(kwargs['h_dim'] // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
+        self.final_fc_2 = nn.Linear(self.proprioceptive_state_size, self.proprioceptive_state_size)
+
+    def forward(self, x):
+        
+        # compatibility with batch processing
+        if len(x.shape) < 2:
+            x = x.unsqueeze(0)
+        
+        action_part = x[:,-self.action_size:]
+        state_part = x[:,:-self.action_size]
+        exteroceptive_state_part = state_part[:,:-self.proprioceptive_state_size]
+        proprioceptive_state_part = state_part[:,-self.proprioceptive_state_size:]
+
+        action_part = self.act(self.action_stream_fc1(action_part))
+        action_part = self.act(self.action_stream_fc2(action_part))
+
+        exteroceptive_state_part = self.act(self.exteroceptive_state_stream_fc1(exteroceptive_state_part))
+        exteroceptive_state_part = self.act(self.exteroceptive_state_stream_fc2(exteroceptive_state_part))
+
+        x_res = torch.cat([action_part, exteroceptive_state_part, proprioceptive_state_part], dim=1)
+
+        x_res = self.act(self.final_fc_1(x_res))
+        x_res = self.act(self.final_fc_2(x_res))
+
+        output = proprioceptive_state_part + x_res
+        
+        return output
 
 
 class VariationalTransitionNet(nn.Module):

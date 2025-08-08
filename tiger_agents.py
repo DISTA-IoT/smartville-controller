@@ -1,4 +1,4 @@
-from smartController.neural_modules import DQN, PolicyNet, NEFENet, TransitionNet, VariationalTransitionNet
+from smartController.neural_modules import DQN, PolicyNet, NEFENet, TransitionNet, VariationalTransitionNet, NewTransitionNet
 import torch.optim as optim
 from collections import deque
 import torch
@@ -35,7 +35,7 @@ class DAIF_Agent:
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
                 self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
-                self.transitionnet = TransitionNet(kwargs)
+                self.transitionnet = NewTransitionNet(kwargs)
                 
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
@@ -132,7 +132,7 @@ class DAIF_Agent:
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
         proprioceptive_states = states[:, -self.proprioceptive_state_size:]
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
-        transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
+        transition_inputs = torch.cat([states, action_onehots], dim=1)
             
         targets = rewards.clone()
         active_epistemic_gains = torch.zeros_like(rewards)
@@ -144,7 +144,7 @@ class DAIF_Agent:
             # Compute transition log-likelihoods for ALL actions
             action_onehots_all = torch.eye(self.action_size)  # [A, A]
             expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
-            expanded_states = proprioceptive_states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
+            expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
             expanded_transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
             predicted_nexts = self.transitionnet(expanded_transition_inputs) # [B*A, S']
         
