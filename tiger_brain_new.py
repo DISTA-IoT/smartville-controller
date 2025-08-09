@@ -1132,7 +1132,7 @@ class TigerBrain():
         2. acquire a TCI label  (epistemic action)
         """
 
-        self.cs_classif_confidence = torch.zeros(1)
+        self.cs_classif_confidence = torch.zeros(1, requires_grad=False)
         self.zda_confidence = torch.zeros(1)
         
         cs_acc = torch.ones(1)
