@@ -311,7 +311,7 @@ class DAIP_Agent:
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
                 self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
-                self.transitionnet = TransitionNet(kwargs)
+                self.transitionnet = NewTransitionNet(kwargs)
                 
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
@@ -470,7 +470,7 @@ class DAIP_Agent:
         
         # Vectorized computation of perceptive epistemic gain
         if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
-            transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
+            transition_inputs = torch.cat([states, action_onehots], dim=1)
             
             # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
             # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
