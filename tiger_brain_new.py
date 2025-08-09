@@ -1132,7 +1132,7 @@ class TigerBrain():
         2. acquire a TCI label  (epistemic action)
         """
 
-        self.cs_classif_confidence = torch.zeros(1, requires_grad=False)
+        self.cs_classif_confidence = torch.zeros(1)
         self.zda_confidence = torch.zeros(1)
         
         cs_acc = torch.ones(1)
@@ -1356,9 +1356,9 @@ class TigerBrain():
         
         # the state vectors are gonna be composed of the hidden centroids + broadcasted scalars.
         broadcasted_num_of_anomalies = torch.Tensor([num_of_anomalies] * centroids.shape[0])
-        broadcasted_zda_confidence = torch.Tensor([self.zda_confidence] * centroids.shape[0])
+        broadcasted_zda_confidence = torch.Tensor([self.zda_confidence.detach()] * centroids.shape[0])
         bc_num_of_known_samples = torch.Tensor([number_of_known_samples_in_batch] * centroids.shape[0])
-        bc_classif_conf = torch.Tensor([self.cs_classif_confidence] * centroids.shape[0])
+        bc_classif_conf = torch.Tensor([self.cs_classif_confidence.detach()] * centroids.shape[0])
         broadcasted_eaa = torch.Tensor([self.env.epistemic_actions_available] * centroids.shape[0])
         broadcasted_budget = torch.Tensor([curr_budget] * centroids.shape[0])
 
