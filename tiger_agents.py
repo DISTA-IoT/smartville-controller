@@ -579,7 +579,7 @@ class DAIA_Agent:
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
                 self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
-                self.transitionnet = TransitionNet(kwargs)
+                self.transitionnet = NewTransitionNet(kwargs)
                 
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
@@ -655,7 +655,7 @@ class DAIA_Agent:
         efe_actions = torch.log_softmax(
             self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(dim=1)[1]
         action_onehots = torch.nn.functional.one_hot(efe_actions, self.action_size).float()
-        transition_inputs = torch.cat([proprioceptive_states, action_onehots], dim=1)
+        transition_inputs = torch.cat([states, action_onehots], dim=1)
 
         self.transitionnet.train()
         predicted_observations = self.transitionnet(transition_inputs)
@@ -713,7 +713,7 @@ class DAIA_Agent:
             # Compute transition log-likelihoods for ALL actions
             action_onehots_all = torch.eye(self.action_size)  # [A, A]
             expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
-            expanded_states = proprioceptive_states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
+            expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
             transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
             predicted_nexts = self.transitionnet(transition_inputs) # [B*A, S']
         
