@@ -634,8 +634,7 @@ class TigerBrain():
             flow_input_batch, 
             packet_input_batch,
             node_feat_input_batch,
-            batch_labels,
-            mode):
+            batch_labels):
         """
         Don't know why, but you can have more than one sample
         per class in inference time. 
@@ -755,7 +754,7 @@ class TigerBrain():
             zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
 
             # using the inference module to classify anomalies. 
-            _, ad_acc = self.zda_classification_step(
+            self.zda_classification_step(
                 zda_labels=batch.zda_labels[query_mask], 
                 zda_predictions=zda_predictions,
                 accuracy_mask=accuracy_mask[query_mask],
@@ -765,9 +764,8 @@ class TigerBrain():
             # assuming a perfect anomaly detector (just for eval purposes, not learning from this experience tuple)
             zda_predictions = batch.zda_labels[query_mask].squeeze(-1) 
             predicted_zda_mask = zda_predictions.to(torch.bool)
-            ad_acc = torch.ones(1)
 
-        return ad_acc, zda_predictions, predicted_zda_mask
+        return zda_predictions, predicted_zda_mask
     
 
     def prepare_online_batch(self, online_batch):
@@ -793,7 +791,14 @@ class TigerBrain():
             return merged_batch, merged_query_mask, accuracy_mask
     
 
-    def evaluate_cs_inference(self, merged_batch, logits, predicted_online_zda_mask, num_of_online_samples, number_of_predicted_known_samples):
+    def evaluate_cs_inference(
+            self, 
+            merged_batch, 
+            logits, 
+            predicted_online_zda_mask, 
+            num_of_online_samples, 
+            number_of_predicted_known_samples):
+        
         # CLASSIFICATION OF KNOWN TRAFFIC: 
         # rewards need to be given if classification is good, (as if we were accepting/blocking stuff...)
         # notice we select only traffic classified as known using the inverse of the anomaly-classified mask
@@ -804,7 +809,7 @@ class TigerBrain():
         known_correct_classification_mask = online_class_labels == online_class_preds
 
         # classif. accuracy (only for reporting purposes) 
-        cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
+        # cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
 
         #
         # Computing confidence on known-class classification:
@@ -819,13 +824,16 @@ class TigerBrain():
         # 
         # Conf. of multiclass classification: 
         # we compute the ratio of the average max logits with those of the other logits:  
-        non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
-        non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
-        mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
-        mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
-        self.cs_classif_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values)
-
-        return cs_acc, known_correct_classification_mask
+        if number_of_predicted_known_samples == 0:
+            self.cs_classif_confidence = torch.ones(1) * 10 # high enough value, and it avoids nans
+        else:
+            non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
+            non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
+            mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
+            mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
+            self.cs_classif_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
+            
+        return known_correct_classification_mask
 
 
     def evaluate_zda_confidence(self, zda_predictions, predicted_online_zda_mask, num_of_online_samples):
@@ -872,12 +880,12 @@ class TigerBrain():
         # create an empty centroid:
         empty_state_vec = -1*torch.ones(1, hidden_vectors.shape[1])
         # add the proprioceptive info:
-        state_vec = self.assembly_state_vectors(
+        state_vec = self.assembly_state_vector(
             empty_state_vec,
             num_of_predicted_anomalies,
             number_of_predicted_known_samples,
             self.env.current_budget
-            )[0]
+            )
 
         if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == True:
             # we just accept the known traffic (for the ACID paper)
@@ -916,10 +924,11 @@ class TigerBrain():
         
 
         if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == False: 
-            
+            # the next state is quite similar to the previous
             new_state = state_vec.detach().clone()
             # but changing the current budget: 
             new_state[-1] = self.env.current_budget 
+            # notice we do not edit the available CTI flag cuz it is not possible to buy CTI in this step
             # an episode ends if the budget ends... 
             end_signal = torch.tensor([self.env.has_episode_ended(self.step_counter)], dtype=torch.long)
             # store the experience tuple:          
@@ -965,7 +974,7 @@ class TigerBrain():
 
         if self.use_neural_KR:
             # use inference modules for clustering...
-            _, predicted_decimal_clusters, kr_precision = self.kernel_regression_evaluation(
+            _, predicted_decimal_clusters, _ = self.kernel_regression_evaluation(
                 predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:], 
                 one_hot_labels[-num_of_online_samples:],
                 INFERENCE)
@@ -990,7 +999,7 @@ class TigerBrain():
             hidden_vectors[-num_of_online_samples:][predicted_online_zda_mask], 
             predicted_clusters_oh.to(torch.float32))
 
-        return predicted_clusters_oh, centroids, missing_clusters, kr_precision
+        return predicted_clusters_oh, centroids, missing_clusters
     
     
     def act_on_unknown_clusters(
@@ -1004,84 +1013,84 @@ class TigerBrain():
             sample_rewards
             ):
 
+        num_of_identified_clusters = centroids[~missing_clusters].shape[0]
 
-        state_vecs = self.assembly_state_vectors(
-            centroids[~missing_clusters],
-            num_of_predicted_anomalies,
-            number_of_predicted_known_samples,
-            self.env.current_budget)
-
-        action_per_cluster = []
-
-        for state_vec in state_vecs:
-            # decide if blocking or accepting each unknown...
-            action_per_cluster.append(self.act(state_vec))
-
-        cluster_action_signals = torch.hstack(action_per_cluster)
-        
-        rewards_per_cluster = torch.zeros_like(cluster_action_signals).float()
-        epistemic_costs = torch.zeros_like(cluster_action_signals).float()
         # get the potential rewards per cluster 
         # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
         # Notice the reward takes into account intersections with good and bad samples
         rewards_per_clusters_if_accepted = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
-
-        # get the cluster_passing_mask:
-        if self.intrusion_detection_kwargs['epistemic_is_blocking']:
-            cluster_passing_mask = cluster_action_signals == 0
-        else:
-            cluster_passing_mask = torch.logical_or(cluster_action_signals == 0,cluster_action_signals == 2)
-
         # get the cluster-specific passing rewards
-        # we take only the penalties, cuz if we take positive rewards here, we may want to never but CTI labels.
-        rewards_per_clusters_if_accepted = -torch.relu(-rewards_per_clusters_if_accepted)
-
-        if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-            rewards_per_accepted_clusters = rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
-        elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-            rewards_per_accepted_clusters = self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * rewards_per_clusters_if_accepted[~missing_clusters] *  cluster_passing_mask
-        
-        rewards_per_cluster += rewards_per_accepted_clusters
+        # we take only the penalties, cuz if we take positive rewards here, we may never want to but CTI labels.
+        cost_per_clusters_if_accepted = -torch.relu(-rewards_per_clusters_if_accepted)
 
         # benign traffic mask:
         benign_rewards = torch.relu(sample_rewards[predicted_online_zda_mask]) 
-
         # potential benign rewards in each cluster  (this is gonna be useful to penalize blocking good stuff)
         benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
-        # blocked benign traffic implies to pay a cost:
-        if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-            benign_blocking_cost_per_cluster = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long)) 
-        elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-            benign_blocking_cost_per_cluster = self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters] * (1 - cluster_passing_mask.to(torch.long))
-        
-        # subtract the price of neglecting benign traffic
-        rewards_per_cluster -= benign_blocking_cost_per_cluster
+        for centroid_idx, centroid in enumerate(centroids[~missing_clusters]):
+            
+            accepted_cluster = False
+            epistemic_action = False
 
-        # get the epistemic action mask:
-        purchased_mask = cluster_action_signals == 2 
+            state_vec = self.assembly_state_vector(
+                centroid.unsqueeze(0),
+                num_of_predicted_anomalies,
+                number_of_predicted_known_samples,
+                self.env.current_budget)
 
-        # perform epistemic action 
-        for epistemic_action_index in purchased_mask.nonzero():
-        
-            # get information about the change in the curriculum
-            updates_dict = self.perform_epistemic_action()
-            # you'll pay the price of aqcuiring a TCI label:
-            epistemic_costs[epistemic_action_index] -= updates_dict['price_payed']
-            rewards_per_cluster[epistemic_action_index] -= updates_dict['price_payed']
+            # decide if blocking or accepting each unknown...
+            action = self.act(state_vec)
 
+            current_reward = 0
 
-        # collect experience tuples for training:
-        for idx, (state, action, reward) in enumerate(zip(
-                state_vecs, 
-                cluster_action_signals,
-                rewards_per_cluster)):
+            if action == 0:
+                accepted_cluster = True
+            elif action == 2:
+                epistemic_action = True
+                accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
+
+            if accepted_cluster: 
+                # take the cost of accepting bad instances:
+                cost_of_accepting = cost_per_clusters_if_accepted[~missing_clusters][centroid_idx]
+                if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
+                    current_reward += cost_of_accepting
+                elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
+                    current_reward += self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * cost_of_accepting
+                
+            else:   # block the cluster
+                # blocked benign traffic implies to pay a cost:
+                cost_of_blocking = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters][centroid_idx]
+                if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
+                    current_reward -=  cost_of_blocking
+                elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
+                    current_reward -= self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * cost_of_blocking
+            
+            if epistemic_action:
+                # cti action
+                # get information about the change in the curriculum
+                updates_dict = self.perform_epistemic_action() # updates the CTI flag that forms part of the proprioceptive state
+                cost_of_epistemic_action = updates_dict['price_payed']
+                current_reward -= cost_of_epistemic_action
+
 
             # update the budget:
-            self.env.current_budget += reward
+            self.env.current_budget += current_reward
             
             # Approx. next-state as before:
-            next_state = state.detach().clone()
+            next_state = state_vec.detach().clone()
+            
+            # uptare the exteroceptive part:
+            if centroid_idx < num_of_identified_clusters -1:
+                next_state[:-6] = centroids[~missing_clusters][centroid_idx+1]
+            else:
+                next_state[:-6] = -1 * torch.ones_like(next_state[:-6])
+            
+
+            # update the proprioceptive part:
+            # update the cti flag:
+            next_state[-2] = self.env.epistemic_actions_available
+            # update the budget in the state vec:
             next_state[-1] = self.env.current_budget
 
             # advance the game steps:
@@ -1092,28 +1101,28 @@ class TigerBrain():
             end_signal = torch.tensor([self.env.has_episode_ended(self.step_counter)], dtype=torch.long)
 
             self.mitigation_agent.remember(
-                    state.detach(),
+                    state_vec.detach(),
                     action,
-                    reward,
+                    current_reward,
                     next_state,
                     end_signal,
                     self.step_counter
             )
 
             # for keeping track of episode-stats:
-            self.env.episode_rewards.append(reward.item())
+            self.env.episode_rewards.append(current_reward.item())
             self.env.episode_budgets.append(self.env.current_budget)
 
             # reporting
             if self.wbt:
                 self.wbl.log({
-                    AGENT+'_'+'reward': reward,
+                    AGENT+'_'+'reward': current_reward.item(),
                     AGENT+'_'+'budget': self.env.current_budget,
-                    'clustering_reward': reward,
-                    'Epistemic Actions taken': int(purchased_mask[idx].item()),
-                    'epistemic_costs': epistemic_costs[idx].item(),
-                    'rewards_per_accepted_clusters':rewards_per_accepted_clusters[idx].item(),
-                    'rewards_per_blocked_clusters':-benign_blocking_cost_per_cluster[idx].item(),
+                    'clustering_reward': current_reward.item(),
+                    'Epistemic Actions taken': int(epistemic_action),
+                    'epistemic_costs': (current_reward if epistemic_action else 0),
+                    'rewards_per_accepted_clusters': (current_reward if accepted_cluster else 0),
+                    'rewards_per_blocked_clusters': (current_reward if not accepted_cluster else 0),
                 },step=self.step_counter)
 
             
@@ -1135,10 +1144,6 @@ class TigerBrain():
         self.cs_classif_confidence = torch.zeros(1)
         self.zda_confidence = torch.zeros(1)
         
-        cs_acc = torch.ones(1)
-        ad_acc = torch.ones(1)
-        kr_precision = torch.ones(1)
-        
         # do not run gradients on the inference modules!
         self.classifier.eval()
         self.confidence_decoder.eval()
@@ -1155,7 +1160,7 @@ class TigerBrain():
         one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
 
         # (Individual) Anomaly detection:    
-        ad_acc, zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
+        zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
             batch=merged_batch,
             logits=logits,
             one_hot_labels=one_hot_labels,
@@ -1179,16 +1184,22 @@ class TigerBrain():
         # sample-specific rewards:
         sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])
 
+        # even if we have zero anomalies, we need the confidence of these inferences.
+        self.evaluate_zda_confidence(
+            zda_predictions, 
+            predicted_online_zda_mask, 
+            num_of_online_samples
+        )
 
-        if number_of_predicted_known_samples > 0:
-
-            cs_acc, cs_correct_classif_mask = self.evaluate_cs_inference(
+        cs_correct_classif_mask = self.evaluate_cs_inference(
                 merged_batch, 
                 logits, 
                 predicted_online_zda_mask, 
                 num_of_online_samples, 
                 number_of_predicted_known_samples
                 )
+
+        if number_of_predicted_known_samples > 0:
 
             self.act_on_known_traffic(
                 num_of_predicted_anomalies, 
@@ -1199,16 +1210,11 @@ class TigerBrain():
                 sample_rewards
                 )
             
-        self.evaluate_zda_confidence(
-            zda_predictions, 
-            predicted_online_zda_mask, 
-            num_of_online_samples
-        )
 
         # Anomaly clustering is going to be done only if there are predicted anomalies.
         if num_of_predicted_anomalies > 0:
 
-            predicted_clusters_oh, centroids, missing_clusters, kr_precision = self.collective_anomaly_detection( 
+            predicted_clusters_oh, centroids, missing_clusters = self.collective_anomaly_detection( 
                 merged_batch,
                 predicted_kernel, 
                 one_hot_labels, 
@@ -1231,12 +1237,7 @@ class TigerBrain():
         self.mitigation_agent.replay(self.step_counter)     
 
         if self.AI_DEBUG: 
-            self.logger_instance.info(# f'\nOnline {INFERENCE} AD accuracy: {ad_acc.item()} \n'+\
-                                      # f'Online {INFERENCE} CS accuracy: {cs_acc.item()} \n'+\
-                                        f'Online {INFERENCE} current budget: {self.env.current_budget} \n'+\
-                                      # f'Online {INFERENCE} KR accuracy: {kr_precision}'
-                                      ''
-                                      )
+            self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
         if self.wbt:
             self.wbl.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
@@ -1347,34 +1348,26 @@ class TigerBrain():
         return centroids, missing_clusters
 
 
-    def assembly_state_vectors(
+    def assembly_state_vector(
             self, 
-            centroids, 
+            centroid, 
             num_of_anomalies, 
             number_of_known_samples_in_batch, 
             curr_budget):
-        
-        # the state vectors are gonna be composed of the hidden centroids + broadcasted scalars.
-        broadcasted_num_of_anomalies = torch.Tensor([num_of_anomalies] * centroids.shape[0])
-        broadcasted_zda_confidence = torch.Tensor([self.zda_confidence.detach()] * centroids.shape[0])
-        bc_num_of_known_samples = torch.Tensor([number_of_known_samples_in_batch] * centroids.shape[0])
-        bc_classif_conf = torch.Tensor([self.cs_classif_confidence.detach()] * centroids.shape[0])
-        broadcasted_eaa = torch.Tensor([self.env.epistemic_actions_available] * centroids.shape[0])
-        broadcasted_budget = torch.Tensor([curr_budget] * centroids.shape[0])
 
         # get state vectors
-        state_vecs = torch.hstack(
-           [centroids, 
-            broadcasted_num_of_anomalies.unsqueeze(-1),
-            broadcasted_zda_confidence.unsqueeze(-1),
-            bc_num_of_known_samples.unsqueeze(-1),
-            bc_classif_conf.unsqueeze(-1),
-            broadcasted_eaa.unsqueeze(-1),
-            broadcasted_budget.unsqueeze(-1)]
-            )
+        state_vec = torch.hstack(
+           [centroid, 
+            torch.Tensor([num_of_anomalies]).unsqueeze(-1),
+            self.zda_confidence.detach().unsqueeze(-1),
+            torch.Tensor([number_of_known_samples_in_batch]).unsqueeze(-1),
+            self.cs_classif_confidence.detach().unsqueeze(-1),
+            torch.Tensor([self.env.epistemic_actions_available]).unsqueeze(-1),
+            torch.Tensor([curr_budget]).unsqueeze(-1)]
+            ).squeeze(0)
 
-        return state_vecs
-   
+        return state_vec
+    
     def act(
             self, 
             state_vec):
@@ -1392,14 +1385,12 @@ class TigerBrain():
         if len(flows) > 0:
             
             batch = self.assembly_input_tensor(flows, node_feats)
-            mode=(TRAINING if random.random() > 0.4 else INFERENCE)
   
             self.push_to_replay_buffers(
                 batch.flow_features, 
                 (batch.packet_features if self.use_packet_feats else None),
                 (batch.node_features if self.use_node_feats else None),  
-                batch_labels=batch.class_labels,
-                mode=mode)
+                batch_labels=batch.class_labels)
 
             # this fella could be toogling because of a new class arriving... 
             with self._lock:
