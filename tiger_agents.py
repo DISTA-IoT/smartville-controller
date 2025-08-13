@@ -1040,7 +1040,7 @@ class ValueLearningAgent:
         self.optimizer.step()
 
         # Log
-        self.wbl.log({'value_loss': loss.item()}, step=step)
+        if self.wbl: self.wbl.log({'value_loss': loss.item()}, step=step)
 
         # Epsilon decay
         if self.epsilon > self.epsilon_min:
