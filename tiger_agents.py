@@ -129,7 +129,6 @@ class DAIF_Agent:
         action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
-        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
         transition_inputs = torch.cat([states, action_onehots], dim=1)
             
