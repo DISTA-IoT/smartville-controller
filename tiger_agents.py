@@ -226,16 +226,20 @@ class DAIF_Agent:
 
         # The following corresponds Q(a_t | s_t) in eq. (6) 
         policy_probabilities = self.policynet(states) 
-
-        # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
-        # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
-        estimated_neg_efe_values = self.neg_efe_net(states).detach()
-        efe_actions = torch.log_softmax(
-            self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
         
         if self.surrogate_policy_consistency:
-            policy_consistency = -0.5 * ((policy_probabilities - efe_actions) ** 2).sum(dim=1).mean()
+            with torch.no_grad():
+                target_policy = torch.softmax(
+                    self.temperature_for_action_sampling * self.neg_efe_net(states), dim=1
+                )
+            policy_consistency = -0.5 * ((policy_probabilities - target_policy) ** 2).sum(dim=1).mean()
         else:
+            # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
+            # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
+            with torch.no_grad():
+                estimated_neg_efe_values = self.neg_efe_net(states)
+                efe_actions = torch.log_softmax(
+                    self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
             # The following loc corresponds to the first term in eq (7), i.e.:
             # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
             # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
