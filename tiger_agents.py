@@ -700,7 +700,6 @@ class DAIA_Agent:
         states = torch.stack(states)
         next_states = torch.stack(next_states)
         actions = torch.tensor(actions, dtype=torch.long)
-        action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
@@ -774,7 +773,7 @@ class DAIA_Agent:
         # train the policy network:
         self.policynet.train()
         predicted_actions = self.policynet(states)
-        policy_loss = torch.sum((predicted_actions - action_onehots) ** 2)
+        policy_loss = torch.sum((predicted_actions - efe_actions.exp()) ** 2)
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
@@ -921,7 +920,7 @@ class DAISA_Agent:
         # train the policy network:
         self.policynet.train()
         predicted_actions = self.policynet(states)
-        policy_loss = torch.sum((predicted_actions - action_onehots) ** 2)
+        policy_loss = torch.sum((predicted_actions - efe_actions.exp()) ** 2)
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
