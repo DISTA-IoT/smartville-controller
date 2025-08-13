@@ -228,16 +228,16 @@ class DAIF_Agent:
         # The following corresponds Q(a_t | s_t) in eq. (6) 
         policy_probabilities = self.policynet(states) 
 
+        # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
+        # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
+        estimated_neg_efe_values = self.neg_efe_net(states).detach()
+        efe_actions = torch.log_softmax(
+            self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+        
         if self.surrogate_policy_consistency:
-            policy_consistency = -0.5 * ((policy_probabilities - action_onehots) ** 2).sum(dim=1).mean()
+            policy_consistency = -0.5 * ((policy_probabilities - efe_actions) ** 2).sum(dim=1).mean()
         else:
-            # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
-            # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
-            estimated_neg_efe_values = self.neg_efe_net(states).detach()
-            efe_actions = torch.log_softmax(
-                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
-
-            # The following 2 loc's correspond to the first term in eq (7), i.e.:
+            # The following loc corresponds to the first term in eq (7), i.e.:
             # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
             # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
             # We need to maximise this energy by minimising VFE which is the negative of this fella.
