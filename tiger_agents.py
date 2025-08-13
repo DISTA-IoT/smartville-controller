@@ -522,7 +522,7 @@ class DAIP_Agent:
 
                 if self.variational_variational_transition_loss:
                     # Use means for deterministic target comparison
-                    reconstruction_loss = self.state_loss_fn(l_eps_means, next_proprioceptive_states)
+                    reconstruction_loss = F.mse_loss(l_eps_means, next_proprioceptive_states, reduction='mean')
                     # KL divergence to standard normal
                     kl_div = 0.5 * torch.sum(
                         l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
