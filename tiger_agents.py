@@ -600,7 +600,7 @@ class DAIA_Agent:
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss(reduction='sum')
-        self.use_crictic_to_act = kwargs['use_critic_to_act']
+        self.use_critic_to_act = kwargs['use_critic_to_act']
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.sequential_memory_size)
@@ -630,7 +630,7 @@ class DAIA_Agent:
             """
             action_probs = self.policynet(state).squeeze()
             """
-            if self.use_crictic_to_act:
+            if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
                 log_action_probs = torch.log_softmax(
                     self.temperature_for_action_sampling * neg_efe,
