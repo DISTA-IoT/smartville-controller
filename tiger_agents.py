@@ -203,7 +203,7 @@ class DAIF_Agent:
                 self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
             next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
 
-            targets -=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * next_efe_values
 
             
         # Prepare targets for all actions
@@ -501,7 +501,7 @@ class DAIP_Agent:
                 self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
             next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
 
-            targets -=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * next_efe_values
 
         # Prepare targets for all actions
         target_neg_efes = self.neg_efe_net(states).detach()
@@ -747,7 +747,7 @@ class DAIA_Agent:
                 self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
             next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
 
-            targets -=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * next_efe_values
 
         # Prepare targets for all actions
         target_neg_efes = self.neg_efe_net(states).detach()
@@ -910,7 +910,7 @@ class DAISA_Agent:
                 self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
             next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
 
-            targets -=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * next_efe_values
 
         # Prepare targets for all actions
         target_neg_efes = self.neg_efe_net(states).detach()
