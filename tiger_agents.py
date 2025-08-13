@@ -735,7 +735,7 @@ class DAIA_Agent:
             
             # Bayes' rule: Q(a|s,s') ∝ P(s'|s,a) * Q(a|s)
             log_posterior = log_likelihoods + torch.log(action_probs_prior + 1e-8)
-            action_probs_posterior = torch.softmax(log_posterior, dim=1)
+            action_probs_posterior = torch.softmax(log_posterior, dim=1).clamp_min(1e-8)
 
             # KL divergence: Σ posterior * log(posterior/prior)
             kl_div = (action_probs_posterior * 
