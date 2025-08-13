@@ -144,14 +144,20 @@ class DAIF_Agent:
             expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
             expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
             expanded_transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
-            predicted_nexts = self.transitionnet(expanded_transition_inputs) # [B*A, S']
-        
-            # Compute log P(o_next | o_current, a)
-            log_likelihoods = -0.5 * F.mse_loss(
-                predicted_nexts, 
-                next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
-                reduction='none'
-            ).sum(dim=1).view(self.replay_batch_size, self.action_size)  # [B, A]
+            if self.variational_t_model:
+                _, l_eps_means, l_eps_logvars = self.transitionnet(expanded_transition_inputs)[:2]
+                var = l_eps_logvars.exp()
+                res = next_proprioceptive_states.repeat_interleave(self.action_size, 0) - l_eps_means
+                log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + torch.log(torch.tensor(2 * torch.pi))).sum(1).view(self.replay_batch_size, self.action_size)
+            else:
+                predicted_nexts = self.transitionnet(expanded_transition_inputs) # [B*A, S']
+            
+                # Compute log P(o_next | o_current, a)
+                log_likelihoods = -0.5 * F.mse_loss(
+                    predicted_nexts, 
+                    next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
+                    reduction='none'
+                ).sum(dim=1).view(self.replay_batch_size, self.action_size)  # [B, A]
             
             # Bayes' rule: Q(a|s,s') ∝ P(s'|s,a) * Q(a|s)
             log_posterior = log_likelihoods + torch.log(action_probs_prior + 1e-8)
