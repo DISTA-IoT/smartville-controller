@@ -248,7 +248,7 @@ class DAIF_Agent:
         # -E_{Q(s)}\{ H[Q(a|s)] \}
         # Also here, we want to maximise the entropy, that's why substract it from the loss.
         policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
-        policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1).mean()
+        policy_entropy = -(policy_probabilities * policy_log_probs).sum(1).mean()
         actor_loss = -policy_consistency - self.entropy_reg_coefficient * policy_entropy
         
         # perceptive model
@@ -421,7 +421,7 @@ class DAIP_Agent:
         # -E_{Q(s)}\{ H[Q(a|s)] \}
         # Also here, we want to maximise the entropy, that's why substract it from the loss.
         policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
-        policy_entropy = torch.sum(policy_probabilities * policy_log_probs, dim=1)
+        policy_entropy = -(policy_probabilities * policy_log_probs).sum(1)
         expected_policy_entropy = policy_entropy.mean()
         vfe -= self.entropy_reg_coefficient * expected_policy_entropy
 
