@@ -147,7 +147,7 @@ class DAIF_Agent:
             predicted_nexts = self.transitionnet(expanded_transition_inputs) # [B*A, S']
         
             # Compute log P(o_next | o_current, a)
-            log_likelihoods = -F.mse_loss(
+            log_likelihoods = -0.5 * F.mse_loss(
                 predicted_nexts, 
                 next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
                 reduction='none'
@@ -186,7 +186,7 @@ class DAIF_Agent:
                 )
             else:
                 estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                perceptive_epistemic_gains = torch.sum(
+                perceptive_epistemic_gains = 0.5 * torch.sum(
                         (next_proprioceptive_states - estimated_next_proprioceptive_states) ** 2,
                         dim=1,
                         keepdim=True)
@@ -717,7 +717,7 @@ class DAIA_Agent:
             predicted_nexts = self.transitionnet(transition_inputs) # [B*A, S']
         
             # Compute log P(o_next | o_current, a)
-            log_likelihoods = -F.mse_loss(
+            log_likelihoods = -0.5 * F.mse_loss(
                 predicted_nexts, 
                 next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
                 reduction='none'
