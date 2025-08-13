@@ -51,7 +51,6 @@ class DAIF_Agent:
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss(reduction='sum')
-        self.state_loss_fn = nn.MSELoss(reduction='sum')
         self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
         self.use_critic_to_act = kwargs['use_critic_to_act']
 
@@ -461,7 +460,6 @@ class DAIP_Agent:
         action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
-        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
             
 
@@ -472,7 +470,7 @@ class DAIP_Agent:
         if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
             transition_inputs = torch.cat([states, action_onehots], dim=1)
             
-            # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
+            # These lines approximate the epistemic gain term: 
             # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
             # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
             if self.variational_t_model:
@@ -595,7 +593,6 @@ class DAIA_Agent:
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss(reduction='sum')
-        self.state_loss_fn = nn.MSELoss(reduction='sum')
         self.use_crictic_to_act = kwargs['use_critic_to_act']
 
     def reset_sequential_memory(self):
@@ -819,7 +816,6 @@ class DAISA_Agent:
         self.replay_batch_size = kwargs['replay_batch_size']
 
         self.value_loss_fn = nn.MSELoss(reduction='sum')
-        self.state_loss_fn = nn.MSELoss(reduction='sum')
         
 
     def reset_sequential_memory(self):
