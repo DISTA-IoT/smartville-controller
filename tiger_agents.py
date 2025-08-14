@@ -792,7 +792,8 @@ class DAIA_Agent:
         self.policynet.train()
         predicted_actions = self.policynet(states)
         with torch.no_grad():
-            target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+            target_logits = self.temperature_for_action_sampling * self.neg_efe_net(states)
+            target_policy = torch.softmax(target_logits, dim=1)
         policy_loss = -(target_policy * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
 
         self.policynet_optimizer.zero_grad()
@@ -944,7 +945,8 @@ class DAISA_Agent:
         self.policynet.train()
         predicted_actions = self.policynet(states)
         with torch.no_grad():
-            target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+            target_logits = self.temperature_for_action_sampling * self.neg_efe_net(states)
+            target_policy = torch.softmax(target_logits, dim=1)
         policy_loss = -(target_policy * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
