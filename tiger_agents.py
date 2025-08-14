@@ -201,19 +201,17 @@ class DAIF_Agent:
 
 
         with torch.no_grad():
-            # Action selection from online model
-            estimated_neg_efe_values = self.neg_efe_net(states).detach()
-            efe_actions = torch.log_softmax(
-                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
-            next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+            next_action_probs = torch.softmax(
+                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
-            
-        # Prepare targets for all actions
-        target_neg_efes = self.neg_efe_net(states).detach()
-        target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
-                
+            # Prepare targets for all actions
+            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
+                    
         # train the EFE value network (critic)
         self.neg_efe_net.train()
         predicted_values = self.neg_efe_net(states)
@@ -514,17 +512,16 @@ class DAIP_Agent:
 
 
         with torch.no_grad():
-            # Action selection from online model
-            estimated_neg_efe_values = self.neg_efe_net(states).detach()
-            efe_actions = torch.log_softmax(
-                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
-            next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+            next_action_probs = torch.softmax(
+                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
-        # Prepare targets for all actions
-        target_neg_efes = self.neg_efe_net(states).detach()
-        target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
+            # Prepare targets for all actions
+            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
         # train the EFE value network (critic)
@@ -771,17 +768,16 @@ class DAIA_Agent:
 
 
         with torch.no_grad():
-            # Action selection from online model
-            estimated_neg_efe_values = self.neg_efe_net(states).detach()
-            efe_actions = torch.log_softmax(
-                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
-            next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+            next_action_probs = torch.softmax(
+                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * next_efe_values
+            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
-        # Prepare targets for all actions
-        target_neg_efes = self.neg_efe_net(states).detach()
-        target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
+            # Prepare targets for all actions
+            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
         # train the EFE value network (critic)
@@ -922,17 +918,17 @@ class DAISA_Agent:
             targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains
 
 
-            # Action selection from online model
-            estimated_neg_efe_values = self.neg_efe_net(states).detach()
-            efe_actions = torch.log_softmax(
-                self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(1)[1] 
-            next_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
 
-            targets +=(~dones) * 0.99 * next_efe_values
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+            next_action_probs = torch.softmax(
+                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-        # Prepare targets for all actions
-        target_neg_efes = self.neg_efe_net(states).detach()
-        target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
+            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
+
+            # Prepare targets for all actions
+            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
         # train the EFE value network (critic)
@@ -962,17 +958,14 @@ class DAISA_Agent:
 
 
 class ValueLearningAgent:
-    """
-    Note this fella uses episoln greedy exploration. To use a Boltzmann exploration policy, use the
-    DAIP_Agent with no transition model or with 0 epistemic reg factor, (or with both these conditions)...
-    AND OVBIOUSLY without using the policy to act. I.E. the use_critic_to_act flag must be TRUE.
-    """
+    
     def __init__(self, kwargs):
         self.wbl = kwargs['wbl']
         self.state_size = kwargs['state_size']
         self.action_size = kwargs['action_size']
         self.memory = deque(maxlen=kwargs['agent_memory_size'])
         self.gamma = float(kwargs['agent_discount_rate'])  # discount rate
+        self.boltzmann_sampling = kwargs['boltzmann_sampling']
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
         self.epsilon_min = float(kwargs['greedy_min'])
         self.epsilon_decay = float(kwargs['greedy_decay'])
@@ -983,6 +976,7 @@ class ValueLearningAgent:
         self.replay_batch_size = kwargs['replay_batch_size']
         self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
+        self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.device = kwargs['device']
 
 
@@ -1004,12 +998,22 @@ class ValueLearningAgent:
 
 
     def act(self, state):
-
-        if torch.rand(1).item() <= self.epsilon:
-            return random.randrange(self.action_size)
-        
-        q_values = self.model(state).squeeze()
-        return q_values.max(0)[1].item()
+        with torch.no_grad():
+            if self.boltzmann_sampling:
+                q_values = self.model(state).squeeze()
+                log_action_probs = torch.log_softmax(
+                    self.temperature_for_action_sampling * q_values,
+                    dim=-1).squeeze()
+                action_probs = log_action_probs.exp()
+                # sample from a categorical distribution 
+                m = distributions.Categorical(action_probs)
+                return m.sample().item()
+            else:
+                if torch.rand(1).item() <= self.epsilon:
+                    return random.randrange(self.action_size)
+                
+                q_values = self.model(state).squeeze()
+                return q_values.max(0)[1].item()
 
 
     def replay(self, step):
