@@ -775,7 +775,8 @@ class DAIA_Agent:
         predicted_actions = self.policynet(states)
         with torch.no_grad():
             target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
-        policy_loss = ((predicted_actions - target_policy) ** 2).sum(1).mean()
+        policy_loss = -(target_policy * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
+
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
@@ -885,18 +886,20 @@ class DAISA_Agent:
         targets = rewards.clone()
         surrogate_active_epistemic_gains = torch.zeros_like(rewards)
          
-
-        predicted_actions =self.policynet(states).detach()
-
-        surrogate_active_epistemic_gains = torch.sum(
-                (predicted_actions - action_onehots) ** 2,
-                dim=1,
-                keepdim=True)
-
-        targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains.detach()
-
-
         with torch.no_grad():
+
+            estimated_neg_efe_values = self.neg_efe_net(states)
+            target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+            predicted_actions =self.policynet(states)
+
+            surrogate_active_epistemic_gains = torch.sum(
+                    (predicted_actions - target_policy) ** 2,
+                    dim=1,
+                    keepdim=True)
+
+            targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains
+
+
             # Action selection from online model
             estimated_neg_efe_values = self.neg_efe_net(states).detach()
             efe_actions = torch.log_softmax(
@@ -924,7 +927,7 @@ class DAISA_Agent:
         predicted_actions = self.policynet(states)
         with torch.no_grad():
             target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
-        policy_loss = ((predicted_actions - target_policy) ** 2).sum(1).mean()
+        policy_loss = -(target_policy * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
@@ -934,6 +937,7 @@ class DAISA_Agent:
             self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step)
             self.wbl.log({'value_loss': value_loss.item()}, step=step)
             self.wbl.log({'active_epistemic_gain': surrogate_active_epistemic_gains.mean().item()}, step=step)
+
 
 class ValueLearningAgent:
     """
