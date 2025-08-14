@@ -50,7 +50,7 @@ class DAIF_Agent:
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
-        self.value_loss_fn = nn.MSELoss(reduction='sum')
+        self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
         self.use_critic_to_act = kwargs['use_critic_to_act']
 
@@ -334,8 +334,8 @@ class DAIP_Agent:
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
-        self.value_loss_fn = nn.MSELoss(reduction='sum')
-        self.state_loss_fn = nn.MSELoss(reduction='sum')
+        self.value_loss_fn = nn.MSELoss(reduction='mean')
+        self.state_loss_fn = nn.MSELoss(reduction='mean')
         self.use_critic_to_act = kwargs['use_critic_to_act']
 
     def reset_sequential_memory(self):
@@ -599,7 +599,7 @@ class DAIA_Agent:
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
-        self.value_loss_fn = nn.MSELoss(reduction='sum')
+        self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.use_critic_to_act = kwargs['use_critic_to_act']
 
     def reset_sequential_memory(self):
@@ -814,7 +814,7 @@ class DAISA_Agent:
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
 
-        self.value_loss_fn = nn.MSELoss(reduction='sum')
+        self.value_loss_fn = nn.MSELoss(reduction='mean')
         
 
     def reset_sequential_memory(self):
