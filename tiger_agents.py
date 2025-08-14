@@ -81,21 +81,18 @@ class DAIF_Agent:
     
     def act(self, state):
         with torch.no_grad():
-            """
-            action_probs = self.policynet(state).squeeze()
-            """
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
                 log_action_probs = torch.log_softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
                 action_probs = log_action_probs.exp()
-            
-                # sample from a categorical distribution 
-                m = distributions.Categorical(action_probs)
-                action = m.sample().item()
             else:
-                action = self.policynet(state).argmax().item()
+                action_probs = self.policynet(state)
+
+            # sample from a categorical distribution 
+            m = distributions.Categorical(action_probs)
+            action = m.sample().item()
 
         return action
     
@@ -201,10 +198,15 @@ class DAIF_Agent:
 
 
         with torch.no_grad():
-            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
-            next_action_probs = torch.softmax(
-                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.use_critic_to_act:
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                next_action_probs = torch.softmax(
+                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            else:
+                next_action_probs = self.policynet(next_states)
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
@@ -373,25 +375,18 @@ class DAIP_Agent:
     
     def act(self, state):
         with torch.no_grad():
-            """
-            action_probs = self.policynet(state).squeeze()
-            """
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
                 log_action_probs = torch.log_softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
                 action_probs = log_action_probs.exp()
-            
-                # sample from a categorical distribution 
-                m = distributions.Categorical(action_probs)
-                action = m.sample().item()
             else:
-                # need to sample treating action probs as categorical, 
-                # cuz this agent is on-policy...
                 action_probs = self.policynet(state)
-                m = distributions.Categorical(action_probs)
-                action = m.sample().item()
+
+            # sample from a categorical distribution 
+            m = distributions.Categorical(action_probs)
+            action = m.sample().item()
 
         return action
     
@@ -512,10 +507,15 @@ class DAIP_Agent:
 
 
         with torch.no_grad():
-            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
-            next_action_probs = torch.softmax(
-                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.use_critic_to_act:
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                next_action_probs = torch.softmax(
+                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            else:
+                next_action_probs = self.policynet(next_states)
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
@@ -636,23 +636,18 @@ class DAIA_Agent:
     
     def act(self, state):
         with torch.no_grad():
-            """
-            action_probs = self.policynet(state).squeeze()
-            """
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
                 log_action_probs = torch.log_softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
                 action_probs = log_action_probs.exp()
-            
-                # sample from a categorical distribution 
-                m = distributions.Categorical(action_probs)
-                action = m.sample().item()
             else:
-                # DDPG STYLE
-                action_probs = self.policynet(state).squeeze()
-                action = action_probs.max(0)[1].item()
+                action_probs = self.policynet(state)
+            
+            # sample from a categorical distribution 
+            m = distributions.Categorical(action_probs)
+            action = m.sample().item()
 
         return action
     
@@ -768,10 +763,15 @@ class DAIA_Agent:
 
 
         with torch.no_grad():
-            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
-            next_action_probs = torch.softmax(
-                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.use_critic_to_act:
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                next_action_probs = torch.softmax(
+                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            else:
+                next_action_probs = self.policynet(next_states)
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
@@ -861,16 +861,15 @@ class DAISA_Agent:
     
     def act(self, state):
         with torch.no_grad():
-            """
-            action_probs = self.policynet(state).squeeze()
-            """
-            
-            neg_efe = self.neg_efe_net(state)
-            log_action_probs = torch.log_softmax(
-                self.temperature_for_action_sampling * neg_efe,
-                dim=-1).squeeze()
-            action_probs = log_action_probs.exp()
-        
+            if self.use_critic_to_act:
+                neg_efe = self.neg_efe_net(state)
+                log_action_probs = torch.log_softmax(
+                    self.temperature_for_action_sampling * neg_efe,
+                    dim=-1).squeeze()
+                action_probs = log_action_probs.exp()
+            else:
+                action_probs = self.policynet(state)
+
             # sample from a categorical distribution 
             m = distributions.Categorical(action_probs)
             action = m.sample().item()
@@ -919,11 +918,15 @@ class DAISA_Agent:
             targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains
 
 
-
-            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
-            next_action_probs = torch.softmax(
-                self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-            expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.use_critic_to_act:
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                next_action_probs = torch.softmax(
+                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            else:
+                next_action_probs = self.policynet(next_states)
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
