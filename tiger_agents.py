@@ -145,7 +145,7 @@ class DAIF_Agent:
             expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
             expanded_transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
             if self.variational_t_model:
-                _, l_eps_means, l_eps_logvars = self.transitionnet(expanded_transition_inputs)[:2]
+                _, l_eps_means, l_eps_logvars = self.transitionnet(expanded_transition_inputs)
                 var = l_eps_logvars.exp()
                 res = next_proprioceptive_states.repeat_interleave(self.action_size, 0) - l_eps_means
                 log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + torch.log(torch.tensor(2 * torch.pi))).sum(1).view(self.replay_batch_size, self.action_size)
@@ -259,14 +259,26 @@ class DAIF_Agent:
         policy_entropy = -(policy_probabilities * policy_log_probs).sum(1).mean()
         actor_loss = -policy_consistency - self.entropy_reg_coefficient * policy_entropy
         
-        # perceptive model
-        predicted_observations = self.transitionnet(transition_inputs)
-        # Perception consistency (cross entropy ≈ −MSE/2)
-        perceptive_consistency = -0.5 * ((next_proprioceptive_states - predicted_observations) ** 2).sum(dim=1).mean()
-
-        # Perception neutrality (entropy proxy using batch variance)
-        batch_var = predicted_observations.var(dim=0) + 1e-6
-        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
+        if self.variational_t_model:
+            _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+            # Gaussian Log-likelihood.
+            perceptive_consistency = -0.5 * torch.sum(
+                ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
+                + eps_logvars + torch.log(torch.tensor(2 * torch.pi)),
+                dim=1
+                ).mean()
+            # Batch variance
+            batch_var = eps_logvars.exp().mean(dim=0) + 1e-6
+        else:
+            # perceptive model
+            predicted_observations = self.transitionnet(transition_inputs)
+            # Perception consistency (cross entropy ≈ −MSE/2)
+            perceptive_consistency = -0.5 * ((next_proprioceptive_states - predicted_observations) ** 2).sum(dim=1).mean()
+            # Perception neutrality (entropy proxy using batch variance)
+            batch_var = predicted_observations.var(dim=0) + 1e-6
+        
+        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * next_proprioceptive_states.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
+        
         perceptive_loss = -perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
 
         vfe = actor_loss + perceptive_loss
@@ -649,7 +661,7 @@ class DAIA_Agent:
     
 
     def train_actor(self, step):
-        # this trains not the actor but the perceptvie model
+        # this trains not the actor but the perceptive model
         vfe = 0
         
         # batching the states
@@ -662,16 +674,26 @@ class DAIA_Agent:
         transition_inputs = torch.cat([states, action_onehots], dim=1)
 
         self.transitionnet.train()
-        predicted_observations = self.transitionnet(transition_inputs)
         
-        # Perception consistency (cross entropy ≈ −MSE/2)
-        perceptive_consistency = -0.5 * ((proprioceptive_states[1:] - predicted_observations[:-1]) ** 2).sum(dim=1).mean()
+        if self.variational_t_model:
+            _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+            # Gaussian Log-likelihood.
+            perceptive_consistency = -0.5 * torch.sum(
+                ((proprioceptive_states[1:] - eps_means[:-1]) ** 2) / torch.exp(eps_logvars)
+                + eps_logvars  + torch.log(torch.tensor(2 * torch.pi)),
+                dim=1,
+            ).mean()
+            # Batch variance
+            batch_var = eps_logvars.exp().mean(dim=0) + 1e-6
+        else:
+            predicted_observations = self.transitionnet(transition_inputs)
+            # Perception consistency (cross entropy ≈ −MSE/2)
+            perceptive_consistency = -0.5 * ((proprioceptive_states[1:] - predicted_observations[:-1]) ** 2).sum(dim=1).mean()
+            # Perception neutrality (entropy proxy using batch variance)
+            batch_var = predicted_observations.var(dim=0) + 1e-6
 
-        # Perception neutrality (entropy proxy using batch variance)
-        batch_var = predicted_observations.var(dim=0) + 1e-6
         perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
 
-        
         vfe = - perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
         if self.wbl: self.wbl.log({'perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
         if self.wbl: self.wbl.log({'perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
@@ -718,7 +740,7 @@ class DAIA_Agent:
             expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
             transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
             if self.variational_t_model:
-                _, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)[:2]
+                _, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
                 var = l_eps_logvars.exp()
                 res = next_proprioceptive_states.repeat_interleave(self.action_size, 0) - l_eps_means
                 log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + torch.log(torch.tensor(2 * torch.pi))).sum(1).view(self.replay_batch_size, self.action_size)
