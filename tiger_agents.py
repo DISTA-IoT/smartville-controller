@@ -199,19 +199,19 @@ class DAIF_Agent:
 
         with torch.no_grad():
             if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 next_action_probs = torch.softmax(
                     self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
             else:
                 next_action_probs = self.policynet(next_states)
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
-            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
                     
         # train the EFE value network (critic)
@@ -508,19 +508,19 @@ class DAIP_Agent:
 
         with torch.no_grad():
             if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 next_action_probs = torch.softmax(
                     self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
             else:
                 next_action_probs = self.policynet(next_states)
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
-            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
@@ -764,19 +764,19 @@ class DAIA_Agent:
 
         with torch.no_grad():
             if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 next_action_probs = torch.softmax(
                     self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
             else:
                 next_action_probs = self.policynet(next_states)
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
-            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
@@ -919,19 +919,19 @@ class DAISA_Agent:
 
 
             if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states).detach()
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 next_action_probs = torch.softmax(
                     self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
             else:
                 next_action_probs = self.policynet(next_states)
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
-            target_neg_efes = self.neg_efe_net(states).detach()
+            target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
