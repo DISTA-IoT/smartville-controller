@@ -339,7 +339,7 @@ class DAIP_Agent:
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
-
+        self.greedy_update = kwargs['greedy_update']
         self.memory_size = kwargs['agent_memory_size']
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
@@ -507,14 +507,22 @@ class DAIP_Agent:
 
 
         with torch.no_grad():
-            if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
-                next_action_probs = torch.softmax(
-                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.greedy_update:
+                # DDQN style
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                # Argmax(softmax(x)) ≡ Argmax(x)
+                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
+                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
             else:
-                next_action_probs = self.policynet(next_states)
+                # Act-Inf style
                 estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
+                if self.use_critic_to_act:
+                    # Value-based Act-Inf
+                    next_action_probs = torch.softmax(
+                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                else:
+                    # Act-Inf as policy gradients
+                    next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
