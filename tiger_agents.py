@@ -850,9 +850,8 @@ class DAISA_Agent:
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
         self.replay_batch_size = kwargs['replay_batch_size']
-
         self.value_loss_fn = nn.MSELoss(reduction='mean')
-        
+        self.use_critic_to_act = kwargs['use_critic_to_act']
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.sequential_memory_size)
