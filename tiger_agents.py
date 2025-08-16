@@ -43,7 +43,7 @@ class DAIF_Agent:
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
-
+        self.greedy_update = kwargs['greedy_update']
         self.memory_size = kwargs['agent_memory_size']
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
@@ -198,14 +198,19 @@ class DAIF_Agent:
 
 
         with torch.no_grad():
-            if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
-                next_action_probs = torch.softmax(
-                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.greedy_update:
+                # DDQN style
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                # Argmax(softmax(x)) ≡ Argmax(x)
+                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
+                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
             else:
-                next_action_probs = self.policynet(next_states)
                 estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
+                if self.use_critic_to_act:
+                    next_action_probs = torch.softmax(
+                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                else:
+                    next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
@@ -609,7 +614,7 @@ class DAIA_Agent:
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
-
+        self.greedy_update = kwargs['greedy_update']
         self.memory_size = kwargs['agent_memory_size']
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
@@ -771,14 +776,19 @@ class DAIA_Agent:
 
 
         with torch.no_grad():
-            if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
-                next_action_probs = torch.softmax(
-                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.greedy_update:
+                # DDQN style
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                # Argmax(softmax(x)) ≡ Argmax(x)
+                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
+                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
             else:
-                next_action_probs = self.policynet(next_states)
                 estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
+                if self.use_critic_to_act:
+                    next_action_probs = torch.softmax(
+                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                else:
+                    next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
@@ -834,7 +844,7 @@ class DAISA_Agent:
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
-
+        self.greedy_update = kwargs['greedy_update']
         self.memory_size = kwargs['agent_memory_size']
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
@@ -904,7 +914,6 @@ class DAISA_Agent:
         states = torch.stack(states)
         next_states = torch.stack(next_states)
         actions = torch.tensor(actions, dtype=torch.long)
-        action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
 
@@ -925,15 +934,19 @@ class DAISA_Agent:
 
             targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains
 
-
-            if self.use_critic_to_act:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
-                next_action_probs = torch.softmax(
-                    self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
-                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+            if self.greedy_update:
+                # DDQN style
+                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
+                # Argmax(softmax(x)) ≡ Argmax(x)
+                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
+                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
             else:
-                next_action_probs = self.policynet(next_states)
                 estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
+                if self.use_critic_to_act:
+                    next_action_probs = torch.softmax(
+                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                else:
+                    next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
             targets +=(~dones) * 0.99 * expected_next_neg_efe_values
