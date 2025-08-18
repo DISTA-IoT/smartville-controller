@@ -486,23 +486,53 @@ class VariationalTransitionNet(nn.Module):
     def __init__(self, kwargs):
         super().__init__()
         
-        input_dim = kwargs['proprioceptive_state_size'] + kwargs['action_size']
-        hidden_dim = kwargs['h_dim']
-        output_dim = kwargs['proprioceptive_state_size']
-        leakyrelu_alpha = kwargs.get('leakyrelu_alpha', 0.01)
+        self.action_size = kwargs['action_size']
+        self.proprioceptive_state_size = kwargs['proprioceptive_state_size']
+        self.state_size = kwargs['state_size']
 
-        self.act = nn.LeakyReLU(leakyrelu_alpha)
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc_mean = nn.Linear(hidden_dim, output_dim)
-        self.fc_logvar = nn.Linear(hidden_dim, output_dim)
+        self.transition_input_size = kwargs['state_size'] + kwargs['action_size']
+        self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
+
+
+        self.action_stream_fc1 = nn.Linear(self.action_size, kwargs['h_dim']//4)
+        self.action_stream_fc2 = nn.Linear(kwargs['h_dim']//4, kwargs['h_dim']//8)
+
+        self.exteroceptive_state_stream_fc1 = nn.Linear(kwargs['state_size'] - self.proprioceptive_state_size, kwargs['h_dim']// 4)
+        self.exteroceptive_state_stream_fc2 = nn.Linear(kwargs['h_dim'] // 4, kwargs['h_dim']// 8)
+
+        self.final_fc_mean_1 = nn.Linear(kwargs['h_dim'] // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
+        self.final_fc_mean_2 = nn.Linear(self.proprioceptive_state_size, self.proprioceptive_state_size)
+
+        self.final_fc_logvar_1 = nn.Linear(kwargs['h_dim'] // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
+        self.final_fc_logvar_2 = nn.Linear(self.proprioceptive_state_size, self.proprioceptive_state_size)
+
 
     def forward(self, x):
+
+        # compatibility with batch processing
         if len(x.shape) < 2:
             x = x.unsqueeze(0)
 
-        h = self.act(self.fc1(x))
-        mean = self.fc_mean(h)
-        logvar = self.fc_logvar(h)
+        action_part = x[:,-self.action_size:]
+        state_part = x[:,:-self.action_size]
+        exteroceptive_state_part = state_part[:,:-self.proprioceptive_state_size]
+        proprioceptive_state_part = state_part[:,-self.proprioceptive_state_size:]
+
+        action_part = self.act(self.action_stream_fc1(action_part))
+        action_part = self.act(self.action_stream_fc2(action_part))
+
+        exteroceptive_state_part = self.act(self.exteroceptive_state_stream_fc1(exteroceptive_state_part))
+        exteroceptive_state_part = self.act(self.exteroceptive_state_stream_fc2(exteroceptive_state_part))
+
+        x_res = torch.cat([action_part, exteroceptive_state_part, proprioceptive_state_part], dim=1)
+
+        x_res_mean = self.act(self.final_fc_mean_1(x_res))
+        x_res_mean = self.act(self.final_fc_mean_2(x_res_mean))
+        mean = proprioceptive_state_part + x_res_mean
+
+        x_res_logvar = self.act(self.final_fc_logvar_1(x_res))
+        x_res_logvar = self.act(self.final_fc_logvar_2(x_res_logvar))
+        logvar = x_res_logvar
 
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
