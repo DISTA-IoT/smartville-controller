@@ -1090,8 +1090,10 @@ class ValueLearningAgent:
         self.optimizer.step()
 
         # Log
-        if self.wbl: self.wbl.log({'value_loss': loss.item()}, step=step)
-
+        if self.wbl: 
+            self.wbl.log({'value_loss': loss.item()}, step=step)
+            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step)
+            
         # Epsilon decay
         if self.epsilon > self.epsilon_min:
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
