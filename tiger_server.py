@@ -279,7 +279,7 @@ def launch(**kwargs):
           flowstats_req_thread.start()
           inference_thread.start()
 
-        return {"msg": "TigerController initialized successfully", "status_code": 200}
+        return {"msg": "SmartSwitch initialized successfully", "status_code": 200}
     
 
     atexit.register(cleanup)
