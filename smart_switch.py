@@ -42,10 +42,30 @@ from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST
 from pox.lib.addresses import EthAddr
 import time
 from smartController.entry import Entry
+from collections import defaultdict
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
    
+
+class ForwardingRule(object):
+    def __init__(self, source_ip_addr, dest_ip_addr, dest_mac_addr, outgoing_port, dl_type):
+      self.source_ip_addr = source_ip_addr
+      self.dest_ip_addr = dest_ip_addr
+      self.dest_mac_addr = dest_mac_addr
+      self.outgoing_port = outgoing_port
+      self.dl_type = dl_type
+    
+    
+    def __eq__(self, other):
+      if not isinstance(other, ForwardingRule):
+        return False
+      return (self.source_ip_addr == other.source_ip_addr and
+              self.dest_ip_addr == other.dest_ip_addr and
+              self.dest_mac_addr == other.dest_mac_addr and
+              self.outgoing_port == other.outgoing_port and
+              self.dl_type == other.dl_type)
+    
 
 class SmartSwitch(EventMixin):
   """
@@ -90,6 +110,7 @@ class SmartSwitch(EventMixin):
 
     self.flow_logger = flow_logger
     self.openflow_packets_received = 0
+    self.forwardingRules = defaultdict(list)
     self.logger.info(f"SmartSwitch initialized!!")
 
 
@@ -152,6 +173,10 @@ class SmartSwitch(EventMixin):
       msg.match.dl_type = ethernet.IP_TYPE
       connection.send(msg)
 
+      for fr in self.forwardingRules[switch_id]:
+        if fr.dest_ip_addr == dest_ip:
+          self.forwardingRules[switch_id].remove(fr)
+
       self.logger.info(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
 
 
@@ -191,13 +216,19 @@ class SmartSwitch(EventMixin):
                                  connection,
                                  packet_id,
                                  type):
-
-      self.logger.debug(f"Adding new flow rule to:{switch_id}"+\
-                f"source_ip_addr: {source_ip_addr} dest_ip_addr: {dest_ip_addr} ")
       
-      actions = []
-      actions.append(of.ofp_action_dl_addr.set_dst(dest_mac_addr))
-      actions.append(of.ofp_action_output(port = outgoing_port))
+      forwarding_rule = ForwardingRule(
+        source_ip_addr=source_ip_addr,
+        dest_ip_addr=dest_ip_addr,
+        dest_mac_addr=dest_mac_addr,
+        outgoing_port=outgoing_port,
+        dl_type=type)
+      
+      if forwarding_rule in self.forwardingRules[switch_id]:
+        return
+
+      actions = [of.ofp_action_dl_addr.set_dst(dest_mac_addr),
+                of.ofp_action_output(port = outgoing_port)]
 
       match = of.ofp_match(
         dl_type = type, 
@@ -209,14 +240,33 @@ class SmartSwitch(EventMixin):
                             hard_timeout=of.OFP_FLOW_PERMANENT,
                             buffer_id=packet_id,
                             actions=actions,
+                            priority=100,   # <-- lower priority
                             match=match)
       
+      # if self.add_flow_rule_message_to_buffer(msg, switch_id):
       connection.send(msg.pack())
+      self.forwardingRules[switch_id].append(forwarding_rule)
 
-      self.logger.debug(f"Added new flow rule to:{switch_id}"+\
-                f"match: {match} actions: {actions}")
+      self.logger.info(f"Added new forwarding flow rule to: {switch_id}"+\
+                f" source: {match.nw_src} dest: {match.nw_dst} outgoing port: {outgoing_port}")
 
 
+  def send_sampling_rules_to_all(self, event):
+    
+    for stat_obj in event.stats:
+      sampling_actions = stat_obj.actions + [of.ofp_action_output(port=of.OFPP_CONTROLLER)]
+      sample_msg = of.ofp_flow_mod(
+          command=of.OFPFC_ADD,
+          idle_timeout=self.flow_idle_timeout,
+          hard_timeout=1,   # expires after 1 second
+          priority=200,     # <-- higher priority
+          actions=sampling_actions,
+          match=stat_obj.match
+      )
+      event.connection.send(sample_msg.pack())
+
+    self.logger.info(f"Sent {len(event.stats)} sampling rules to switch {event.dpid}")
+     
   def build_and_send_ARP_request(
         self, 
         switch_id, 
@@ -302,8 +352,8 @@ class SmartSwitch(EventMixin):
         connection=packet_in_event.connection)
     
   
-  def try_creating_flow_rule(self, switch_id,incomming_port, packet_in_event):
-      self.logger.debug("try_creating_flow_rule")
+  def try_creating_flow_rule(self, switch_id, incomming_port, packet_in_event):
+      
       packet = packet_in_event.parsed
       source_ip_addr = packet.next.srcip
       dest_ip_addr = packet.next.dstip
@@ -346,14 +396,12 @@ class SmartSwitch(EventMixin):
                 packet.next.srcip,
                 packet.next.dstip)
       
-      
-      # Save the first packets of each flow for inference purposes...
-      create_flow_rule = self.flow_logger.cache_unprocessed_packets(
+      # Save packet for inference purposes...
+      self.flow_logger.cache_unprocessed_packets(
           src_ip=packet.next.srcip,
           dst_ip=packet.next.dstip,
           packet=packet)
       
-
       # Send any waiting packets for that ip
       self._send_unprocessed_flows(
          switch_id, 
@@ -366,10 +414,9 @@ class SmartSwitch(EventMixin):
                                      port=incomming_port, 
                                      connection=packet_in_event.connection)
 
-      if create_flow_rule:
-          self.try_creating_flow_rule(switch_id, 
-                                      incomming_port, 
-                                      packet_in_event)
+      self.try_creating_flow_rule(switch_id, 
+                                    incomming_port, 
+                                    packet_in_event)
 
 
   def send_arp_response(

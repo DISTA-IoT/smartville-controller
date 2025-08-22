@@ -262,7 +262,13 @@ def launch(**kwargs):
               controller_brain.env.current_knowledge,
               controller_brain.traffic_dict,
               controller_brain.ips_containers))
-    
+          
+          core.openflow.addListenerByName(
+            "FlowStatsReceived", 
+            lambda event: smart_switch.send_sampling_rules_to_all(
+              event))
+          
+
           flowstats_req_thread = threading.Thread(
             target=periodically_requests_stats,
             args=(FLOWSTATS_FREQ_SECS,),
