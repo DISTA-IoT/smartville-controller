@@ -94,14 +94,16 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_expiration(self):
-    self.logger.debug("Handling expiration")
+    
     # Called by a timer so that we can remove old items.
     to_delete_flows = []
 
     for flow_metadata, packet_metadata_list in self.unprocessed_flows.items():
       switch_id, _ = flow_metadata
 
-      if len(packet_metadata_list) == 0: to_delete_flows.append(flow_metadata)
+      if len(packet_metadata_list) == 0: 
+         self.logger.debug("Flow %s expired", flow_metadata)
+         to_delete_flows.append(flow_metadata)
       else: 
         for packet_metadata in list(packet_metadata_list):
           
