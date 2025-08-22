@@ -115,6 +115,7 @@ class SmartSwitch(EventMixin):
             # containing the buffer id and the input port of the switch.
             po = of.ofp_packet_out(buffer_id=packet_id, in_port = in_port)
             core.openflow.sendToDPID(switch_id, po)
+            self.logger.debug(f"Expired packet {packet_id} for {flow_metadata}")
 
     # Remove empty flow entries from the unprocessed_flows dictionary
     for flow_metadata in to_delete_flows:
@@ -247,7 +248,7 @@ class SmartSwitch(EventMixin):
 
 
   def add_unprocessed_packet(self, switch_id,dst_ip,port,src_ip,buffer_id):
-    
+    self.logger.debug(f"Adding unprocessed packet for {dst_ip}")
     tuple_key = (switch_id, dst_ip)
     if tuple_key not in self.unprocessed_flows: 
       self.unprocessed_flows[tuple_key] = []

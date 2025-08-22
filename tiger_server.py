@@ -42,8 +42,6 @@ from smartController.metricslogger import MetricsLogger
 from smartController.smart_switch import SmartSwitch
 from fastapi import FastAPI
 import uvicorn
-from pox.lib.recoco import Timer
-import logging
 import threading
 import os
 import atexit
@@ -52,15 +50,8 @@ from threading import Lock
 import time
 
 logger = core.getLogger()
-logger.name = "TigerServer"
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("api.log"),
-        logging.StreamHandler()
-    ]
-)
+logger.name = "SmartSwitch"
+
 app_thread = None  # Thread for the FastAPI server
 app = None  # FastAPI app instance
 args = None
@@ -118,7 +109,7 @@ def _handle_ConnectionUp (event):
       logger.info("Connection is UP")
 
       if app_thread is None or not app_thread.is_alive():
-        logger.info("TigerServer API is starting...")
+        logger.info("SmartSwitch API is starting...")
         app_thread = threading.Thread(target=run_server, daemon=True)
         app_thread.start()
      
@@ -154,14 +145,13 @@ def smart_check(period):
 def launch(**kwargs):     
     global app, app_thread, openflow_connection, smart_switch
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
-
     
-    app = FastAPI(title="TigerServer API", description="API for ML experiments")
+    app = FastAPI(title="SmartSwitch API", description="API for ML experiments")
 
     @app.get("/")
     async def root():
         logger.info("Root endpoint called")
-        return {"msg": "Hello World from the TigerServer!"}
+        return {"msg": "Hello World from the SmartSwitch!"}
     
 
     @app.post("/stop")
@@ -170,7 +160,7 @@ def launch(**kwargs):
 
         logger.info("Shutdown command received")
         if stop_tiger_threads:
-          return {"status_code": 304, "msg": "TigerServer is already stopped"}
+          return {"status_code": 304, "msg": "SmartSwitch is already stopped"}
         
         stop_tiger_threads = True
         if inference_thread is not None:
@@ -179,7 +169,7 @@ def launch(**kwargs):
           flowstatreq_thread.join()
       
 
-        return {"status_code": 200, "msg": "TigerServer is stopped"}
+        return {"status_code": 200, "msg": "SmartSwitch is stopped"}
 
     def cleanup():
       logger.info("Cleaning up before exit")
@@ -196,12 +186,14 @@ def launch(**kwargs):
         global flow_logger, metrics_logger, controller_brain, smart_switch
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
 
+        logger.setLevel(kwargs.get("smart_switch_log_level").upper())
         logger.info(f"Initialisation command received")
 
         pprint(kwargs)
 
         args = kwargs
-          
+        
+        
         intrusion_detection_args = kwargs.get("intrusion_detection", {})
         intrusion_detection_args['container_ips'] = kwargs.get("container_ips", {})
         intrusion_detection_args['ips_containers'] = kwargs.get("ips_containers", {})
