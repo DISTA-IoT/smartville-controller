@@ -17,21 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 
 
-"""
-A Smart L3 switch.
 
-THIS CODE IS AN EXTENSION OF  https://github.com/CPqD/RouteFlow/blob/master/pox/pox/forwarding/l3_learning.py
-
-
-For each switch:
-1) Keep a table that maps IP addresses to MAC addresses and switch ports.
-   Stock this table using information from ARP and IP packets.
-2) When you see an ARP query, try to answer it using information in the table
-   from step 1.  If the info in the table is old, just flood the query.
-3) Flood all other ARPs.
-4) When you see an IP packet, if you know the destination port (because it's
-   in the table from step 1), install a flow for it.
-"""
 from pox.core import core
 from pox.lib.util import str_to_bool
 import pox.openflow.libopenflow_01 as of
@@ -50,7 +36,7 @@ from threading import Lock
 import time
 
 logger = core.getLogger()
-logger.name = "SmartSwitch"
+logger.name = "SmartvilleController"
 
 app_thread = None  # Thread for the FastAPI server
 app = None  # FastAPI app instance

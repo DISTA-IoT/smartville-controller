@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "SmartSwitch",
+            "name": "SmartVilleController",
             "type": "python",
             "request": "launch",
             "program": "/pox/pox.py",
