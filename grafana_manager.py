@@ -7,7 +7,6 @@ import threading
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, validator
 from fastapi.responses import JSONResponse
-import socket
 
 logger = logging.getLogger("grafana-manager")
 
@@ -301,13 +300,6 @@ def stop_grafana():
     with GRAFANA_LOCK:
         if GRAFANA_PROCESS is None or GRAFANA_PROCESS.poll() is not None:
 
-            # make sure no process is using port 3000
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(('', 3000))
-            except OSError:
-                response_content = {"msg": "Grafana is not running."}
-                return JSONResponse(content=response_content, status_code=202)
             
             response_content = {"msg": "Grafana is not running."}
             return JSONResponse(content=response_content, status_code=202)
