@@ -27,6 +27,12 @@ from smartController.prometheus_manager import (
     check_prometheus,
     stop_prometheus,
 )
+from smartController.grafana_manager import (
+    config_grafana,
+    start_grafana,
+    check_grafana,
+    stop_grafana,
+)
 from smartController.kafka_manager import (
     config_kafka,
     start_kafka,
@@ -187,21 +193,6 @@ def launch(**kwargs):
       os._exit(0)  # Force exit
 
 
-    @app.post("/start_prometheus")
-    async def api_config_prometheus(cfg: dict):
-        prometheus_running, pid, last_exit_status = check_prometheus()
-        if not prometheus_running:
-          config_prometheus_response = config_prometheus(cfg)
-          if config_prometheus_response.status_code == 200:
-            return start_prometheus()
-          else:
-            return config_prometheus_response
-        
-        return JSONResponse(
-            content={"msg": f"Prometheus is already running (PID={pid})"},
-            status_code=200)
-
-
     @app.post("/start_zookeeper")
     async def api_start_zookeeper(cfg: dict):
         zookeeper_running, pid, last_exit_status = check_zookeeper()
@@ -232,9 +223,35 @@ def launch(**kwargs):
             status_code=200)
 
 
-    @app.post("/stop_prometheus")
-    async def api_stop_services():
-        return stop_prometheus()
+    @app.post("/start_prometheus")
+    async def api_config_prometheus(cfg: dict):
+        prometheus_running, pid, last_exit_status = check_prometheus()
+        if not prometheus_running:
+          config_prometheus_response = config_prometheus(cfg)
+          if config_prometheus_response.status_code == 200:
+            return start_prometheus()
+          else:
+            return config_prometheus_response
+        
+        return JSONResponse(
+            content={"msg": f"Prometheus is already running (PID={pid})"},
+            status_code=200)
+
+
+    @app.post("/start_grafana")
+    async def api_config_grafana(cfg: dict):
+        grafana_running, pid, last_exit_status = check_grafana()
+        if not grafana_running:
+          config_grafana_response = config_grafana(cfg)
+          if config_grafana_response.status_code == 200:
+            return start_grafana()
+          else:
+            return config_grafana_response
+        
+        return JSONResponse(
+            content={"msg": f"Grafana is already running (PID={pid})"},
+            status_code=200)
+    
     
     @app.post("/stop_zookeeper")
     async def api_stop_services():
@@ -243,6 +260,14 @@ def launch(**kwargs):
     @app.post("/stop_kafka")
     async def api_stop_services():
         return stop_kafka()
+
+    @app.post("/stop_prometheus")
+    async def api_stop_services():
+        return stop_prometheus()
+
+    @app.post("/stop_grafana")
+    async def api_stop_services():
+        return stop_grafana()
 
     @app.post("/initialize")
     async def initialize(kwargs: dict):
