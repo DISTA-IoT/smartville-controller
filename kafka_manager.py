@@ -3,9 +3,10 @@ import signal
 import logging
 import subprocess
 import threading
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, validator
 from fastapi.responses import JSONResponse
+import shutil
 
 logger = logging.getLogger("kafka-manager")
 
@@ -288,6 +289,7 @@ def start_kafka():
                 log_dir = log_dir.strip()
                 try:
                     os.makedirs(log_dir, exist_ok=True)
+                    logger.info(f"Log directory created: {log_dir}")
                 except Exception as e:
                     logger.warning(f"Could not ensure log directory exists ({log_dir}): {e}")
 
@@ -346,6 +348,22 @@ def stop_kafka():
             KAFKA_PROCESS.send_signal(signal.SIGTERM)
             KAFKA_PROCESS.wait(timeout=15)  # Kafka might take longer to shut down
             logger.info("Kafka stopped gracefully.")
+
+            try:
+                shutil.rmtree("/opt/kafka/logs")
+                log_dirs = LAST_CONFIG.log_dirs.split(",")
+                logger.info("Kafka log directory removed: /opt/kafka/logs")
+            except Exception as e:
+                logger.warning(f"Could not remove Kafka log directory: {e}")
+            
+            for log_dir in log_dirs:
+                log_dir = log_dir.strip()
+                try:
+                    shutil.rmtree(log_dir)
+                    logger.info(f"Log directory removed: {log_dir}")
+                except Exception as e:
+                    logger.warning(f"Could not remove Kafka log directory: {e}")
+                    
         except subprocess.TimeoutExpired:
             logger.warning("Kafka did not stop gracefully, forcing termination.")
             KAFKA_PROCESS.kill()
