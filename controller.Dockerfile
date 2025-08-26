@@ -59,7 +59,7 @@ RUN rm -r .git
 
 COPY  prometheus_grafana_datasource.yaml /usr/share/grafana/conf/provisioning/datasources
 
-RUN git clone -b new_insubria https://github.com/DISTA-IoT/smartville-controller.git pox/smartController
+RUN git clone https://github.com/DISTA-IoT/smartville-controller.git pox/smartController -b new_smartville
 
 WORKDIR /pox/pox/smartController
 
