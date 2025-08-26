@@ -61,7 +61,6 @@ import atexit
 import signal
 from threading import Lock
 import time
-import json
 
 logger = core.getLogger()
 logger.name = "SmartvilleController"
@@ -251,6 +250,26 @@ def launch(**kwargs):
         return JSONResponse(
             content={"msg": f"Grafana is already running (PID={pid})"},
             status_code=200)
+    
+    @app.get("/check_zookeeper")
+    async def api_check_zookeeper():
+        zookeeper_running, pid, last_exit_status = check_zookeeper()
+        return JSONResponse(content={"running": zookeeper_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
+
+    @app.get("/check_kafka")
+    async def api_check_kafka():
+        kafka_running, pid, last_exit_status = check_kafka()
+        return JSONResponse(content={"running": kafka_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
+
+    @app.get("/check_prometheus")
+    async def api_check_prometheus():
+        prometheus_running, pid, last_exit_status = check_prometheus()
+        return JSONResponse(content={"running": prometheus_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
+
+    @app.get("/check_grafana")
+    async def api_check_grafana():
+        grafana_running, pid, last_exit_status = check_grafana()
+        return JSONResponse(content={"running": grafana_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
     
     
     @app.post("/stop_zookeeper")
