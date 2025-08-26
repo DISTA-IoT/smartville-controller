@@ -61,6 +61,31 @@ import atexit
 import signal
 from threading import Lock
 import time
+import logging 
+
+SUPPRESSED_ENDPOINTS = [
+   '/check_zookeeper', 
+   '/check_kafka',
+   '/check_prometheus',
+   '/check_grafana',
+   '/metrics'
+ ]
+
+class SuppressEndpointFilter(logging.Filter):
+    def filter(self, record):
+        # Check if the log record has the necessary arguments (for Uvicorn access logs)
+        if record.args and len(record.args) >= 3:
+            # record.args[2] contains the path (including query parameters)
+            path = record.args[2]
+            # Check if the path is in the list of suppressed endpoints
+            if path in SUPPRESSED_ENDPOINTS:
+                return False  # Suppress this log entry
+        return True  # Allow other log entries
+
+# Get the Uvicorn access logger and add the filter
+uvicorn_access_logger = logging.getLogger("uvicorn.access")
+uvicorn_access_logger.addFilter(SuppressEndpointFilter())
+
 
 logger = core.getLogger()
 logger.name = "SmartvilleController"
