@@ -256,7 +256,8 @@ def start_grafana():
         def run_grafana():
             global GRAFANA_PROCESS
             cmd = [
-                "grafana-server",
+                "/usr/share/grafana/bin/grafana",
+                "server",
                 "-homepath",
                 home_path
             ]
@@ -300,7 +301,6 @@ def stop_grafana():
     with GRAFANA_LOCK:
         if GRAFANA_PROCESS is None or GRAFANA_PROCESS.poll() is not None:
 
-            
             response_content = {"msg": "Grafana is not running."}
             return JSONResponse(content=response_content, status_code=202)
         
