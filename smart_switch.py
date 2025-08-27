@@ -265,7 +265,7 @@ class SmartSwitch(EventMixin):
       )
       event.connection.send(sample_msg.pack())
 
-    self.logger.info(f"Sent {len(event.stats)} sampling rules to switch {event.dpid}")
+    self.logger.debug(f"Sent {len(event.stats)} sampling rules to switch {event.dpid}")
      
   def build_and_send_ARP_request(
         self, 
