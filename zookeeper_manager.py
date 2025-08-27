@@ -123,7 +123,7 @@ class ZooKeeperConfig(BaseModel):
         if self.admin_enable_server:
             lines.append(f"admin.serverPort={self.admin_server_port}")
         else:
-            lines.append(f"# admin.serverPort={self.admin_server_port}")
+            lines.append(f"admin.serverPort={self.admin_server_port}")
         
         return "\n".join(lines) + "\n"
 

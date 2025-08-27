@@ -345,13 +345,7 @@ def launch(**kwargs):
         )
 
         if intrusion_detection_args.get("node_features"):
-            metrics_logger = MetricsLogger(
-              server_addr = f"{intrusion_detection_args['container_ips']['pox-controller']}:9092",
-              max_conn_retries = int(intrusion_detection_args.get('max_kafka_conn_retries')),
-              metric_buffer_len = int(intrusion_detection_args.get('metric_buffer_len')),
-              grafana_user=intrusion_detection_args.get('grafana_user'), 
-              grafana_pass=intrusion_detection_args.get('grafana_password'),
-              )
+            metrics_logger = MetricsLogger(args)
             
 
         # The controllerBrain holds the ML functionalities.

@@ -64,26 +64,20 @@ class MetricsLogger:
 
     def __init__(
             self, 
-            server_addr = "192.168.1.1:9092",
-            max_conn_retries = 5,
-            metric_buffer_len = 10,
-            grafana_user="admin", 
-            grafana_pass="admin"):
+            kwargs):
 
-        self.grafana_user = grafana_user
-        self.grafana_pass = grafana_pass
-        self.server_addr = server_addr
+        self.kafka_endpoint = kwargs['kafka']['endpoint']
         self.topics = None
         self.topic_list = []
         self.threads = []
         self.working_threads_count = 0
         self.sortcount = 0
         self.kafka_admin_client = None
-        self.max_conn_retries = max_conn_retries  # max Kafkfa connection retries.
+        self.max_conn_retries = kwargs['health']['max_conn_retries'] 
         self.metrics_dict = {}
-        self.metric_buffer_len = metric_buffer_len
+        self.node_features_time_window = kwargs['health']['node_features_time_window']
         self.grafana_connection = GrafanaFace(
-                auth=(self.grafana_user, self.grafana_pass), 
+                auth=(kwargs['grafana']['user'], kwargs['grafana']['password']), 
                 host='localhost:3000')
 
         if self.init_kafka_connection(): 
@@ -115,9 +109,9 @@ class MetricsLogger:
     def init_kafka_connection(self):
         retries = 0
         while retries < self.max_conn_retries: 
-            if server_exist(self.server_addr):
+            if server_exist(self.kafka_endpoint):
                 try:
-                    conf = {'bootstrap.servers': self.server_addr}
+                    conf = {'bootstrap.servers': self.kafka_endpoint}
                     self.kafka_admin_client = AdminClient(conf)
                     self.topics = self.kafka_admin_client.list_topics(timeout=5)
                     return True
@@ -126,7 +120,7 @@ class MetricsLogger:
                     self.kafka_admin_client = None
                     return False
             else:
-                print(f"Could not find Kafka server at {self.server_addr}")
+                print(f"Could not find Kafka server at {self.kafka_endpoint}")
                 retries += 1
         return False
     
@@ -172,16 +166,16 @@ class MetricsLogger:
 
                 
                 self.metrics_dict[topic_name] = {
-                    CPU: deque(maxlen=self.metric_buffer_len), 
-                    DELAY: deque(maxlen=self.metric_buffer_len), 
-                    IN_TRAFFIC: deque(maxlen=self.metric_buffer_len), 
-                    OUT_TRAFFIC: deque(maxlen=self.metric_buffer_len),
-                    RAM: deque(maxlen=self.metric_buffer_len) }
+                    CPU: deque(maxlen=self.node_features_time_window), 
+                    DELAY: deque(maxlen=self.node_features_time_window), 
+                    IN_TRAFFIC: deque(maxlen=self.node_features_time_window), 
+                    OUT_TRAFFIC: deque(maxlen=self.node_features_time_window),
+                    RAM: deque(maxlen=self.node_features_time_window) }
                 
 
                 print(f"Consumer Thread for topic {topic_name} commencing")
                 thread = ConsumerThread(
-                    self.server_addr, 
+                    self.kafka_endpoint, 
                     topic_name,
                     curr_topics_dict[topic_name],
                     self.cpu_metric,
