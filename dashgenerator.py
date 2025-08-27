@@ -22,39 +22,33 @@ class DashGenerator:
     la sua chiave api messa a disposizione
     """
 
-    def __init__(self, grafana_connection):
+    def __init__(self, grafana_connection, logger, max_conn_retries):
         self.grafana_connection = grafana_connection
+        self.logger = logger
+        self.max_conn_retries = max_conn_retries
         self.generate_all_dashes()
 
 
     def generate_all_dashes(self):
-        while True:
-            if not self.dashboard_exists('CPU_data'):
-                print("Creating new dashboard: CPU_data ...")
-                self.generate_single_dash_with_return('CPU_data','CPU (%)')
-            else:
-                break
+        
+        if not self.dashboard_exists('CPU_data'):
+            self.logger.info("Creating new dashboard: CPU_data ...")
+            self.generate_single_dash('CPU_data','CPU (%)')
 
-        """
-        Controllo se i vari grafici dedicati all'utente sono già presenti, in tal caso non vengono inseriti
-        nuovamente, ciò avviene tramite il metodo dashboard_exists.
-        L'inserimento di una dashboard avviene tramite la chiamata ai vari metodi "dash_gen", ai quali vengono
-        passate in ingresso le stringhe relative al nome della dashboard e l'UID che le identifica univocamente
-        """
         if not self.dashboard_exists('RAM_data'):
-            print("Creating new dashboard: RAM_data...")
+            self.logger.info("Creating new dashboard: RAM_data...")
             self.generate_single_dash('RAM_data','RAM (GB)')
 
         if not self.dashboard_exists('PING_data'):
-            print("Creating new dashboard:  PING_data ...")
+            self.logger.info("Creating new dashboard:  PING_data ...")
             self.generate_single_dash('PING_data','Latenza (ms)')
 
         if not self.dashboard_exists('INT_data'):
-            print("Creating new dashboard:  INT_data...")
+            self.logger.info("Creating new dashboard:  INT_data...")
             self.generate_single_dash('INT_data','Traffico rete in entrata (KBps)')
 
         if not self.dashboard_exists('ONT_data'):
-            print("Creating new dashboard: ONT_data creazione in corso...")
+            self.logger.info("Creating new dashboard: ONT_data creazione in corso...")
             self.generate_single_dash('ONT_data','Traffico rete in uscita (KBps)')
 
     
@@ -94,11 +88,11 @@ class DashGenerator:
         # Creazione effettiva dashboard 
         try:
             self.grafana_connection.dashboard.update_dashboard(dashboard_config)
-            print(f"Dashboard with UID '{dash_UID}' created!")
+            self.logger.info(f"Dashboard with UID '{dash_UID}' created!")
             return True
 
         except Exception as e:
-            print(f"Errore: {e} try a different username or password")
+            self.logger.error(f"Error: {e} try a different username or password")
             return False
 
     
@@ -121,4 +115,4 @@ class DashGenerator:
 
         # Creazione effettiva dashboard 
         self.grafana_connection.dashboard.update_dashboard(dashboard_config)
-        print(f"Dashboard con UID '{dash_UID}' created!")
+        self.logger.info(f"Dashboard con UID '{dash_UID}' created!")

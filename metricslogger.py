@@ -65,7 +65,7 @@ class MetricsLogger:
     def __init__(
             self, 
             kwargs):
-
+        self.kwargs = kwargs
         self.kafka_endpoint = kwargs['kafka']['endpoint']
         self.topics = None
         self.topic_list = []
@@ -79,16 +79,28 @@ class MetricsLogger:
         self.grafana_connection = GrafanaFace(
                 auth=(kwargs['grafana']['user'], kwargs['grafana']['password']), 
                 host='localhost:3000')
+        self.logger = kwargs['logger']
+        if self.init():
+            self.logger.info("MetricsLogger initialized")
+        else:
+            self.logger.error("MetricsLogger initialization failed")
 
-        if self.init_kafka_connection(): 
-            
+    def init(self):
+
+        if self.init_kafka_connection():     
             self.init_prometheus_server()
-            
-            self.dash_generator = DashGenerator(self.grafana_connection)
-
-            self.graph_generator = GraphGenerator(
-                grafana_connection=self.grafana_connection,
-                prometheus_connection=self.prometheus_connection)
+            try:
+                self.dash_generator = DashGenerator(self.grafana_connection, self.logger, self.max_conn_retries)
+            except Exception as e:
+                self.logger.error(f"Error during dashboard generation: {e}")
+                return False
+            try:
+                self.graph_generator = GraphGenerator(
+                    grafana_connection=self.grafana_connection,
+                    prometheus_connection=self.prometheus_connection)
+            except Exception as e:
+                self.logger.error(f"Error during graph generation: {e}")
+                return False
             
             self.consumer_thread_manager = threading.Thread(
                 target=self.start_consuming, 
@@ -96,14 +108,19 @@ class MetricsLogger:
             
             try:
                 self.consumer_thread_manager.start()
+                return True
             except KeyboardInterrupt:
                 for thread in self.threads:
                     if (thread.is_alive()):
                         thread.stop_threads()
                         working_threads_count += 1
-                print(f" Closed {working_threads_count} threads")
+                self.logger.info(f" Closed {working_threads_count} threads")
+                return False
 
-        else: print('MetricsLogger not attached!')
+        else: 
+            return False
+        
+
         
 
     def init_kafka_connection(self):
@@ -126,7 +143,7 @@ class MetricsLogger:
     
 
     def init_prometheus_server(self):
-        start_http_server(port=8000, addr='localhost')
+        start_http_server(port=self.kwargs['prometheus']['clientport'], addr=self.kwargs['prometheus']['clienthost'])
 
         # Definizione metriche inserite su Prometheus
         self.cpu_metric = Gauge('CPU_percentage', 'Metrica CPU percentuale', ['label_name'])
@@ -137,8 +154,8 @@ class MetricsLogger:
         
         # prometheus_connection will permit the graph generator 
         # organize graphs...  
-        self.prometheus_connection = PrometheusConnect('http://localhost:9090/24):9090')
-
+        self.prometheus_connection = PrometheusConnect(self.kwargs['grafana']['datasource_url'])
+        
 
     def start_consuming(self):
 

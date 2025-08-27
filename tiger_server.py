@@ -325,7 +325,7 @@ def launch(**kwargs):
         pprint(kwargs)
 
         args = kwargs
-        
+        args['logger'] = logger
         
         intrusion_detection_args = kwargs.get("intrusion_detection", {})
         intrusion_detection_args['container_ips'] = kwargs.get("container_ips", {})
