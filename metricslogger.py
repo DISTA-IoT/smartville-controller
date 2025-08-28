@@ -30,34 +30,11 @@ import threading
 
 RAM = 'RAM'
 CPU = 'CPU'
-IN_TRAFFIC = 'IN_TRAFFIC'
-OUT_TRAFFIC = 'OUT_TRAFFIC'
-DELAY = 'DELAY'
+INBOUND = 'INBOUND'
+OUTBOUND = 'OUTBOUND'
+RTT = 'RTT'
 
 
-def server_exist(bootstrap_servers):
-
-    if ':' not in bootstrap_servers:
-        print("Errore: la stringa deve contenere il formato host:porta")
-        return False
-    split_values = bootstrap_servers.split(':')
-
-    if len(split_values) != 2 :
-        print("Errore: la stringa deve contenere solo due valori (host:porta)")
-        return False
-    host, port = bootstrap_servers.split(':')
-
-    if not port.isdigit():
-        print(f"Errore: il valore della porta '{port}' non è un numero valido.")
-        return False
-    try:
-        # Attempt to create a socket connection to the Kafka broker
-        with socket.create_connection((host, port), timeout=2):
-            print(f"Server {host}:{port} raggiungibile.")
-            return True
-    except (socket.error, socket.timeout) as e:
-        print(f"Server {host}:{port} non raggiungibile")
-        return False
 
 
 class MetricsLogger: 
@@ -121,23 +98,46 @@ class MetricsLogger:
             return False
         
 
-        
+    def server_exist(self):
+
+        if ':' not in self.kafka_endpoint:
+            self.logger.error("Error: the string must have the format host:port")
+            return False
+        split_values = self.kafka_endpoint.split(':')
+
+        if len(split_values) != 2 :
+            self.logger.error("Error: the string must have the format host:port")
+            return False
+        host, port = self.kafka_endpoint.split(':')
+
+        if not port.isdigit():
+            self.logger.error(f"Error: the port {port} is invalid. It must be a number")
+            return False
+        try:
+            # Attempt to create a socket connection to the Kafka broker
+            with socket.create_connection((host, port), timeout=2):
+                self.logger.info(f"Server {host}:{port} RAGGIUNTO.")
+                return True
+        except (socket.error, socket.timeout) as e:
+            self.logger.error(f"Server {host}:{port} non raggiungibile")
+            return False
+
 
     def init_kafka_connection(self):
         retries = 0
         while retries < self.max_conn_retries: 
-            if server_exist(self.kafka_endpoint):
+            if self.server_exist():
                 try:
                     conf = {'bootstrap.servers': self.kafka_endpoint}
                     self.kafka_admin_client = AdminClient(conf)
                     self.topics = self.kafka_admin_client.list_topics(timeout=5)
                     return True
                 except KafkaException as e:
-                    print(f"Kafka connection error {e}")
+                    self.logger.error(f"Kafka connection error {e}")
                     self.kafka_admin_client = None
                     return False
             else:
-                print(f"Could not find Kafka server at {self.kafka_endpoint}")
+                self.logger.error(f"Could not find Kafka server at {self.kafka_endpoint}")
                 retries += 1
         return False
     
@@ -146,11 +146,11 @@ class MetricsLogger:
         start_http_server(port=self.kwargs['prometheus']['clientport'], addr=self.kwargs['prometheus']['clienthost'])
 
         # Definizione metriche inserite su Prometheus
-        self.cpu_metric = Gauge('CPU_percentage', 'Metrica CPU percentuale', ['label_name'])
-        self.ram_metric = Gauge('RAM_GB', 'Metrica RAM', ['label_name'])
-        self.ping_metric = Gauge('Latenza_ms', 'Metrica latenza del segnale', ['label_name'])
-        self.incoming_traffic_metric = Gauge('Incoming_network_KB', 'Metrica traffico in entrata', ['label_name'])
-        self.outcoming_traffic_metric = Gauge('Outcoming_network_KB', 'Metrica traffico in uscita', ['label_name'])
+        self.cpu_metric = Gauge('CPU_percentage', 'CPU percentage metric', ['label_name'])
+        self.ram_metric = Gauge('RAM_GB', 'RAM metric', ['label_name'])
+        self.ping_metric = Gauge('Latency ms', 'Network delay metric', ['label_name'])
+        self.incoming_traffic_metric = Gauge('Inbound (KB)', 'Inbound traffic metric', ['label_name'])
+        self.outcoming_traffic_metric = Gauge('Outbound (KB)', 'Outbound traffic metric', ['label_name'])
         
         # prometheus_connection will permit the graph generator 
         # organize graphs...  
@@ -184,13 +184,14 @@ class MetricsLogger:
                 
                 self.metrics_dict[topic_name] = {
                     CPU: deque(maxlen=self.node_features_time_window), 
-                    DELAY: deque(maxlen=self.node_features_time_window), 
-                    IN_TRAFFIC: deque(maxlen=self.node_features_time_window), 
-                    OUT_TRAFFIC: deque(maxlen=self.node_features_time_window),
-                    RAM: deque(maxlen=self.node_features_time_window) }
+                    RTT: deque(maxlen=self.node_features_time_window), 
+                    INBOUND: deque(maxlen=self.node_features_time_window), 
+                    OUTBOUND: deque(maxlen=self.node_features_time_window),
+                    RAM: deque(maxlen=self.node_features_time_window) 
+                    }
                 
 
-                print(f"Consumer Thread for topic {topic_name} commencing")
+                
                 thread = ConsumerThread(
                     self.kafka_endpoint, 
                     topic_name,
@@ -200,14 +201,15 @@ class MetricsLogger:
                     self.ping_metric,
                     self.incoming_traffic_metric,
                     self.outcoming_traffic_metric,
-                    self.metrics_dict)
+                    self.metrics_dict,
+                    self.kwargs)
 
                 self.threads.append(thread)
                 thread.start()
-
+                self.logger.info(f"Consumer Thread for topic {topic_name} commencing")
 
             if (self.sortcount>=12):     # Ogni minuto (5 secs * 12)
-                print(f"Organizing dashboard priorities...")
+                self.logger.info(f"Organizing dashboard priorities...")
                 self.graph_generator.sort_all_graphs()
                 self.sortcount = 0
 

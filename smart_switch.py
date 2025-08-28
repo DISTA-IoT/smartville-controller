@@ -120,10 +120,10 @@ class SmartSwitch(EventMixin):
     to_delete_flows = []
 
     for flow_metadata, packet_metadata_list in self.unprocessed_flows.items():
-      switch_id, _ = flow_metadata
+      switch_id, dest_ip_addr = flow_metadata
 
       if len(packet_metadata_list) == 0: 
-         self.logger.debug("Flow %s expired", flow_metadata)
+         self.logger.info("Flow %s expired", flow_metadata)
          to_delete_flows.append(flow_metadata)
       else: 
         for packet_metadata in list(packet_metadata_list):
@@ -141,9 +141,16 @@ class SmartSwitch(EventMixin):
             self.logger.debug(f"Expired packet {packet_id} for {flow_metadata}")
 
     # Remove empty flow entries from the unprocessed_flows dictionary
+    # Remove also the forwarding rules
+    to_delete_frs = []
     for flow_metadata in to_delete_flows:
       del self.unprocessed_flows[flow_metadata]
+      for fr in self.forwardingRules[flow_metadata[0]]:
+        if fr.dest_ip_addr == dest_ip_addr:
+          to_delete_frs.append(fr)
 
+    for fr in to_delete_frs:
+      self.forwardingRules[flow_metadata[0]].remove(fr)
 
   def _send_unprocessed_flows(self, switch_id, port, dest_mac_addr, dest_ip_addr):
     """
@@ -173,8 +180,13 @@ class SmartSwitch(EventMixin):
       msg.match.dl_type = ethernet.IP_TYPE
       connection.send(msg)
 
+      to_delete_frs = []
+
       for fr in self.forwardingRules[switch_id]:
         if fr.dest_ip_addr == dest_ip:
+          to_delete_frs.append(fr)
+
+      for fr in to_delete_frs:
           self.forwardingRules[switch_id].remove(fr)
 
       self.logger.info(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
