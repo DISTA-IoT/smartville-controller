@@ -66,7 +66,7 @@ class MetricsLogger:
             self, 
             kwargs):
         self.kwargs = kwargs
-        self.kafka_endpoint = kwargs['kafka']['endpoint']
+        self.kafka_endpoint = kwargs['monitor_ip']+":"+str(kwargs['kafka']['port'])
         self.topics = None
         self.topic_list = []
         self.threads = []
@@ -78,7 +78,7 @@ class MetricsLogger:
         self.node_features_time_window = kwargs['health']['node_features_time_window']
         self.grafana_connection = GrafanaFace(
                 auth=(kwargs['grafana']['user'], kwargs['grafana']['password']), 
-                host='localhost:3000')
+                host=kwargs['monitor_ip']+':'+str(kwargs['grafana']['port']))
         self.logger = kwargs['logger']
         if self.init():
             self.logger.info("MetricsLogger initialized")

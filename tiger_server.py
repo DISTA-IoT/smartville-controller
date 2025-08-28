@@ -21,30 +21,6 @@ from pox.lib.util import str_to_bool
 import pox.openflow.libopenflow_01 as of
 from pox.lib.addresses import EthAddr
 
-from smartController.prometheus_manager import (
-    config_prometheus,
-    start_prometheus,
-    check_prometheus,
-    stop_prometheus,
-)
-from smartController.grafana_manager import (
-    config_grafana,
-    start_grafana,
-    check_grafana,
-    stop_grafana,
-)
-from smartController.kafka_manager import (
-    config_kafka,
-    start_kafka,
-    check_kafka,
-    stop_kafka,
-)
-from smartController.zookeeper_manager import (
-    config_zookeeper,
-    start_zookeeper,
-    check_zookeeper,
-    stop_zookeeper,
-)
 from smartController.flowlogger_new import FlowLogger
 from smartController.tiger_brain_new import TigerBrain
 from smartController.metricslogger import MetricsLogger
@@ -216,103 +192,6 @@ def launch(**kwargs):
       cleanup()
       os._exit(0)  # Force exit
 
-
-    @app.post("/start_zookeeper")
-    async def api_start_zookeeper(cfg: dict):
-        zookeeper_running, pid, last_exit_status = check_zookeeper()
-        if not zookeeper_running:
-           config_zookeeper_response = config_zookeeper(cfg)
-           if config_zookeeper_response.status_code == 200:
-             return start_zookeeper()
-           else:
-             return config_zookeeper_response
-           
-        return JSONResponse(
-            content={"msg": f"Zookeeper is already running (PID={pid})"},
-            status_code=200)
-
-
-    @app.post("/start_kafka")
-    async def api_start_kafka(cfg: dict):
-        kafka_running, pid, last_exit_status = check_kafka()
-        if not kafka_running:
-           config_kafka_response = config_kafka(cfg)
-           if config_kafka_response.status_code == 200:
-             return start_kafka()
-           else:
-             return config_kafka_response
-           
-        return JSONResponse(
-            content={"msg": f"Kafka is already running (PID={pid})"},
-            status_code=200)
-
-
-    @app.post("/start_prometheus")
-    async def api_config_prometheus(cfg: dict):
-        prometheus_running, pid, last_exit_status = check_prometheus()
-        if not prometheus_running:
-          config_prometheus_response = config_prometheus(cfg)
-          if config_prometheus_response.status_code == 200:
-            return start_prometheus()
-          else:
-            return config_prometheus_response
-        
-        return JSONResponse(
-            content={"msg": f"Prometheus is already running (PID={pid})"},
-            status_code=200)
-
-
-    @app.post("/start_grafana")
-    async def api_config_grafana(cfg: dict):
-        grafana_running, pid, last_exit_status = check_grafana()
-        if not grafana_running:
-          config_grafana_response = config_grafana(cfg)
-          if config_grafana_response.status_code == 200:
-            return start_grafana()
-          else:
-            return config_grafana_response
-        
-        return JSONResponse(
-            content={"msg": f"Grafana is already running (PID={pid})"},
-            status_code=200)
-    
-    @app.get("/check_zookeeper")
-    async def api_check_zookeeper():
-        zookeeper_running, pid, last_exit_status = check_zookeeper()
-        return JSONResponse(content={"running": zookeeper_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
-
-    @app.get("/check_kafka")
-    async def api_check_kafka():
-        kafka_running, pid, last_exit_status = check_kafka()
-        return JSONResponse(content={"running": kafka_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
-
-    @app.get("/check_prometheus")
-    async def api_check_prometheus():
-        prometheus_running, pid, last_exit_status = check_prometheus()
-        return JSONResponse(content={"running": prometheus_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
-
-    @app.get("/check_grafana")
-    async def api_check_grafana():
-        grafana_running, pid, last_exit_status = check_grafana()
-        return JSONResponse(content={"running": grafana_running, "pid": pid, "last_exit_status": last_exit_status}, status_code=200)
-    
-    
-    @app.post("/stop_zookeeper")
-    async def api_stop_services():
-        return stop_zookeeper()
-
-    @app.post("/stop_kafka")
-    async def api_stop_services():
-        return stop_kafka()
-
-    @app.post("/stop_prometheus")
-    async def api_stop_services():
-        return stop_prometheus()
-
-    @app.post("/stop_grafana")
-    async def api_stop_services():
-        return stop_grafana()
-
     @app.post("/initialize")
     async def initialize(kwargs: dict):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
@@ -378,7 +257,6 @@ def launch(**kwargs):
         core.listen_to_dependencies(smart_switch)
 
 
-
         FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
         if FLOWSTATS_FREQ_SECS > 0:
@@ -395,7 +273,6 @@ def launch(**kwargs):
             lambda event: smart_switch.send_sampling_rules_to_all(
               event))
           
-
           flowstats_req_thread = threading.Thread(
             target=periodically_requests_stats,
             args=(FLOWSTATS_FREQ_SECS,),
