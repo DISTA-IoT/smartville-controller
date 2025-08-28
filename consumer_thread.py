@@ -19,12 +19,15 @@ from confluent_kafka import Consumer, KafkaException
 from confluent_kafka.admin import AdminClient
 import threading
 import math
+import string
+import random
+import json
 
 RAM = 'RAM'
 CPU = 'CPU'
-IN_TRAFFIC = 'IN_TRAFFIC'
-OUT_TRAFFIC = 'OUT_TRAFFIC'
-DELAY = 'DELAY'
+INBOUND = 'INBOUND'
+OUTBOUND = 'OUTBOUND'
+RTT = 'RTT'
 
 
 class ConsumerThread(threading.Thread):
@@ -37,10 +40,11 @@ class ConsumerThread(threading.Thread):
             topic_object,
             cpu_metric, 
             ram_metric, 
-            ping_metric, 
-            incoming_traffic_metric,
-            outcoming_traffic_metric,
-            controller_metrics_dict
+            rtt_metric, 
+            inbound_metric,
+            outbound_metric,
+            controller_metrics_dict,
+            kwargs
             ):
         
         threading.Thread.__init__(self)
@@ -51,12 +55,13 @@ class ConsumerThread(threading.Thread):
         self.topic_object = topic_object
         self.cpu_metric = cpu_metric
         self.ram_metric = ram_metric
-        self.ping_metric = ping_metric
-        self.incoming_traffic_metric = incoming_traffic_metric
-        self.outcoming_traffic_metric = outcoming_traffic_metric
+        self.rtt_metric = rtt_metric
+        self.inbound_metric = inbound_metric
+        self.outbound_metric = outbound_metric
         self.exit_signal = threading.Event()
         self.controller_metrics_dict = controller_metrics_dict
-
+        self.kwargs = kwargs
+        self.logger = kwargs['logger']
 
     # Definizione metodi di aggiornamento delle metriche nelle rispettive variabili
     def update_cpu_metric(self, value, label_value):
@@ -74,132 +79,138 @@ class ConsumerThread(threading.Thread):
                 value = -1.0
             self.controller_metrics_dict[self.topic_name][RAM].append(value)
 
-    def update_ping_metric(self, value, label_value):
-        self.ping_metric.labels(label_name=label_value).set(value)
+    def update_rtt_metric(self, value, label_value):
+        self.rtt_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
-            self.controller_metrics_dict[self.topic_name][DELAY].append(value)
+            self.controller_metrics_dict[self.topic_name][RTT].append(value)
 
     def update_incoming_traffic_metric(self, value, label_value):
-        self.incoming_traffic_metric.labels(label_name=label_value).set(value)
+        self.inbound_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
-            self.controller_metrics_dict[self.topic_name][IN_TRAFFIC].append(value)
+            self.controller_metrics_dict[self.topic_name][INBOUND].append(value)
 
     def update_outcoming_traffic_metric(self, value, label_value):
-        self.outcoming_traffic_metric.labels(label_name=label_value).set(value)
+        self.outbound_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
-            self.controller_metrics_dict[self.topic_name][OUT_TRAFFIC].append(value)
+            self.controller_metrics_dict[self.topic_name][OUTBOUND].append(value)
 
     def stop_threads(self):
         print("Stopping thread...")
         self.exit_signal.set()
     
 
+    def deserialize_message(self, msg):
+        """
+        Deserialize the JSON-serialized data received from the Kafka Consumer.
+
+        Args:
+            msg (Message): The Kafka message object.
+
+        Returns:
+            dict or None: The deserialized Python dictionary if successful, otherwise None.
+        """
+        try:
+            # Decode the message and deserialize it into a Python dictionary
+            message_value = json.loads(msg.value().decode('utf-8'))
+            self.logger.debug(f"Deserialized message: {message_value}")
+            return message_value
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Error deserializing message: {e}")
+            return None
+        
+    
+    def process_message(self, message):
+
+        self.received_messages += 1
+
+        if (message[self.topic_name+"_"+CPU]):
+            self.logger.debug(f'CPU probe received from {self.topic_name}: {message[self.topic_name+"_"+CPU]}')
+            self.update_cpu_metric(float(message[self.topic_name+"_"+CPU]), self.topic_name)
+
+        if (message[self.topic_name+"_"+RAM]):
+            self.logger.debug(f'RAM probe received from {self.topic_name}: {message[self.topic_name+"_"+RAM]}')
+            self.update_ram_metric(float(message[self.topic_name+"_"+RAM]), self.topic_name)
+
+        if (message[self.topic_name+"_"+RTT]):
+            self.logger.debug(f'RTT probe received from {self.topic_name}: {message[self.topic_name+"_"+RTT]}')
+            self.update_rtt_metric(float(message[self.topic_name+"_"+RTT]), self.topic_name)
+
+        if (message[self.topic_name+"_"+INBOUND]):
+            self.logger.debug(f'IN_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+INBOUND]}')
+            self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+INBOUND]), self.topic_name)
+
+        if (message[self.topic_name+"_"+OUTBOUND]):
+            self.logger.debug(f'OUT_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+OUTBOUND]}')
+            self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+OUTBOUND]), self.topic_name)
+
+
     def run(self):
 
-        # Definizione metodi di connessione al server Kafka
+        def generate_random_string(length=10):
+            letters = string.ascii_letters + string.digits
+            return ''.join(random.choice(letters) for i in range(length))
+    
         consumer_conf = {'bootstrap.servers': self.bootstrap_servers, 
-                         'group.id': 'my-group'}
+                         'group.id': generate_random_string(7),  # Consumer group ID for message offset tracking
+                         'auto.offset.reset': 'earliest'  # Start reading from the earliest message if no offset is present
+                        }
         consumer = Consumer(consumer_conf)
 
         conf = {'bootstrap.servers': self.bootstrap_servers}
         admin_client = AdminClient(conf)
         
-        delete_ok = False
-        end_message = str(math.nan).encode('utf-8')
-        stopper = 0       
+        self.received_messages = 0       
 
-        # Estrazione numero delle partizioni dal topic
-        num_partitions = len(self.topic_object.partitions)
+        consumer.subscribe([self.topic_name])
 
-        # Controllo se il topic a cui ci si deve iscrivere sia corretto: viene considerata una condizione
-        # sufficiente se il numero di partizioni all'interno del topic sono esattamente 5
-        if (num_partitions==5):
+        try:
 
-            consumer.subscribe([self.topic_name])
+            while not self.exit_signal.is_set():
 
-            try:
+                poll_temptative = 0
+                message_received = False
+                while not message_received and self.kwargs['health']['max_failed_polls'] > poll_temptative:
+                    poll_temptative += 1
+                    try:
+                        # well wait a message max for poll_timeout_seconds secs...
+                        msg = consumer.poll(timeout=self.kwargs['health']['poll_timeout_seconds'])
+                        if msg is not None:
+                            message_received = True
+                    except KafkaException as e:
+                        self.logger.error(f"Kafka consuming error {e}")
 
-                while not self.exit_signal.is_set():
+                # we put nans if there's no message after three secs
+                if msg is None :
+                    self.logger.warning(f'No message received for {self.topic_name} after {self.kwargs["health"]["max_failed_polls"]} polls')
+                    self.logger.warning(f'Will now halt the consumer thread for {self.topic_name} and delete the topic')
+                    break
 
-                    # Il messaggio viene atteso per massimo 3 secondi
-                    msg = consumer.poll(timeout=3)
+                self.logger.debug(f'Got message: {msg.value().decode("utf-8")} from partition {msg.partition()}')
 
-                    #print(f'Got message: {msg.value().decode("utf-8")} from partition {msg.partition()}')
+                if msg.error():
+                    if msg.error().code() == KafkaException._PARTITION_EOF:
+                        self.logger.warning(f'End of partition reached for {msg.topic()}')
+                        continue
+                    else:
+                        self.logger.error(f'Consumer Error: {msg.error()}')
+                        break
 
-                    # Nel caso non arrivasse alcun messaggio, vengono inseriti valori nulli per le 
-                    # rispettive metriche
+                # Each metric will be sent to prometheus
+                deserialized_data = self.deserialize_message(msg)
+                if deserialized_data:
+                    self.process_message(deserialized_data)
 
-                    if msg is None :
-                        self.update_cpu_metric(end_message, self.topic_name)
-                        self.update_ram_metric(end_message, self.topic_name)
-                        self.update_ping_metric(end_message, self.topic_name)
-                        self.update_incoming_traffic_metric(end_message, self.topic_name)
-                        self.update_outcoming_traffic_metric(end_message, self.topic_name)
-
-                        stopper += 1
-
-                        # Nel caso non si ricevesse alcun messaggio per 40*3 = 120 secondi, viene interrotto
-                        # il ciclo
-                        if (stopper <40):
-                            continue
-                        else:
-                            delete_ok = True
-                            break
-
-                    if msg.error():
-                        if msg.error().code() == KafkaException._PARTITION_EOF:
-                            print(f'Partition {msg.partition()} terminated')
-                            continue
-                        else:
-                            print(f'Error: {msg.error()}')
-                            break
-
-                    # Lettura metriche dal server: ciascuna metrica ha la propria partizione dedicata
-                    # Ciascuna metrica verrà monitorata tramite Prometheus e inserita nel suo sistema di
-                    # archiviazione
-                    if (msg.partition()==0):
-                        # print(f'Valore CPU letto da {self.topic}: {msg.value().decode("utf-8")}')
-                        self.update_cpu_metric(float(msg.value()), self.topic_name)
-                        stopper = 0
-
-                    elif (msg.partition()==1):
-                        # print(f'Valore RAM letto da {self.topic}: {msg.value().decode("utf-8")}')
-                        self.update_ram_metric(float(msg.value()), self.topic_name)
-                        stopper = 0
-
-                    elif (msg.partition()==2):
-                        # print(f'Valore latenza letto da {self.topic}: {msg.value().decode("utf-8")}')
-                        self.update_ping_metric(float(msg.value()), self.topic_name)
-                        stopper = 0
-
-                    elif (msg.partition()==3):
-                        # print(f'Valore traffico rete in entrata letto da {self.topic}: {msg.value().decode("utf-8")}')
-                        self.update_incoming_traffic_metric(float(msg.value()), self.topic_name)
-                        stopper = 0
-
-                    elif (msg.partition()==4):
-                        # print(f'Valore traffico rete in uscita letto da {self.topic}: {msg.value().decode("utf-8")}')
-                        self.update_outcoming_traffic_metric(float(msg.value()), self.topic_name)
-                        stopper = 0
-
-            # Quando viene interrotto il ciclo, se ciò è dovuto alla mancanza di ricezione dei messaggi
-            # per un periodo troppo lungo stabilito dalla variabile booleana "delete_ok", il thread viene 
-            # arrestato e il topic dedicatogli viene eliminato in maniera tale da fare pulizia all'interno
-            # del server kafka         
-            finally:
-
-                if delete_ok:
-                    admin_client.delete_topics([self.topic_name])
-
-                print(f"{self.topic_name}: stopped thread")
-
-        else:
-
+        # Notice we delete kafka topic at the end of the consuming process    
+        finally:
             admin_client.delete_topics([self.topic_name])
-            print(f"topic {self.topic_name} did not registered correctly")
+            self.logger.info(f"Deleted topic {self.topic_name}")
+            self.logger.info(f"Consuming thread for topic {self.topic_name}: stopped!")
+
+
+    

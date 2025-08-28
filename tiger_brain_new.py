@@ -75,9 +75,9 @@ colors = [
 
 RAM = 'RAM'
 CPU = 'CPU'
-IN_TRAFFIC = 'IN_TRAFFIC'
-OUT_TRAFFIC = 'OUT_TRAFFIC'
-DELAY = 'DELAY'
+INBOUND = 'INBOUND'
+OUTBOUND = 'OUTBOUND'
+RTT = 'RTT'
 AGENT = 'AGENT'
 
 # Constants for wandb monitoring:
@@ -1967,9 +1967,9 @@ class TigerBrain():
                 flows[0].node_feats[:len(node_feats[flows[0].dest_ip][CPU]),:]  = torch.hstack([
                         torch.Tensor(node_feats[flows[0].dest_ip][CPU]).unsqueeze(1),
                         torch.Tensor(node_feats[flows[0].dest_ip][RAM]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][IN_TRAFFIC]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][OUT_TRAFFIC]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][DELAY]).unsqueeze(1)])
+                        torch.Tensor(node_feats[flows[0].dest_ip][INBOUND]).unsqueeze(1),
+                        torch.Tensor(node_feats[flows[0].dest_ip][OUTBOUND]).unsqueeze(1),
+                        torch.Tensor(node_feats[flows[0].dest_ip][RTT]).unsqueeze(1)])
             
             node_feat_input_batch = flows[0].node_feats.unsqueeze(0)
 
@@ -1991,9 +1991,9 @@ class TigerBrain():
                     flow.node_feats[:len(node_feats[flow.dest_ip][CPU]),:] = torch.hstack([
                         torch.Tensor(node_feats[flow.dest_ip][CPU]).unsqueeze(1),
                         torch.Tensor(node_feats[flow.dest_ip][RAM]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][IN_TRAFFIC]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][OUT_TRAFFIC]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][DELAY]).unsqueeze(1)]) 
+                        torch.Tensor(node_feats[flow.dest_ip][INBOUND]).unsqueeze(1),
+                        torch.Tensor(node_feats[flow.dest_ip][OUTBOUND]).unsqueeze(1),
+                        torch.Tensor(node_feats[flow.dest_ip][RTT]).unsqueeze(1)]) 
                        
                 node_feat_input_batch = torch.cat(
                             [node_feat_input_batch,

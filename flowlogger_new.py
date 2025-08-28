@@ -131,10 +131,11 @@ class FlowLogger(object):
           ips_containers):
         
         sender_ip_addr = flow['match']['nw_src'].split('/')[0]
+        dest_ip_addr = flow['match']['nw_dst'].split('/')[0]
 
         new_flow = Flow(
           source_ip=sender_ip_addr, 
-          dest_ip=flow['match']['nw_dst'].split('/')[0], 
+          dest_ip=dest_ip_addr, 
           switch_output_port=flow['actions'][1]['port'],
           flow_feat_dim=self.flow_feat_dim,
           flow_buff_len=self.flow_buff_len)
