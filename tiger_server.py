@@ -113,7 +113,13 @@ def pprint(obj):
 def run_server():
   global app
   # Start the FastAPI server
-  uvicorn.run(app, host="0.0.0.0", port=8000)
+  try:
+        port = int(os.environ.get("SERVER_PORT"))
+  except Exception as e:
+      print(f"Error parsing SERVER_PORT env var: {e}")
+      assert False
+
+  uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 def _handle_ConnectionUp (event):
