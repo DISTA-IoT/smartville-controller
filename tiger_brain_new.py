@@ -380,7 +380,7 @@ class TigerBrain():
     @epistemic_thread_safe
     def reset_environment(self):
         self.env.reset()    
-        self.init_inference_neural_modules(self.learning_rate, self.seed, self.intrusion_detection_kwargs)
+        self.init_inference_neural_modules()
         self.episode_count += 1
         
 
@@ -467,8 +467,34 @@ class TigerBrain():
             device=self.device)
         
 
-    def init_inference_neural_modules(self, lr, seed, kwargs):
-        torch.manual_seed(seed)
+    def load_models_from_source(self):
+        """
+        Safely load models from source code with error handling
+        """
+        try:
+            # Create a custom namespace for execution
+            namespace = {}
+            
+            # Execute the source code
+            exec(self.intrusion_detection_kwargs['models'], namespace)
+            
+            # Extract only the classes that are nn.Module subclasses
+            model_classes = {}
+            for name, obj in namespace.items():
+                if (isinstance(obj, type) and 
+                    hasattr(obj, '__bases__') and 
+                    any('Module' in base.__name__ for base in obj.__bases__ if hasattr(base, '__name__'))):
+                    model_classes[name] = obj
+            
+            return model_classes
+            
+        except Exception as e:
+            self.logger.error(f"Error loading models from source: {e}")
+            return {}
+    
+    def init_inference_neural_modules(self):
+        torch.manual_seed(self.seed)
+        model_classes = self.load_models_from_source()
         self.confidence_decoder = ConfidenceDecoder(device=self.device)
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
         self.cs_criterion = nn.CrossEntropyLoss().to(self.device)
@@ -487,7 +513,7 @@ class TigerBrain():
                     kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
                     device=self.device,
-                    kwargs=kwargs)
+                    kwargs=self.intrusion_detection_kwargs)
             
             else: 
 
@@ -498,7 +524,7 @@ class TigerBrain():
                     kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
                     device=self.device,
-                    kwargs=kwargs)
+                    kwargs=self.intrusion_detection_kwargs)
 
         else:
             
@@ -511,7 +537,7 @@ class TigerBrain():
                     kr_heads=self.kernel_regressor_heads,
                     dropout_prob=self.dropout,
                     device=self.device,
-                    kwargs=kwargs)
+                    kwargs=self.intrusion_detection_kwargs)
             else:
 
                 self.classifier = MultiClassFlowClassifier(
@@ -520,7 +546,7 @@ class TigerBrain():
                     dropout_prob=self.dropout,
                     kr_heads=self.kernel_regressor_heads,
                     device=self.device,
-                    kwargs=kwargs)
+                    kwargs=self.intrusion_detection_kwargs)
             
 
         self.check_pretrained()
@@ -532,7 +558,7 @@ class TigerBrain():
         self.classifier.to(self.device)
         self.optimizer = optim.Adam(
             params_for_optimizer, 
-            lr=lr)
+            lr=self.learning_rate)
 
         if self.eval:
             self.classifier.eval()

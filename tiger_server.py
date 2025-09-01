@@ -219,6 +219,7 @@ def launch(**kwargs):
         intrusion_detection_args['rewards'] = kwargs.get("rewards", {})
         intrusion_detection_args['knowledge'] = kwargs.get("knowledge", {})
         intrusion_detection_args['logger'] = logger
+        intrusion_detection_args['models'] = kwargs.get("models", {})
 
         flow_logger = FlowLogger(
             intrusion_detection_args.get("multi_class", False),
