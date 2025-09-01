@@ -144,6 +144,9 @@ class FlowLogger(object):
         if sender_ip_addr in ips_containers:
             if ips_containers[sender_ip_addr] != 'pox-controller':
                hostname = ips_containers[sender_ip_addr]
+               if hostname not in traffic_dict.keys():
+                  self.logger_instance.debug(f"Hostname {hostname} not found in traffic_dict")
+                  return
                flow_info = traffic_dict[hostname]
                      
                new_flow.element_class = flow_info['pattern']
