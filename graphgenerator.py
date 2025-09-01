@@ -17,12 +17,15 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 from prometheus_api_client.exceptions import PrometheusApiClientException
 
+RAM = 'RAM'
+CPU = 'CPU'
+INBOUND = 'INBOUND'
+OUTBOUND = 'OUTBOUND'
+RTT = 'RTT'
+
+
 class GraphGenerator:
-    """
-    Questa classe è dedicata all'inserimento dei vari grafici su Grafana per la visualizzazione 
-    interattiva. Ciò viene svolto tramite la libreria che permette la connessione all'host grafana mediante
-    la sua chiave api messa a disposizione
-    """
+
     def __init__(self, grafana_connection, prometheus_connection):
         self.num_panels = 0
         self.grafana_connection = grafana_connection
@@ -35,20 +38,20 @@ class GraphGenerator:
         in tal caso non vengono inseriti nuoovamente.
         """
 
-        if not self.graph_exists('CPU_data', panel_title):
-            self.generate_graph('CPU_data', panel_title, 'CPU_percentage','semi-dark-yellow')
+        if not self.graph_exists(CPU, panel_title):
+            self.generate_graph(CPU, panel_title, CPU,'semi-dark-yellow')
 
-        if not self.graph_exists('RAM_data', panel_title):
-            self.generate_graph('RAM_data', panel_title, 'RAM_GB','#315b2b')
+        if not self.graph_exists(RAM, panel_title):
+            self.generate_graph(RAM, panel_title, RAM,'#315b2b')
 
-        if not self.graph_exists('PING_data', panel_title):
-            self.generate_graph('PING_data', panel_title, 'Latenza_ms','#00e674')
+        if not self.graph_exists(RTT, panel_title):
+            self.generate_graph(RTT, panel_title, RTT,'#00e674')
 
-        if not self.graph_exists('INT_data', panel_title):
-            self.generate_graph('INT_data', panel_title, 'Incoming_network_KB','#00bcff')
+        if not self.graph_exists(INBOUND, panel_title):
+            self.generate_graph(INBOUND, panel_title, INBOUND,'#00bcff')
 
-        if not self.graph_exists('ONT_data', panel_title):
-            self.generate_graph('ONT_data', panel_title, 'Outcoming_network_KB','#0037ff')
+        if not self.graph_exists(OUTBOUND, panel_title):
+            self.generate_graph(OUTBOUND, panel_title, OUTBOUND,'#0037ff')
 
     
     def graph_exists(self, dash_UID, panel_title):
@@ -188,11 +191,11 @@ class GraphGenerator:
         Riorganizzala dashboard in maniera tale che viene riorganizzata
         in modo tale che i pannelli che presentano valori più alti finiscono in cima
         """
-        self.sort_single_graph('CPU_data')
-        self.sort_single_graph('RAM_data')
-        self.sort_single_graph('PING_data')
-        self.sort_single_graph('INT_data')
-        self.sort_single_graph('ONT_data')
+        self.sort_single_graph(CPU)
+        self.sort_single_graph(RAM)
+        self.sort_single_graph(RTT)
+        self.sort_single_graph(INBOUND)
+        self.sort_single_graph(OUTBOUND)
 
 
     def sort_single_graph(self, dash_UID):
