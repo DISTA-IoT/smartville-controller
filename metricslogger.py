@@ -146,11 +146,11 @@ class MetricsLogger:
         start_http_server(port=self.kwargs['prometheus']['clientport'], addr=self.kwargs['prometheus']['clienthost'])
 
         # Definizione metriche inserite su Prometheus
-        self.cpu_metric = Gauge('CPU_percentage', 'CPU percentage metric', ['label_name'])
-        self.ram_metric = Gauge('RAM_GB', 'RAM metric', ['label_name'])
-        self.ping_metric = Gauge('Latency ms', 'Network delay metric', ['label_name'])
-        self.incoming_traffic_metric = Gauge('Inbound (KB)', 'Inbound traffic metric', ['label_name'])
-        self.outcoming_traffic_metric = Gauge('Outbound (KB)', 'Outbound traffic metric', ['label_name'])
+        self.cpu_metric = Gauge(CPU, CPU, ['label_name'])
+        self.ram_metric = Gauge(RAM, RAM, ['label_name'])
+        self.ping_metric = Gauge(RTT, RTT, ['label_name'])
+        self.incoming_traffic_metric = Gauge(INBOUND, INBOUND, ['label_name'])
+        self.outcoming_traffic_metric = Gauge(OUTBOUND, OUTBOUND, ['label_name'])
         
         # prometheus_connection will permit the graph generator 
         # organize graphs...  
