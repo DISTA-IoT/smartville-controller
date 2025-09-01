@@ -505,7 +505,11 @@ class TigerBrain():
             
             if self.use_node_feats:
 
-                self.classifier = ThreeStreamMulticlassFlowClassifier(
+                assert 'ThreeStreamMulticlassFlowClassifier' in model_classes, \
+                    f"Using packet features and node features requires three features stream for inference " + \
+                    f", but a class named ThreeStreamMulticlassFlowClassifier was not found in your models.py file"
+                
+                self.classifier = model_classes['ThreeStreamMulticlassFlowClassifier'](
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=self.packet_feat_dim,
                     third_stream_input_size=5,
@@ -517,7 +521,11 @@ class TigerBrain():
             
             else: 
 
-                self.classifier = TwoStreamMulticlassFlowClassifier(
+                assert 'TwoStreamMulticlassFlowClassifier' in model_classes, \
+                    f"Using packet features requires two features stream for inference " + \
+                    f", but a class named TwoStreamMulticlassFlowClassifier was not found in your models.py file"
+                
+                self.classifier = model_classes['TwoStreamMulticlassFlowClassifier'](
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=self.packet_feat_dim,
                     hidden_size=self.h_dim,
@@ -529,8 +537,12 @@ class TigerBrain():
         else:
             
             if self.use_node_feats:
+
+                assert 'TwoStreamMulticlassFlowClassifier' in model_classes, \
+                    f"Using node features requires two features stream for inference " + \
+                    f", but a class named TwoStreamMulticlassFlowClassifier was not found in your models.py file"
                 
-                self.classifier = TwoStreamMulticlassFlowClassifier(
+                self.classifier = model_classes['TwoStreamMulticlassFlowClassifier'](
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=5,
                     hidden_size=self.h_dim,
@@ -540,7 +552,11 @@ class TigerBrain():
                     kwargs=self.intrusion_detection_kwargs)
             else:
 
-                self.classifier = MultiClassFlowClassifier(
+                assert 'MultiClassFlowClassifier' in model_classes, \
+                    f"Using flow features only requires one features stream for inference " + \
+                    f", but a class named MultiClassFlowClassifier was not found in your models.py file"
+                
+                self.classifier = model_classes['MultiClassFlowClassifier'](
                     input_size=self.flow_feat_dim, 
                     hidden_size=self.h_dim,
                     dropout_prob=self.dropout,

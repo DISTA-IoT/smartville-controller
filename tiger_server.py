@@ -204,65 +204,84 @@ def launch(**kwargs):
         global flow_logger, metrics_logger, controller_brain, smart_switch
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
 
-        logger.setLevel(kwargs.get("smart_switch_log_level").upper())
-        logger.info(f"Initialisation command received")
+        try:
+          logger.setLevel(kwargs.get("smart_switch_log_level").upper())
+          logger.info(f"Initialisation command received")
 
-        pprint(kwargs)
+          pprint(kwargs)
 
-        args = kwargs
-        args['logger'] = logger
+          args = kwargs
+          args['logger'] = logger
+          
+          intrusion_detection_args = kwargs.get("intrusion_detection", {})
+          intrusion_detection_args['container_ips'] = kwargs.get("container_ips", {})
+          intrusion_detection_args['ips_containers'] = kwargs.get("ips_containers", {})
+          intrusion_detection_args['traffic_dict'] = kwargs.get("traffic_dict", [])
+          intrusion_detection_args['rewards'] = kwargs.get("rewards", {})
+          intrusion_detection_args['knowledge'] = kwargs.get("knowledge", {})
+          intrusion_detection_args['logger'] = logger
+          intrusion_detection_args['models'] = kwargs.get("models", {})
+        except Exception as e:
+          logger.error(f"Error parsing initialisation command: {e}")
+          return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
         
-        intrusion_detection_args = kwargs.get("intrusion_detection", {})
-        intrusion_detection_args['container_ips'] = kwargs.get("container_ips", {})
-        intrusion_detection_args['ips_containers'] = kwargs.get("ips_containers", {})
-        intrusion_detection_args['traffic_dict'] = kwargs.get("traffic_dict", [])
-        intrusion_detection_args['rewards'] = kwargs.get("rewards", {})
-        intrusion_detection_args['knowledge'] = kwargs.get("knowledge", {})
-        intrusion_detection_args['logger'] = logger
-        intrusion_detection_args['models'] = kwargs.get("models", {})
-
-        flow_logger = FlowLogger(
-            intrusion_detection_args.get("multi_class", False),
-            intrusion_detection_args.get("packet_buffer_len", 0),
-            intrusion_detection_args.get("packet_feat_dim", 64),
-            intrusion_detection_args.get("anonymize_transport_ports", True),
-            intrusion_detection_args.get("flow_feat_dim", 4),
-            intrusion_detection_args.get("flow_buff_len", 10)
-        )
-
-        if intrusion_detection_args.get("node_features"):
-            metrics_logger = MetricsLogger(args)
-            
-
-        # The controllerBrain holds the ML functionalities.
-        controller_brain = TigerBrain(
-            eval=str_to_bool(intrusion_detection_args.get('eval')),
-            flow_feat_dim=intrusion_detection_args.get("flow_feat_dim"),
-            packet_feat_dim=intrusion_detection_args.get("packet_feat_dim"),
-            dropout=intrusion_detection_args.get("dropout"),
-            multi_class=str_to_bool(intrusion_detection_args.get('multi_class')), 
-            init_k_shot=int(intrusion_detection_args.get('init_k_shot')),
-            replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size')),
-            kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression')),
-            device=intrusion_detection_args.get('device'),
-            seed=int(intrusion_detection_args.get('seed')),
-            debug=str_to_bool(intrusion_detection_args.get('ai_debug')),
-            wb_track=str_to_bool(intrusion_detection_args.get('wb_tracking')),
-            wb_project_name=intrusion_detection_args.get('wb_project_name'),
-            wb_run_name=intrusion_detection_args.get('wb_run_name'),
-            report_step_freq=int(intrusion_detection_args.get('report_step_freq')),
-            kwargs=intrusion_detection_args)
-        
-
-        # Registering Switch component:
-        smart_switch = SmartSwitch(
-          flow_logger=flow_logger,
-          **get_switching_args()
+        try:
+          flow_logger = FlowLogger(
+              intrusion_detection_args.get("multi_class", False),
+              intrusion_detection_args.get("packet_buffer_len", 0),
+              intrusion_detection_args.get("packet_feat_dim", 64),
+              intrusion_detection_args.get("anonymize_transport_ports", True),
+              intrusion_detection_args.get("flow_feat_dim", 4),
+              intrusion_detection_args.get("flow_buff_len", 10)
           )
-        
-        core.register("smart_switch", smart_switch) 
-        core.listen_to_dependencies(smart_switch)
+        except Exception as e:
+          logger.error(f"Error initialising flow logger: {e}")
+          return {"status_code": 500, "msg": f"Error initialising flow logger: {e}"}
 
+        try:
+          if intrusion_detection_args.get("node_features"):
+              metrics_logger = MetricsLogger(args)
+        except Exception as e:
+          logger.error(f"Error creating metrics logger: {e}")
+          return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"} 
+
+        try:
+          # The controllerBrain holds the ML functionalities.
+          controller_brain = TigerBrain(
+              eval=str_to_bool(intrusion_detection_args.get('eval')),
+              flow_feat_dim=intrusion_detection_args.get("flow_feat_dim"),
+              packet_feat_dim=intrusion_detection_args.get("packet_feat_dim"),
+              dropout=intrusion_detection_args.get("dropout"),
+              multi_class=str_to_bool(intrusion_detection_args.get('multi_class')), 
+              init_k_shot=int(intrusion_detection_args.get('init_k_shot')),
+              replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size')),
+              kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression')),
+              device=intrusion_detection_args.get('device'),
+              seed=int(intrusion_detection_args.get('seed')),
+              debug=str_to_bool(intrusion_detection_args.get('ai_debug')),
+              wb_track=str_to_bool(intrusion_detection_args.get('wb_tracking')),
+              wb_project_name=intrusion_detection_args.get('wb_project_name'),
+              wb_run_name=intrusion_detection_args.get('wb_run_name'),
+              report_step_freq=int(intrusion_detection_args.get('report_step_freq')),
+              kwargs=intrusion_detection_args)
+        
+        except Exception as e:
+          logger.error(f"Error creating controller brain: {e}")
+          return {"status_code": 500, "msg": f"Error creating controller brain: {e}"}
+
+        try:
+          # Registering Switch component:
+          smart_switch = SmartSwitch(
+            flow_logger=flow_logger,
+            **get_switching_args()
+            )
+          
+          core.register("smart_switch", smart_switch) 
+          core.listen_to_dependencies(smart_switch)
+
+        except Exception as e:
+          logger.error(f"Error creating SmartSwitch: {e}")
+          return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
 
         FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
