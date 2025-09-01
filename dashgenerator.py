@@ -31,25 +31,25 @@ class DashGenerator:
 
     def generate_all_dashes(self):
         
-        if not self.dashboard_exists('CPU_data'):
-            self.logger.info("Creating new dashboard: CPU_data ...")
-            self.generate_single_dash('CPU_data','CPU (%)')
+        if not self.dashboard_exists('CPU'):
+            self.logger.info("Creating new dashboard: CPU ...")
+            self.generate_single_dash('CPU','CPU')
 
-        if not self.dashboard_exists('RAM_data'):
-            self.logger.info("Creating new dashboard: RAM_data...")
-            self.generate_single_dash('RAM_data','RAM (GB)')
+        if not self.dashboard_exists('RAM'):
+            self.logger.info("Creating new dashboard: RAM...")
+            self.generate_single_dash('RAM','RAM')
 
-        if not self.dashboard_exists('PING_data'):
-            self.logger.info("Creating new dashboard:  PING_data ...")
-            self.generate_single_dash('PING_data','Latenza (ms)')
+        if not self.dashboard_exists('RTT'):
+            self.logger.info("Creating new dashboard:  RTT ...")
+            self.generate_single_dash('RTT','RTT')
 
-        if not self.dashboard_exists('INT_data'):
-            self.logger.info("Creating new dashboard:  INT_data...")
-            self.generate_single_dash('INT_data','Traffico rete in entrata (KBps)')
+        if not self.dashboard_exists('INBOUND'):
+            self.logger.info("Creating new dashboard:  INBOUND...")
+            self.generate_single_dash('INBOUND','INBOUND')
 
-        if not self.dashboard_exists('ONT_data'):
-            self.logger.info("Creating new dashboard: ONT_data creazione in corso...")
-            self.generate_single_dash('ONT_data','Traffico rete in uscita (KBps)')
+        if not self.dashboard_exists('OUTBOUND'):
+            self.logger.info("Creating new dashboard: OUTBOUND...")
+            self.generate_single_dash('OUTBOUND','OUTBOUND')
 
     
     def dashboard_exists(self, dash_UID):
@@ -63,36 +63,6 @@ class DashGenerator:
         except Exception:
             # Nel caso la connessione non andasse a buon fine, allora significa che la dashboard 
             # non è esistente 
-            return False
-
-
-    def generate_single_dash_with_return(self, dash_UID, dash_name):
-        """ 
-        Creazione di una nuova dashboard
-        """
-        # Configurazione dashboard tramite la definizione del suo JSON model
-        dashboard_config = {
-            "dashboard": {
-                "uid": dash_UID,
-                "title": dash_name,
-                "panels": [],
-                "refresh": "5s",
-                "time": {
-                    "from": "now-15m",
-                    "to": "now"
-                },
-            },
-            "overwrite": False
-        }
-
-        # Creazione effettiva dashboard 
-        try:
-            self.grafana_connection.dashboard.update_dashboard(dashboard_config)
-            self.logger.info(f"Dashboard with UID '{dash_UID}' created!")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error: {e} try a different username or password")
             return False
 
     
