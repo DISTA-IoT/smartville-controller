@@ -47,6 +47,8 @@ RUN git clone https://github.com/DISTA-IoT/smartville-controller.git pox/smartCo
 
 WORKDIR /pox/pox/smartController
 
-RUN pip install -r requirements.txt
+RUN pip install uv
+
+RUN uv  pip sync --system requirements.txt
 
 
