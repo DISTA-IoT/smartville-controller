@@ -210,6 +210,7 @@ def launch(**kwargs):
 
           pprint(kwargs)
 
+          os.environ['no_proxy'] = os.environ['no_proxy']+','+kwargs.get("monitor_ip")
           args = kwargs
           args['logger'] = logger
           
