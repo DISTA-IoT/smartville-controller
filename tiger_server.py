@@ -161,6 +161,15 @@ def smart_check(period):
     time.sleep(period)
 
 
+def fix_no_proxy(monitor_ip):
+  no_proxy = os.environ.get('no_proxy', '')
+  if no_proxy != '':
+      no_proxy += ','
+  no_proxy += monitor_ip
+  os.environ['no_proxy'] = no_proxy
+  logger.info(f"Fixed no_proxy to {no_proxy}")
+    
+    
 def launch(**kwargs):     
     global app, app_thread, openflow_connection, smart_switch
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
@@ -210,7 +219,10 @@ def launch(**kwargs):
 
           pprint(kwargs)
 
-          os.environ['no_proxy'] = os.environ['no_proxy']+','+kwargs.get("monitor_ip")
+          
+
+          fix_no_proxy(kwargs.get("monitor_ip"))
+
           args = kwargs
           args['logger'] = logger
           
