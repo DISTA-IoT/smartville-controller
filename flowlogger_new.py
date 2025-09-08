@@ -150,21 +150,19 @@ class FlowLogger(object):
                flow_info = traffic_dict[hostname]
                      
                new_flow.element_class = flow_info['pattern']
-               # legacy labelling:
-               # if flow_info['benign']: new_flow.element_class += BENIGN_SUFFIX
-
                new_flow.test_zda = flow_info['pattern'] in current_knowledge['G2s']
                new_flow.zda = new_flow.test_zda or flow_info['pattern'] in current_knowledge['G1s']
                
                flow_features = self.extract_flow_feature_tensor(flow=flow)
-
+               self.update_packet_buffer(new_flow)
+               
                if new_flow.flow_id in self.flows_dict.keys():
                   self.flows_dict[new_flow.flow_id].enrich_flow_features(flow_features)
                else:
                   new_flow.enrich_flow_features(flow_features)
                   self.flows_dict[new_flow.flow_id] = new_flow
 
-               self.update_packet_buffer(new_flow)
+               
 
 
     def update_packet_buffer(self, flow_object):
@@ -179,11 +177,11 @@ class FlowLogger(object):
           packets_buffer = self.packet_cache[partial_flow_id]
           del self.packet_cache[partial_flow_id]
 
-          if self.flows_dict[flow_object.flow_id].packets_tensor == None:
-             self.flows_dict[flow_object.flow_id].packets_tensor = packets_buffer
+          if flow_object.packets_tensor == None:
+             flow_object.packets_tensor = packets_buffer
           else: 
              for single_packet_tensor in packets_buffer.buffer:
-                self.flows_dict[flow_object.flow_id].packets_tensor.add(single_packet_tensor)
+                flow_object.packets_tensor.add(single_packet_tensor)
 
     
     def _handle_flowstats_received (self, event, current_knowledge, traffic_dict, ips_containers):
