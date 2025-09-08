@@ -184,17 +184,18 @@ def launch(**kwargs):
 
     @app.post("/stop")
     async def shutdown():
-        global stop_tiger_threads, inference_thread, flowstatreq_thread
+        global stop_tiger_threads, inference_thread, flowstatreq_thread, metrics_logger
 
         logger.info("Shutdown command received")
-        if stop_tiger_threads:
-          return {"status_code": 304, "msg": "SmartSwitch is already stopped"}
         
         stop_tiger_threads = True
         if inference_thread is not None:
           inference_thread.join()
         if flowstatreq_thread is not None:
           flowstatreq_thread.join()
+
+        metrics_logger.shutdown()
+        metrics_logger = None
       
 
         return {"status_code": 200, "msg": "SmartSwitch is stopped"}
@@ -218,8 +219,6 @@ def launch(**kwargs):
           logger.info(f"Initialisation command received")
 
           pprint(kwargs)
-
-          
 
           fix_no_proxy(kwargs.get("monitor_ip"))
 
@@ -282,19 +281,23 @@ def launch(**kwargs):
           logger.error(f"Error creating controller brain: {e}")
           return {"status_code": 500, "msg": f"Error creating controller brain: {e}"}
 
-        try:
-          # Registering Switch component:
-          smart_switch = SmartSwitch(
-            flow_logger=flow_logger,
-            **get_switching_args()
-            )
-          
-          core.register("smart_switch", smart_switch) 
-          core.listen_to_dependencies(smart_switch)
 
-        except Exception as e:
-          logger.error(f"Error creating SmartSwitch: {e}")
-          return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
+        if not core.hasComponent("smart_switch"):
+          try:
+            # Registering Switch component:
+            smart_switch = SmartSwitch(
+              flow_logger=flow_logger,
+              **get_switching_args())
+            core.register("smart_switch", smart_switch) 
+            core.listen_to_dependencies(smart_switch)
+          except Exception as e:
+            logger.error(f"Error creating SmartSwitch: {e}")
+            return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
+        else:
+          logger.info("SmartSwitch already registered")
+          smart_switch = core.components["smart_switch"]
+          smart_switch.flow_logger = flow_logger # we need to update the flow logger instance attached to the SmartSwitch
+          smart_switch.initialize()
 
         FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
@@ -317,6 +320,8 @@ def launch(**kwargs):
             args=(FLOWSTATS_FREQ_SECS,),
             daemon=True
           )
+
+          time.sleep(5)
 
           inference_thread = threading.Thread(
             target=smart_check,

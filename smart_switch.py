@@ -90,6 +90,10 @@ class SmartSwitch(EventMixin):
     self.max_buffering_secs = int(kwargs.get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs.get('arp_req_exp_secs'))
     self.logger = kwargs.get('logger')
+    self.flow_logger = flow_logger
+    self.initialize()
+
+  def initialize(self):
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time
     self.recently_sent_ARPs = {}
@@ -107,8 +111,7 @@ class SmartSwitch(EventMixin):
     # This timer handles expiring stuff 
     # Doesnt seems having to do with time to live stuff
     self._expire_timer = Timer(5, self._handle_expiration, recurring=True)
-
-    self.flow_logger = flow_logger
+    
     self.openflow_packets_received = 0
     self.forwardingRules = defaultdict(list)
     self.logger.info(f"SmartSwitch initialized!!")

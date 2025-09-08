@@ -15,7 +15,7 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
-from prometheus_client import start_http_server, Gauge
+from prometheus_client import start_http_server, Gauge, CollectorRegistry, generate_latest
 from prometheus_api_client import PrometheusConnect
 from smartController.consumer_thread import ConsumerThread
 from smartController.dashgenerator import DashGenerator
@@ -84,6 +84,7 @@ class MetricsLogger:
                 args=())
             
             try:
+                self.active = True
                 self.consumer_thread_manager.start()
                 return True
             except KeyboardInterrupt:
@@ -143,23 +144,45 @@ class MetricsLogger:
     
 
     def init_prometheus_server(self):
-        start_http_server(port=self.kwargs['prometheus']['clientport'], addr=self.kwargs['prometheus']['clienthost'])
+        registry = CollectorRegistry()
+        self.prometheus_registry = registry
 
+        self.prometheus_httpd, self.prometheus_server_thread = start_http_server(
+            port=self.kwargs['prometheus']['clientport'], 
+            addr=self.kwargs['prometheus']['clienthost'],
+            registry=registry
+        )
+
+        
         # Definizione metriche inserite su Prometheus
-        self.cpu_metric = Gauge(CPU, CPU, ['label_name'])
-        self.ram_metric = Gauge(RAM, RAM, ['label_name'])
-        self.ping_metric = Gauge(RTT, RTT, ['label_name'])
-        self.incoming_traffic_metric = Gauge(INBOUND, INBOUND, ['label_name'])
-        self.outcoming_traffic_metric = Gauge(OUTBOUND, OUTBOUND, ['label_name'])
+        self.cpu_metric = Gauge(CPU, CPU, ['label_name'],  registry=registry)
+        self.ram_metric = Gauge(RAM, RAM, ['label_name'],  registry=registry)
+        self.ping_metric = Gauge(RTT, RTT, ['label_name'],  registry=registry)
+        self.incoming_traffic_metric = Gauge(INBOUND, INBOUND, ['label_name'],  registry=registry)
+        self.outcoming_traffic_metric = Gauge(OUTBOUND, OUTBOUND, ['label_name'],  registry=registry)
         
         # prometheus_connection will permit the graph generator 
         # organize graphs...  
         self.prometheus_connection = PrometheusConnect(self.kwargs['grafana']['datasource_url'])
-        
+
+
+    def shutdown(self):
+        self.active = False
+        if self.consumer_thread_manager:
+            self.consumer_thread_manager.join()
+            self.logger.info("Consumer thread stopped")
+        self.prometheus_httpd.shutdown()
+        self.prometheus_httpd.server_close()
+        self.logger.info("Prometheus server stopped")
+        if self.prometheus_server_thread:
+            self.prometheus_server_thread.join()
+            self.logger.info("Prometheus server thread stopped")
+        self.logger.info("MetricsLogger gracefully shutdown")
+
 
     def start_consuming(self):
 
-        while True:
+        while self.active:
             updated_topic_list = []
             curr_topics_dict = self.kafka_admin_client.list_topics().topics
 
