@@ -321,8 +321,6 @@ def launch(**kwargs):
             daemon=True
           )
 
-          time.sleep(5)
-
           inference_thread = threading.Thread(
             target=smart_check,
             args=(intrusion_detection_args['inference_freq_secs'],),
