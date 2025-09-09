@@ -14,7 +14,7 @@ RUN pip3 install --upgrade pip
 
 RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu
 
-RUN git clone https://github.com/noxrepo/pox.git /pox
+RUN git clone https://github.com/DISTA-IoT/pox /pox
 
 # Download and install Prometheus
 RUN wget https://github.com/prometheus/prometheus/releases/download/v2.49.1/prometheus-2.49.1.linux-amd64.tar.gz && \
@@ -37,8 +37,6 @@ EXPOSE 3000
 RUN rm -rf prometheus-2.34.0.linux-amd64.tar.gz prometheus-2.34.0.linux-amd64
 
 WORKDIR /pox
-
-RUN git checkout gar-experimental 
 
 RUN rm -r .git
 
