@@ -206,11 +206,11 @@ class MetricsLogger:
 
                 
                 self.metrics_dict[topic_name] = {
-                    CPU: deque(maxlen=self.node_features_time_window), 
-                    RTT: deque(maxlen=self.node_features_time_window), 
-                    INBOUND: deque(maxlen=self.node_features_time_window), 
-                    OUTBOUND: deque(maxlen=self.node_features_time_window),
-                    RAM: deque(maxlen=self.node_features_time_window) 
+                    CPU: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window), 
+                    RTT: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window), 
+                    INBOUND: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window), 
+                    OUTBOUND: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window),
+                    RAM: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window) 
                     }
                 
 

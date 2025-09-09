@@ -289,6 +289,26 @@ class DynamicLabelEncoder:
         return add_replay_buffer_signal
 
 
+def get_metrics_tensor(metrics_dict, ip):
+            if ip in metrics_dict.keys():
+                """
+                return torch.hstack(
+                    [torch.Tensor(metrics_dict[ip][CPU]).unsqueeze(1),
+                    torch.Tensor(metrics_dict[ip][RAM]).unsqueeze(1),
+                    torch.Tensor(metrics_dict[ip][INBOUND]).unsqueeze(1),
+                    torch.Tensor(metrics_dict[ip][OUTBOUND]).unsqueeze(1),
+                    torch.Tensor(metrics_dict[ip][RTT]).unsqueeze(1)])
+                """
+                return torch.Tensor([
+                        metrics_dict[ip][CPU], 
+                        metrics_dict[ip][RAM], 
+                        metrics_dict[ip][INBOUND], 
+                        metrics_dict[ip][OUTBOUND], 
+                        metrics_dict[ip][RTT]]).T
+            else:
+                return -1 * torch.ones(
+                    size=(10,5))
+            
 
 class TigerBrain():
 
@@ -1415,8 +1435,8 @@ class TigerBrain():
   
             self.push_to_replay_buffers(
                 batch.flow_features, 
-                (batch.packet_features if self.use_packet_feats else None),
-                (batch.node_features if self.use_node_feats else None),  
+                batch.packet_features,
+                batch.node_features,  
                 batch_labels=batch.class_labels)
 
             # this fella could be toogling because of a new class arriving... 
@@ -1976,56 +1996,23 @@ class TigerBrain():
         
         Returns a Batch object containing the corresponding features and labels.
         """
+        packet_input_batch = ([] if self.use_packet_feats else None)
+        node_feat_input_batch = ([] if self.use_node_feats else None)
+        flow_input_batch = []
 
-        flow_input_batch = flows[0].get_flow_features().unsqueeze(0)
-        packet_input_batch = None
-        node_feat_input_batch = None
-
-        if self.use_packet_feats:
-            packet_input_batch = flows[0].get_flow_features().unsqueeze(0)
-        if self.use_node_feats:
-            flows[0].node_feats = -1 * torch.ones(
-                    size=(10,5),
-                    device=self.device)
-            
-            if flows[0].dest_ip in node_feats.keys():
-                flows[0].node_feats[:len(node_feats[flows[0].dest_ip][CPU]),:]  = torch.hstack([
-                        torch.Tensor(node_feats[flows[0].dest_ip][CPU]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][RAM]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][INBOUND]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][OUTBOUND]).unsqueeze(1),
-                        torch.Tensor(node_feats[flows[0].dest_ip][RTT]).unsqueeze(1)])
-            
-            node_feat_input_batch = flows[0].node_feats.unsqueeze(0)
-
-        for flow in flows[1:]:
-            flow_input_batch = torch.cat( 
-                [flow_input_batch,
-                 flow.get_flow_features().unsqueeze(0)],
-                 dim=0)
+        for flow in flows:
+            flow_input_batch.append(flow.get_flow_features().unsqueeze(0))
             if self.use_packet_feats:
-                packet_input_batch = torch.cat( 
-                    [packet_input_batch,
-                    flow.get_packet_features().unsqueeze(0)],
-                    dim=0)
+                packet_input_batch.append(flow.get_packet_features().unsqueeze(0))
             if self.use_node_feats:
-                flow.node_feats = -1 * torch.ones(
-                        size=(10,5),
-                        device=self.device)
-                if flow.dest_ip in node_feats.keys():
-                    flow.node_feats[:len(node_feats[flow.dest_ip][CPU]),:] = torch.hstack([
-                        torch.Tensor(node_feats[flow.dest_ip][CPU]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][RAM]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][INBOUND]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][OUTBOUND]).unsqueeze(1),
-                        torch.Tensor(node_feats[flow.dest_ip][RTT]).unsqueeze(1)]) 
-                       
-                node_feat_input_batch = torch.cat(
-                            [node_feat_input_batch,
-                            flow.node_feats.unsqueeze(0)],
-                            dim=0)
-                        
-
+                node_feat_input_batch.append(get_metrics_tensor(node_feats, flow.dest_ip).unsqueeze(0))
+                    
+        flow_input_batch = torch.vstack(flow_input_batch)
+        if self.use_packet_feats:
+            packet_input_batch = torch.vstack(packet_input_batch)
+        if self.use_node_feats:
+            node_feat_input_batch = torch.vstack(node_feat_input_batch)
+         
         batch_labels = self.get_labels(flows)
         
         return Batch(
