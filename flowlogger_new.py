@@ -24,7 +24,6 @@ from pox.lib.packet.ipv4 import ipv4
 from types import SimpleNamespace
 
 
-BENIGN_SUFFIX = ' (Benign)'
 class FlowLogger(object):
     
 
