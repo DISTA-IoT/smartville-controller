@@ -129,23 +129,23 @@ class ConsumerThread(threading.Thread):
 
         self.received_messages += 1
 
-        if (message[self.topic_name+"_"+CPU]):
+        if CPU in self.kwargs['health']['probe_metrics']:
             self.logger.debug(f'CPU probe received from {self.topic_name}: {message[self.topic_name+"_"+CPU]}')
             self.update_cpu_metric(float(message[self.topic_name+"_"+CPU]), self.topic_name)
 
-        if (message[self.topic_name+"_"+RAM]):
+        if RAM in self.kwargs['health']['probe_metrics']:
             self.logger.debug(f'RAM probe received from {self.topic_name}: {message[self.topic_name+"_"+RAM]}')
             self.update_ram_metric(float(message[self.topic_name+"_"+RAM]), self.topic_name)
 
-        if (message[self.topic_name+"_"+RTT]):
+        if RTT in self.kwargs['health']['probe_metrics']:
             self.logger.debug(f'RTT probe received from {self.topic_name}: {message[self.topic_name+"_"+RTT]}')
             self.update_rtt_metric(float(message[self.topic_name+"_"+RTT]), self.topic_name)
 
-        if (message[self.topic_name+"_"+INBOUND]):
+        if INBOUND in self.kwargs['health']['probe_metrics']:
             self.logger.debug(f'IN_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+INBOUND]}')
             self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+INBOUND]), self.topic_name)
 
-        if (message[self.topic_name+"_"+OUTBOUND]):
+        if OUTBOUND in self.kwargs['health']['probe_metrics']:
             self.logger.debug(f'OUT_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+OUTBOUND]}')
             self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+OUTBOUND]), self.topic_name)
 

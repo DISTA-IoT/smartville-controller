@@ -117,10 +117,10 @@ class MetricsLogger:
         try:
             # Attempt to create a socket connection to the Kafka broker
             with socket.create_connection((host, port), timeout=2):
-                self.logger.info(f"Server {host}:{port} RAGGIUNTO.")
+                self.logger.info(f"Server {host}:{port} REACHED.")
                 return True
         except (socket.error, socket.timeout) as e:
-            self.logger.error(f"Server {host}:{port} non raggiungibile")
+            self.logger.error(f"Server {host}:{port} UNREACHABLE: {e}")
             return False
 
 
@@ -154,15 +154,30 @@ class MetricsLogger:
         )
 
         
-        # Definizione metriche inserite su Prometheus
-        self.cpu_metric = Gauge(CPU, CPU, ['label_name'],  registry=registry)
-        self.ram_metric = Gauge(RAM, RAM, ['label_name'],  registry=registry)
-        self.ping_metric = Gauge(RTT, RTT, ['label_name'],  registry=registry)
-        self.incoming_traffic_metric = Gauge(INBOUND, INBOUND, ['label_name'],  registry=registry)
-        self.outcoming_traffic_metric = Gauge(OUTBOUND, OUTBOUND, ['label_name'],  registry=registry)
+        # Defining metric Gauges in Prometheus
+        self.CPU_metric = None
+        self.RAM_metric = None
+        self.RTT_metric = None
+        self.INBOUND_metric = None
+        self.OUTBOUND_metric = None
+        
+        if CPU in self.kwargs['health']['probe_metrics']:
+            self.CPU_metric = Gauge(CPU, CPU, ['label_name'],  registry=registry)
+
+        if RAM in self.kwargs['health']['probe_metrics']:
+            self.RAM_metric = Gauge(RAM, RAM, ['label_name'],  registry=registry)
+        
+        if RTT in self.kwargs['health']['probe_metrics']:
+            self.RTT_metric = Gauge(RTT, RTT, ['label_name'],  registry=registry)
+        
+        if INBOUND in self.kwargs['health']['probe_metrics']:
+            self.INBOUND_metric = Gauge(INBOUND, INBOUND, ['label_name'],  registry=registry)
+        
+        if OUTBOUND in self.kwargs['health']['probe_metrics']:
+            self.OUTBOUND_metric = Gauge(OUTBOUND, OUTBOUND, ['label_name'],  registry=registry)
         
         # prometheus_connection will permit the graph generator 
-        # organize graphs...  
+        # to organize graphs...  
         self.prometheus_connection = PrometheusConnect(self.kwargs['grafana']['datasource_url'])
 
 
@@ -219,11 +234,11 @@ class MetricsLogger:
                     self.kafka_endpoint, 
                     topic_name,
                     curr_topics_dict[topic_name],
-                    self.cpu_metric,
-                    self.ram_metric,
-                    self.ping_metric,
-                    self.incoming_traffic_metric,
-                    self.outcoming_traffic_metric,
+                    self.CPU_metric,
+                    self.RAM_metric,
+                    self.RTT_metric,
+                    self.INBOUND_metric,
+                    self.OUTBOUND_metric,
                     self.metrics_dict,
                     self.kwargs)
 
