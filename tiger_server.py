@@ -226,9 +226,6 @@ def launch(**kwargs):
           args['logger'] = logger
           
           intrusion_detection_args = kwargs.get("intrusion_detection", {})
-          intrusion_detection_args['container_ips'] = kwargs.get("container_ips", {})
-          intrusion_detection_args['ips_containers'] = kwargs.get("ips_containers", {})
-          intrusion_detection_args['traffic_dict'] = kwargs.get("traffic_dict", [])
           intrusion_detection_args['rewards'] = kwargs.get("rewards", {})
           intrusion_detection_args['knowledge'] = kwargs.get("knowledge", {})
           intrusion_detection_args['logger'] = logger
@@ -252,24 +249,7 @@ def launch(**kwargs):
 
         try:
           # The controllerBrain holds the ML functionalities.
-          controller_brain = TigerBrain(
-              eval=str_to_bool(intrusion_detection_args.get('eval')),
-              flow_feat_dim=intrusion_detection_args.get("flow_feat_dim"),
-              packet_feat_dim=intrusion_detection_args.get("packet_feat_dim"),
-              dropout=intrusion_detection_args.get("dropout"),
-              multi_class=str_to_bool(intrusion_detection_args.get('multi_class')), 
-              init_k_shot=int(intrusion_detection_args.get('init_k_shot')),
-              replay_buffer_batch_size=int(intrusion_detection_args.get('batch_size')),
-              kernel_regression=str_to_bool(intrusion_detection_args.get('kernel_regression')),
-              device=intrusion_detection_args.get('device'),
-              seed=int(intrusion_detection_args.get('seed')),
-              debug=str_to_bool(intrusion_detection_args.get('ai_debug')),
-              wb_track=str_to_bool(intrusion_detection_args.get('wb_tracking')),
-              wb_project_name=intrusion_detection_args.get('wb_project_name'),
-              wb_run_name=intrusion_detection_args.get('wb_run_name'),
-              report_step_freq=int(intrusion_detection_args.get('report_step_freq')),
-              kwargs=intrusion_detection_args)
-        
+          controller_brain = TigerBrain(args)
         except Exception as e:
           logger.error(f"Error creating controller brain: {e}")
           return {"status_code": 500, "msg": f"Error creating controller brain: {e}"}

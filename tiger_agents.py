@@ -6,11 +6,14 @@ import random
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as distributions
+from smartController.attr_dict import AttrDict
 
 
 class DAIF_Agent:
-    def __init__(self, kwargs):
+    def __init__(self, args):
         
+        kwargs = args.intrusion_detection.to_dict()
+
         self.wbl = kwargs['wbl']
         self.action_size = kwargs['action_size']
         self.neg_efe_net = NEFENet(kwargs)
@@ -310,8 +313,10 @@ class DAIF_Agent:
 
 
 class DAIP_Agent:
-    def __init__(self, kwargs):
+    def __init__(self, args):
         
+        kwargs = args.intrusion_detection.to_dict()
+
         self.wbl = kwargs['wbl']
         self.action_size = kwargs['action_size']
         self.neg_efe_net = NEFENet(kwargs)
@@ -582,8 +587,10 @@ class DAIP_Agent:
        
 
 class DAIA_Agent:
-    def __init__(self, kwargs):
+    def __init__(self, args):
         
+        kwargs = args.intrusion_detection.to_dict()
+
         self.wbl = kwargs['wbl']
         self.action_size = kwargs['action_size']
         self.neg_efe_net = NEFENet(kwargs)
@@ -825,8 +832,10 @@ class DAIA_Agent:
             self.wbl.log({'active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
 
 class DAISA_Agent:
-    def __init__(self, kwargs):
+    def __init__(self, args):
         
+        kwargs = args.intrusion_detection.to_dict()
+
         self.wbl = kwargs['wbl']
         self.action_size = kwargs['action_size']
         self.neg_efe_net = NEFENet(kwargs)
@@ -984,7 +993,10 @@ class DAISA_Agent:
 
 class ValueLearningAgent:
     
-    def __init__(self, kwargs):
+    def __init__(self, args):
+
+        kwargs = args.intrusion_detection.to_dict()
+        
         self.wbl = kwargs['wbl']
         self.state_size = kwargs['state_size']
         self.action_size = kwargs['action_size']

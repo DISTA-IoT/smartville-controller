@@ -14,3 +14,13 @@ class AttrDict(dict):
 
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
+
+    def to_dict(self):
+        """Recursively convert AttrDict back to a plain dict."""
+        result = {}
+        for k, v in self.items():
+            if isinstance(v, AttrDict):
+                result[k] = v.to_dict()
+            else:
+                result[k] = v
+        return result

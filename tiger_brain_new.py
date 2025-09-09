@@ -292,74 +292,61 @@ class DynamicLabelEncoder:
 
 class TigerBrain():
 
-    def __init__(self,
-                 eval,
-                 flow_feat_dim,
-                 packet_feat_dim,
-                 dropout,
-                 multi_class,
-                 init_k_shot,
-                 replay_buffer_batch_size,
-                 kernel_regression,
-                 device='cpu',
-                 seed=777,
-                 debug=False,
-                 wb_track=False,
-                 wb_project_name='',
-                 wb_run_name='',
-                 report_step_freq=50,
-                 kwargs={}):
+    def __init__(self, kwargs):
+        
+        args = AttrDict(kwargs)
+        
         self._lock = threading.Lock()
         self._epistemic_lock = threading.Lock()
-        self.eval = eval
-        self.intrusion_detection_kwargs = kwargs
-        self.use_packet_feats = kwargs['use_packet_feats'] 
-        self.use_node_feats = kwargs['node_features'] 
-        self.flow_feat_dim = flow_feat_dim
-        self.packet_feat_dim = packet_feat_dim
-        self.h_dim = kwargs['h_dim']
-        self.dropout = dropout
-        self.multi_class = multi_class
-        self.AI_DEBUG = debug
+        self.eval = args.intrusion_detection.eval
+        self.intrusion_detection_kwargs = kwargs['intrusion_detection']
+        self.use_packet_feats = args.intrusion_detection.use_packet_feats
+        self.use_node_feats = args.intrusion_detection.node_features
+        self.flow_feat_dim = args.intrusion_detection.flow_feat_dim
+        self.packet_feat_dim = args.intrusion_detection.packet_feat_dim
+        self.h_dim = args.intrusion_detection.h_dim
+        self.dropout = args.intrusion_detection.dropout
+        self.multi_class = args.intrusion_detection.multi_class
+        self.AI_DEBUG = args.intrusion_detection.ai_debug
         self.step_counter = 0
-        self.wbt = wb_track
+        self.wbt = args.wandb.wb_tracking
         self.wbl = None
-        self.kernel_regression = kernel_regression
+        self.kernel_regression = args.intrusion_detection.kernel_regression
         self.logger_instance = kwargs['logger']
-        self.device=device
-        self.seed = seed
-        random.seed(seed)
-        self.k_shot = init_k_shot
-        self.replay_buff_batch_size = replay_buffer_batch_size
-        self.report_step_freq = report_step_freq 
-        self.use_neural_AD = kwargs['use_neural_AD']
-        self.use_neural_KR = kwargs['use_neural_KR']
-        self.online_evaluation = kwargs['online_evaluation']
-        self.bad_classif_cost_factor =  int(kwargs['bad_classif_cost_factor'])
-        self.online_eval_rounds = kwargs['online_evaluation_rounds']
-        self.load_pretrained_inference_module = kwargs['pretrained_inference']
-        self.clustering_loss_backprop = kwargs['clustering_loss_backprop']
-        self.kernel_regressor_heads = kwargs['kernel_regressor_heads']
-        self.attractive_weight = kwargs['attractive_weight']
-        self.repulsive_weight = kwargs['repulsive_weight']
-        self.learning_rate= float(kwargs['learning_rate'])
-        self.replay_buffer_max_capacity= kwargs['replay_buffer_max_capacity']
-        self.pretrained_models_dir = kwargs['pretrained_models_dir']
-        self.container_ips = kwargs['container_ips']
-        self.ips_containers = kwargs['ips_containers']
-        self.traffic_dict = kwargs['traffic_dict']
+        self.device= args.intrusion_detection.device
+        self.seed = args.intrusion_detection.seed
+        random.seed(self.seed)
+        self.k_shot = args.intrusion_detection.init_k_shot
+        self.replay_buff_batch_size = args.intrusion_detection.batch_size
+        self.report_step_freq = args.intrusion_detection.report_step_freq 
+        self.use_neural_AD = args.intrusion_detection.use_neural_AD
+        self.use_neural_KR = args.intrusion_detection.use_neural_KR
+        self.online_evaluation = args.intrusion_detection.online_evaluation
+        self.bad_classif_cost_factor =  int(args.intrusion_detection.bad_classif_cost_factor)
+        self.online_eval_rounds = args.intrusion_detection.online_evaluation_rounds
+        self.load_pretrained_inference_module = args.intrusion_detection.pretrained_inference
+        self.clustering_loss_backprop = args.intrusion_detection.clustering_loss_backprop
+        self.kernel_regressor_heads = args.intrusion_detection.kernel_regressor_heads
+        self.attractive_weight = args.intrusion_detection.attractive_weight
+        self.repulsive_weight = args.intrusion_detection.repulsive_weight
+        self.learning_rate= float(args.intrusion_detection.learning_rate)
+        self.replay_buffer_max_capacity= args.intrusion_detection.replay_buffer_max_capacity
+        self.pretrained_models_dir = args.intrusion_detection.pretrained_models_dir
+        self.container_ips = args.container_ips
+        self.ips_containers = args.ips_containers
+        self.traffic_dict = args.traffic_dict
         self.episode_count = -1
-        self.env = NewTigerEnvironment(kwargs)
+        self.env = NewTigerEnvironment(args)
         if self.wbt:
             self.wbl = WandBTracker(
-                wanb_project_name=wb_project_name,
-                run_name=wb_run_name,
-                config_dict=kwargs).wb_logger
-        kwargs['wbl'] = self.wbl   
-        self.init_agents(kwargs)
+                wanb_project_name=args.wandb.wb_project_name,
+                run_name=args.wandb.wb_run_name,
+                config_dict=kwargs).wb_logger  
+        args.intrusion_detection.wbl = self.wbl
+        self.init_agents(args)
         self.init_intelligence()
-        self.epistemic_agency = kwargs['epistemic_agency']
-        self.save_models_flag = kwargs['save_models']
+        self.epistemic_agency = args.intrusion_detection.epistemic_agency
+        self.save_models_flag = args.intrusion_detection.save_models
 
              
 
@@ -385,13 +372,13 @@ class TigerBrain():
         self.episode_count += 1
         
 
-    def init_agents(self, kwargs):
+    def init_agents(self, args):
         
-        self.state_space_dim = kwargs['h_dim']
+        self.state_space_dim = args.intrusion_detection.h_dim
         if self.use_node_feats:
-            self.state_space_dim += kwargs['h_dim']
+            self.state_space_dim += args.intrusion_detection.h_dim
         if self.use_packet_feats:
-            self.state_space_dim += kwargs['h_dim'] 
+            self.state_space_dim += args.intrusion_detection.h_dim
 
         # The state space will be composed of          
         # 0. centroid of collective anomaly (an all-zeros centroid for known traffic)
@@ -403,28 +390,25 @@ class TigerBrain():
         # 6. current system budget
         self.state_space_dim += 6
 
-        if kwargs['agent'] == 'DQN':
+        if args.intrusion_detection.agent == 'DQN':
             agent_class = ValueLearningAgent
-        elif kwargs['agent'] == 'DDQN':
+        elif args.intrusion_detection.agent == 'DDQN':
             agent_class = ValueLearningAgent
-        elif kwargs['agent'] == 'DAI_P':
+        elif args.intrusion_detection.agent == 'DAI_P':
             agent_class = DAIP_Agent
-        elif kwargs['agent'] == 'DAI_A':
+        elif args.intrusion_detection.agent == 'DAI_A':
             agent_class = DAIA_Agent
-        elif kwargs['agent'] == 'DAI_SA':
+        elif args.intrusion_detection.agent == 'DAI_SA':
             agent_class = DAISA_Agent
-        elif kwargs['agent'] == 'DAI_F':
+        elif args.intrusion_detection.agent == 'DAI_F':
             agent_class = DAIF_Agent
         else:
-            raise ValueError('Unknown agent type: {}'.format(kwargs['agent']))
+            raise ValueError('Unknown agent type: {}'.format(args.intrusion_detection.agent))
         
-
-
-        kwargs['action_size'] = 3  # block, pass or TCI acquisition
-        kwargs['state_size'] = self.state_space_dim # the "current_budget" scalar is part of the state space  
+        args.intrusion_detection.action_size = 3  # block, pass or TCI acquisition
+        args.intrusion_detection.state_size = self.state_space_dim # the "current_budget" scalar is part of the state space  
         
-        self.mitigation_agent = agent_class(
-            kwargs=kwargs)
+        self.mitigation_agent = agent_class(args)
 
     
     def add_replay_buffer(self, class_name):
