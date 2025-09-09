@@ -46,7 +46,7 @@ class MetricsLogger:
         self.kafka_endpoint = kwargs['monitor_ip']+":"+str(kwargs['kafka']['port'])
         self.topics = None
         self.topic_list = []
-        self.threads = []
+        self.consumer_threads = []
         self.working_threads_count = 0
         self.sortcount = 0
         self.kafka_admin_client = None
@@ -88,7 +88,7 @@ class MetricsLogger:
                 self.consumer_thread_manager.start()
                 return True
             except KeyboardInterrupt:
-                for thread in self.threads:
+                for thread in self.consumer_threads:
                     if (thread.is_alive()):
                         thread.stop_threads()
                         working_threads_count += 1
@@ -182,6 +182,9 @@ class MetricsLogger:
 
 
     def shutdown(self):
+        for consumer_thread in self.consumer_threads:
+            consumer_thread.stop()
+            consumer_thread.join()
         self.active = False
         if self.consumer_thread_manager:
             self.consumer_thread_manager.join()
@@ -242,7 +245,7 @@ class MetricsLogger:
                     self.metrics_dict,
                     self.kwargs)
 
-                self.threads.append(thread)
+                self.consumer_threads.append(thread)
                 thread.start()
                 self.logger.info(f"Consumer Thread for topic {topic_name} commencing")
 

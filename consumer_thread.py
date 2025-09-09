@@ -100,8 +100,8 @@ class ConsumerThread(threading.Thread):
                 value = -1.0
             self.controller_metrics_dict[self.topic_name][OUTBOUND].append(value)
 
-    def stop_threads(self):
-        print("Stopping thread...")
+    def stop(self):
+        self.logger.info(f"Stopping consumer thread for topic: {self.topic_name}")
         self.exit_signal.set()
     
 
@@ -170,7 +170,6 @@ class ConsumerThread(threading.Thread):
         consumer.subscribe([self.topic_name])
 
         try:
-
             while not self.exit_signal.is_set():
 
                 poll_temptative = 0
