@@ -93,6 +93,7 @@ class SmartSwitch(EventMixin):
     self.flow_logger = flow_logger
     self.initialize()
 
+
   def initialize(self):
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time

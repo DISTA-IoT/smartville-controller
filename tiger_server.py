@@ -238,14 +238,7 @@ def launch(**kwargs):
           return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
         
         try:
-          flow_logger = FlowLogger(
-              intrusion_detection_args.get("multi_class", False),
-              intrusion_detection_args.get("packet_buffer_len", 0),
-              intrusion_detection_args.get("packet_feat_dim", 64),
-              intrusion_detection_args.get("anonymize_transport_ports", True),
-              intrusion_detection_args.get("flow_feat_dim", 4),
-              intrusion_detection_args.get("flow_buff_len", 10)
-          )
+          flow_logger = FlowLogger(**args)
         except Exception as e:
           logger.error(f"Error initialising flow logger: {e}")
           return {"status_code": 500, "msg": f"Error initialising flow logger: {e}"}

@@ -34,6 +34,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from smartController.tiger_environment_new import NewTigerEnvironment
 from smartController.tiger_agents import ValueLearningAgent, DAIP_Agent, DAIA_Agent, DAIF_Agent, DAISA_Agent
 from functools import wraps
+from smartController.attr_dict import AttrDict
 
 # List of colors
 colors = [
@@ -1988,18 +1989,16 @@ class TigerBrain():
         """
         Assemblies a batch from current observations. 
         A (flow) batch is composed of a set of flows. 
-        Each Flow has a bidimensional feature tensor. 
-        (self.MAX_FLOW_TIMESTEPS x 4 features)
-
+        
         Returns a Batch object containing the corresponding features and labels.
         """
 
-        flow_input_batch = flows[0].get_feat_tensor().unsqueeze(0)
+        flow_input_batch = flows[0].get_flow_features().unsqueeze(0)
         packet_input_batch = None
         node_feat_input_batch = None
 
         if self.use_packet_feats:
-            packet_input_batch = flows[0].packets_tensor.buffer.unsqueeze(0)
+            packet_input_batch = flows[0].get_flow_features().unsqueeze(0)
         if self.use_node_feats:
             flows[0].node_feats = -1 * torch.ones(
                     size=(10,5),
@@ -2018,12 +2017,12 @@ class TigerBrain():
         for flow in flows[1:]:
             flow_input_batch = torch.cat( 
                 [flow_input_batch,
-                 flow.get_feat_tensor().unsqueeze(0)],
+                 flow.get_flow_features().unsqueeze(0)],
                  dim=0)
             if self.use_packet_feats:
                 packet_input_batch = torch.cat( 
                     [packet_input_batch,
-                    flow.packets_tensor.buffer.unsqueeze(0)],
+                    flow.get_packet_features().unsqueeze(0)],
                     dim=0)
             if self.use_node_feats:
                 flow.node_feats = -1 * torch.ones(

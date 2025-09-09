@@ -47,25 +47,43 @@ class Flow():
         source_ip, 
         dest_ip, 
         switch_output_port,
-        flow_feat_dim=4,
-        flow_buff_len=10):
+        flow_feat_dim,
+        flow_buff_len,
+        packet_feat_dim,
+        packet_buffer_len):
         
         self.source_ip = source_ip
         self.dest_ip = dest_ip
         self.switch_output_port = switch_output_port
         self.flow_id = self.source_ip + "_" + self.dest_ip + "_" + str(self.switch_output_port)
         self.switch_input_port = None
-        self.__feat_tensor = CircularBuffer(
+        self.__flow_feat_circular_buffer = CircularBuffer(
                             buffer_size=flow_buff_len, 
                             feature_size=flow_feat_dim)
-        self.packets_tensor = None
+        self.__packet_feat_circular_buffer = CircularBuffer(
+                            buffer_size=packet_buffer_len, 
+                            feature_size=packet_feat_dim)
         self.node_feats = None
         self.element_class = BENIGN
         self.zda = False
         self.test_zda = False
 
-    def get_feat_tensor(self):
-        return self.__feat_tensor.get_buffer()
+
+    def add_to_packet_buffer(self, incomming):
+        if type(incomming) == CircularBuffer:
+            for slice in incomming.buffer:
+                self.__packet_feat_circular_buffer.add(slice)
+            return
+        else:
+            self.__packet_feat_circular_buffer.add(incomming)
+    
     
     def enrich_flow_features(self, feat_slice: torch.Tensor):
-            self.__feat_tensor.add(feat_slice)
+            self.__flow_feat_circular_buffer.add(feat_slice)
+
+
+    def get_flow_features(self):
+        return self.__flow_feat_circular_buffer.buffer
+    
+    def get_packet_features(self):
+        return self.__packet_feat_circular_buffer.buffer

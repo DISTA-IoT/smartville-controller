@@ -15,12 +15,13 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
-from pox.core import core
 from pox.openflow.of_json import flow_stats_to_list
 from smartController.flow import Flow, CircularBuffer
+from smartController.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
 from pox.lib.packet.ipv4 import ipv4
+from types import SimpleNamespace
 
 
 BENIGN_SUFFIX = ' (Benign)'
@@ -29,26 +30,22 @@ class FlowLogger(object):
 
     def __init__(
       self,
-      multi_class,
-      packet_buffer_len,
-      packet_feat_dim,
-      anonymize_transport_ports,
-      flow_feat_dim=4,
-      flow_buff_len=10):
+      **kwargs):
 
       """
       TODO: flows_dict should be one for each switch... or, equivalently, we should use one 
       switch_logger per switch.
       """
+      args = AttrDict(kwargs)
       self.flows_dict = {}
-      self.packet_cache = {}
-      self.logger_instance = core.getLogger()
-      self.multi_class = multi_class
-      self.packet_buffer_len = packet_buffer_len
-      self.packet_feat_dim = packet_feat_dim
-      self.anomyn_ports = anonymize_transport_ports
-      self.flow_feat_dim = flow_feat_dim
-      self.flow_buff_len = flow_buff_len
+      self.unprocessed_packets_buffers = {}
+      self.logger_instance = args.logger
+      self.packet_buffer_len = args.intrusion_detection.packet_buffer_len
+      self.packet_feat_dim = args.intrusion_detection.packet_feat_dim
+      self.anomyn_ports = args.intrusion_detection.anonymize_transport_ports
+      self.flow_feat_dim = args.intrusion_detection.flow_feat_dim
+      self.flow_buff_len = args.intrusion_detection.flow_buff_len
+      self.use_packet_feats = args.intrusion_detection.use_packet_feats
 
 
     def extract_flow_feature_tensor(self, flow):
@@ -105,92 +102,97 @@ class FlowLogger(object):
         partial_flow_id = str(src_ip) + "_" + str(dst_ip)
         packet_tensor = self.build_packet_tensor(packet=packet.next)
 
-        if partial_flow_id in self.packet_cache.keys():
+        if partial_flow_id in self.unprocessed_packets_buffers.keys():
             # A tensor already exists:
-            curr_packets_circ_buff = self.packet_cache[partial_flow_id]
-            self.logger_instance.debug(f"Updated circular packet buffer for {partial_flow_id}") 
+            curr_packets_circ_buff = self.unprocessed_packets_buffers[partial_flow_id]
         else:
            # Create new circular buffer:
            curr_packets_circ_buff = CircularBuffer(
               buffer_size=self.packet_buffer_len, 
               feature_size=self.packet_feat_dim)
-           self.logger_instance.debug(f"Created circular packet buffer for {partial_flow_id}") 
+           self.logger_instance.debug(f"Created packet buffer for {partial_flow_id}") 
 
 
         curr_packets_circ_buff.add(packet_tensor)
-        self.packet_cache[partial_flow_id] = curr_packets_circ_buff
-
+        self.unprocessed_packets_buffers[partial_flow_id] = curr_packets_circ_buff
+        self.logger_instance.debug(f"Updated packet buffer for {partial_flow_id}") 
+        
         return curr_packets_circ_buff.is_full
 
 
     def process_received_flow(
           self, 
-          flow,
+          of_flowstats_obj,
           current_knowledge,
           traffic_dict,
           ips_containers):
         
-        sender_ip_addr = flow['match']['nw_src'].split('/')[0]
-        dest_ip_addr = flow['match']['nw_dst'].split('/')[0]
+      sender_ip_addr = of_flowstats_obj['match']['nw_src'].split('/')[0]
+      dest_ip_addr = of_flowstats_obj['match']['nw_dst'].split('/')[0]
 
-        new_flow = Flow(
-          source_ip=sender_ip_addr, 
-          dest_ip=dest_ip_addr, 
-          switch_output_port=flow['actions'][1]['port'],
-          flow_feat_dim=self.flow_feat_dim,
-          flow_buff_len=self.flow_buff_len)
-        
-        # This is where our labelling takes place... 
-        if sender_ip_addr in ips_containers:
-            if ips_containers[sender_ip_addr] != 'pox-controller':
-               hostname = ips_containers[sender_ip_addr]
-               if hostname not in traffic_dict.keys():
-                  self.logger_instance.debug(f"Hostname {hostname} not found in traffic_dict")
-                  return
-               flow_info = traffic_dict[hostname]
-                     
-               new_flow.element_class = flow_info['pattern']
-               new_flow.test_zda = flow_info['pattern'] in current_knowledge['G2s']
-               new_flow.zda = new_flow.test_zda or flow_info['pattern'] in current_knowledge['G1s']
-               
-               flow_features = self.extract_flow_feature_tensor(flow=flow)
-               self.update_packet_buffer(new_flow)
-               
-               if new_flow.flow_id in self.flows_dict.keys():
-                  self.flows_dict[new_flow.flow_id].enrich_flow_features(flow_features)
-               else:
-                  new_flow.enrich_flow_features(flow_features)
-                  self.flows_dict[new_flow.flow_id] = new_flow
+      if sender_ip_addr not in ips_containers:
+         return
+      
+      if ips_containers[sender_ip_addr] == 'pox-controller':
+         return
+      
+      hostname = ips_containers[sender_ip_addr]
+      if hostname not in traffic_dict.keys():
+         self.logger_instance.debug(f"Hostname {hostname} not found in traffic_dict")
+         return
+      
+      flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])
+      if flow_id not in self.flows_dict.keys():
+         # Create new flow object
+         flow = Flow(
+            source_ip=sender_ip_addr, 
+            dest_ip=dest_ip_addr, 
+            switch_output_port=of_flowstats_obj['actions'][1]['port'],
+            flow_feat_dim=self.flow_feat_dim,
+            flow_buff_len=self.flow_buff_len,
+            packet_feat_dim=self.packet_feat_dim,
+            packet_buffer_len=self.packet_buffer_len)
+         self.flows_dict[flow.flow_id] = flow
+      else:
+         flow = self.flows_dict[flow_id]
+         
+      
+      # This is where our labelling takes place... 
+      flow_info = traffic_dict[hostname]
+      flow.element_class = flow_info['pattern']
+      flow.test_zda = flow_info['pattern'] in current_knowledge['G2s']
+      flow.zda = flow.test_zda or flow_info['pattern'] in current_knowledge['G1s']
+      
+      # flow feature extraction
+      flow_features = self.extract_flow_feature_tensor(flow=of_flowstats_obj)
+      flow.enrich_flow_features(flow_features)
 
-               
+      # packet feature extraction
+      packet_circular_buffer = self.get_unprocessed_packet_buffer(flow)
+      if packet_circular_buffer != None:
+         flow.add_to_packet_buffer(packet_circular_buffer)
+         
 
-
-    def update_packet_buffer(self, flow_object):
+    def get_unprocessed_packet_buffer(self, flow_object):
        """
        Attack the cached packets tensor to the flow entry in flows_dict
        """
-
+       packets_buffer = None
        partial_flow_id = "_".join(flow_object.flow_id.split("_")[:-1])
+       if partial_flow_id in self.unprocessed_packets_buffers.keys():
+          packets_buffer = self.unprocessed_packets_buffers[partial_flow_id]
+          del self.unprocessed_packets_buffers[partial_flow_id]
 
-       if partial_flow_id in self.packet_cache.keys():
-          
-          packets_buffer = self.packet_cache[partial_flow_id]
-          del self.packet_cache[partial_flow_id]
-
-          if flow_object.packets_tensor == None:
-             flow_object.packets_tensor = packets_buffer
-          else: 
-             for single_packet_tensor in packets_buffer.buffer:
-                flow_object.packets_tensor.add(single_packet_tensor)
+       return packets_buffer
 
     
-    def _handle_flowstats_received (self, event, current_knowledge, traffic_dict, ips_containers):
+    def _handle_flowstats_received(self, event, current_knowledge, traffic_dict, ips_containers):
       self.logger_instance.debug("FlowStatsReceived")
       stats = flow_stats_to_list(event.stats)
       self.logger_instance.debug(f"Received {len(stats)} flow stats")
       for sender_flow in stats:
         self.process_received_flow(
-           flow=sender_flow,
+           of_flowstats_obj=sender_flow,
            current_knowledge=current_knowledge,
            traffic_dict=traffic_dict,
            ips_containers=ips_containers)
