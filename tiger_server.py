@@ -184,7 +184,7 @@ def launch(**kwargs):
 
     @app.post("/stop")
     async def shutdown():
-        global stop_tiger_threads, inference_thread, flowstatreq_thread, metrics_logger
+        global stop_tiger_threads, inference_thread, flowstatreq_thread, metrics_logger, controller_brain
 
         logger.info("Shutdown command received")
         
@@ -194,9 +194,13 @@ def launch(**kwargs):
         if flowstatreq_thread is not None:
           flowstatreq_thread.join()
 
-        metrics_logger.shutdown()
+        if metrics_logger is not None:
+          metrics_logger.shutdown()
         metrics_logger = None
       
+        if controller_brain is not None:
+          controller_brain.shutdown()
+        controller_brain = None
 
         return {"status_code": 200, "msg": "SmartSwitch is stopped"}
 
