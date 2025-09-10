@@ -96,6 +96,11 @@ ANOMALY_BALANCE = 'ANOMALY_BALANCE'
 CLOSED_SET = 'CS'
 ANOMALY_DETECTION = 'AD'
 
+CONFIDENCE_DECODER_CLASS_NAME = 'ConfidenceDecoder'
+KERNEL_REGRESSION_LOSS_CLASS_NAME = 'KernelRegressionLoss'
+ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME = 'OneStreamMulticlassFlowClassifier'
+TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME = 'TwoStreamMulticlassFlowClassifier'
+THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME = 'ThreeStreamMulticlassFlowClassifier'
 
 def thread_safe(method):
     @wraps(method)
@@ -502,21 +507,29 @@ class TigerBrain():
     def init_inference_neural_modules(self):
         torch.manual_seed(self.seed)
         model_classes = self.load_models_from_source()
-        self.confidence_decoder = ConfidenceDecoder(device=self.device)
+
+        if CONFIDENCE_DECODER_CLASS_NAME not in model_classes:
+                raise RuntimeError(f"A class named {CONFIDENCE_DECODER_CLASS_NAME} was not found in your models.py file")
+        
+        self.confidence_decoder = model_classes[CONFIDENCE_DECODER_CLASS_NAME](device=self.device)
+        
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
         self.cs_criterion = nn.CrossEntropyLoss().to(self.device)
-        self.kr_criterion = KernelRegressionLoss(repulsive_weigth=self.repulsive_weight, 
-            attractive_weigth=self.attractive_weight).to(self.device)
+        
+        if KERNEL_REGRESSION_LOSS_CLASS_NAME not in model_classes:
+            raise RuntimeError(f"A class named {KERNEL_REGRESSION_LOSS_CLASS_NAME} was not found in your models.py file")
+        self.kr_criterion = model_classes[KERNEL_REGRESSION_LOSS_CLASS_NAME](
+            repulsive_weigth=self.repulsive_weight, 
+            attractive_weigth=self.attractive_weight
+            ).to(self.device)
         
         if self.use_packet_feats:
-            
             if self.use_node_feats:
-
-                assert 'ThreeStreamMulticlassFlowClassifier' in model_classes, \
-                    f"Using packet features and node features requires three features stream for inference " + \
-                    f", but a class named ThreeStreamMulticlassFlowClassifier was not found in your models.py file"
+                if THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
+                    raise RuntimeError(f"Using packet features and node features requires three features stream for inference " + \
+                        f", but a class named {THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes['ThreeStreamMulticlassFlowClassifier'](
+                self.classifier = model_classes[THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=self.packet_feat_dim,
                     third_stream_input_size=5,
@@ -527,12 +540,11 @@ class TigerBrain():
                     kwargs=self.intrusion_detection_kwargs)
             
             else: 
-
-                assert 'TwoStreamMulticlassFlowClassifier' in model_classes, \
-                    f"Using packet features requires two features stream for inference " + \
-                    f", but a class named TwoStreamMulticlassFlowClassifier was not found in your models.py file"
+                if TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
+                    raise RuntimeError(f"Using packet features requires two features stream for inference " + \
+                        f", but a class named {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes['TwoStreamMulticlassFlowClassifier'](
+                self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=self.packet_feat_dim,
                     hidden_size=self.h_dim,
@@ -540,16 +552,13 @@ class TigerBrain():
                     dropout_prob=self.dropout,
                     device=self.device,
                     kwargs=self.intrusion_detection_kwargs)
-
         else:
-            
             if self.use_node_feats:
-
-                assert 'TwoStreamMulticlassFlowClassifier' in model_classes, \
-                    f"Using node features requires two features stream for inference " + \
-                    f", but a class named TwoStreamMulticlassFlowClassifier was not found in your models.py file"
+                if TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
+                    raise RuntimeError(f"Using node features requires two features stream for inference " + \
+                        f", but a class named {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes['TwoStreamMulticlassFlowClassifier'](
+                self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
                     flow_input_size=self.flow_feat_dim, 
                     second_stream_input_size=5,
                     hidden_size=self.h_dim,
@@ -558,12 +567,11 @@ class TigerBrain():
                     device=self.device,
                     kwargs=self.intrusion_detection_kwargs)
             else:
-
-                assert 'MultiClassFlowClassifier' in model_classes, \
-                    f"Using flow features only requires one features stream for inference " + \
-                    f", but a class named MultiClassFlowClassifier was not found in your models.py file"
+                if ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
+                    raise RuntimeError(f"Using flow features only requires one features stream for inference " + \
+                        f", but a class named {ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes['MultiClassFlowClassifier'](
+                self.classifier = model_classes[ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
                     input_size=self.flow_feat_dim, 
                     hidden_size=self.h_dim,
                     dropout_prob=self.dropout,
