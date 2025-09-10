@@ -369,7 +369,9 @@ class TigerBrain():
         self.save_models_flag = args.intrusion_detection.save_models
 
              
-
+    def shutdown(self):
+        if self.wbl is not None:
+            self.wbl.finish()
     
     def init_intelligence(self):
         self.current_known_classes_count = 0
@@ -1302,12 +1304,16 @@ class TigerBrain():
         # eventually reset the environment. 
         if self.env.has_episode_ended(self.step_counter): 
             if self.wbt:
-                self.wbl.log({'episode_count': self.episode_count}, step=self.step_counter)
-                self.wbl.log({'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean()}, step=self.step_counter)
-                self.wbl.log({'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum()}, step=self.step_counter)
-                self.wbl.log({'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean()}, step=self.step_counter)
-                self.wbl.log({'epistemic_actions_per_episode': self.env.epistemic_actions}, step=self.step_counter)
-                self.wbl.log({'steps_per_episode': self.env.steps_done}, step=self.step_counter)                
+                self.wbl.log(
+                    {
+                        'episode_count': self.episode_count,
+                        'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
+                        'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
+                        'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
+                        'epistemic_actions_per_episode': self.env.epistemic_actions,
+                        'steps_per_episode': self.env.steps_done
+                    }, 
+                    step=self.step_counter)                
             self.reset_environment()
             
 
@@ -1338,8 +1344,12 @@ class TigerBrain():
 
         # report progress
         if self.wbt:
-            self.wbl.log({mode+'_'+CS_ACC: acc.item()}, step=self.step_counter)
-            self.wbl.log({mode+'_'+CS_LOSS: cs_loss.item()}, step=self.step_counter)
+            self.wbl.log(
+                {
+                    mode+'_'+CS_ACC: acc.item(),
+                    mode+'_'+CS_LOSS: cs_loss.item()
+                }, 
+                step=self.step_counter)
 
         return cs_loss, acc
 
@@ -1623,17 +1633,21 @@ class TigerBrain():
 
         
         if self.wbt:
-            self.wbl.log({mode+'_'+OS_ACC: cummulative_os_acc.item()}, step=self.step_counter)
-            self.wbl.log({mode+'_'+OS_LOSS: os_loss.item()}, step=self.step_counter)
-            self.wbl.log({mode+'_'+ANOMALY_BALANCE: zda_balance}, step=self.step_counter)
+            self.wbl.log(
+                {
+                    mode+'_'+OS_ACC: cummulative_os_acc.item(),
+                    mode+'_'+OS_LOSS: os_loss.item(),
+                    mode+'_'+ANOMALY_BALANCE: zda_balance
+                }, 
+                step=self.step_counter)
 
-        """
+        
         if self.AI_DEBUG: 
-            # self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
-            # self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-            # self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
-            # self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
-        """
+            self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
+            self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
+            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+            self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
+        
 
         return os_loss, cummulative_os_acc
     
@@ -1662,14 +1676,18 @@ class TigerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt:
-                self.wbl.log({mode+'_'+KR_ARI: kr_ari}, step=self.step_counter)
-                self.wbl.log({mode+'_'+KR_NMI: kr_nmi}, step=self.step_counter)
-                self.wbl.log({mode+'_'+KR_LOSS: kernel_loss.item()}, step=self.step_counter)
-            """
+                self.wbl.log(
+                    {
+                        mode+'_'+KR_ARI: kr_ari,
+                        mode+'_'+KR_NMI: kr_nmi,
+                        mode+'_'+KR_LOSS: kernel_loss.item()
+                    }, 
+                    step=self.step_counter)
+            
             if self.AI_DEBUG: 
                 self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
-                # self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
-            """
+                self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
+            
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
 
@@ -1749,12 +1767,12 @@ class TigerBrain():
         # update weights
         self.optimizer.step()
 
-        """
+        
         if self.AI_DEBUG: 
-            # self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
-            # self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
+            self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
+            self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
             self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
-        """
+        
 
         if self.step_counter % self.report_step_freq == 0:
             self.report(
@@ -1860,9 +1878,13 @@ class TigerBrain():
                                         f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
                                         f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
-            self.wbl.log({'Mean EVAL AD ACC': mean_eval_ad_acc.item()}, step=self.step_counter)
-            self.wbl.log({'Mean EVAL CS ACC': mean_eval_cs_acc.item()}, step=self.step_counter)
-            self.wbl.log({'Mean EVAL KR PREC': mean_eval_kr_ari}, step=self.step_counter)
+            self.wbl.log(
+                {
+                    'Mean EVAL AD ACC': mean_eval_ad_acc.item(),
+                    'Mean EVAL CS ACC': mean_eval_cs_acc.item(),
+                    'Mean EVAL KR PREC': mean_eval_kr_ari
+                }, 
+                step=self.step_counter)
 
         if self.save_models_flag:
             self.check_progress(
@@ -1891,7 +1913,7 @@ class TigerBrain():
             cs_cm_to_plot = self.eval_cs_cm
             os_cm_to_plot = self.eval_os_cm
 
-        """
+        
         if self.wbt:
             self.plot_confusion_matrix(
                 mod=CLOSED_SET,
@@ -1907,7 +1929,7 @@ class TigerBrain():
                 classes=['Known', 'ZdA'])
             self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
             self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
-        """
+        
 
         if self.AI_DEBUG:
             self.logger_instance.info(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
