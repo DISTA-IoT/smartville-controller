@@ -57,10 +57,7 @@ class MetricsLogger:
                 auth=(kwargs['grafana']['user'], kwargs['grafana']['password']), 
                 host=kwargs['monitor_ip']+':'+str(kwargs['grafana']['port']))
         self.logger = kwargs['logger']
-        if self.init():
-            self.logger.info("MetricsLogger initialized")
-        else:
-            self.logger.error("MetricsLogger initialization failed")
+
 
     def init(self):
 
@@ -70,14 +67,14 @@ class MetricsLogger:
                 self.dash_generator = DashGenerator(self.grafana_connection, self.logger, self.max_conn_retries)
             except Exception as e:
                 self.logger.error(f"Error during dashboard generation: {e}")
-                return False
+                raise RuntimeError(f"Error during dashboard generation: {e}")
             try:
                 self.graph_generator = GraphGenerator(
                     grafana_connection=self.grafana_connection,
                     prometheus_connection=self.prometheus_connection)
             except Exception as e:
                 self.logger.error(f"Error during graph generation: {e}")
-                return False
+                raise RuntimeError(f"Error during graph generation: {e}")
             
             self.consumer_thread_manager = threading.Thread(
                 target=self.start_consuming, 
@@ -93,10 +90,7 @@ class MetricsLogger:
                         thread.stop_threads()
                         working_threads_count += 1
                 self.logger.info(f" Closed {working_threads_count} threads")
-                return False
 
-        else: 
-            return False
         
 
     def server_exist(self):

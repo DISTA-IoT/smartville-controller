@@ -283,6 +283,16 @@ def launch(**kwargs):
             shutdown()
             return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
         
+
+        try:
+           if metrics_logger is not None:
+              metrics_logger.init()
+        except Exception as e:
+          logger.error(f"Error initialising metrics logger: {e}")
+          shutdown()
+          return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"}
+
+
         FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
         if FLOWSTATS_FREQ_SECS > 0:
