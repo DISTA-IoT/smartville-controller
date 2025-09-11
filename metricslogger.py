@@ -57,6 +57,9 @@ class MetricsLogger:
                 auth=(kwargs['grafana']['user'], kwargs['grafana']['password']), 
                 host=kwargs['monitor_ip']+':'+str(kwargs['grafana']['port']))
         self.logger = kwargs['logger']
+        self.consumer_thread_manager = None
+        self.prometheus_httpd = None
+        self.prometheus_server_thread = None
 
 
     def init(self):
@@ -183,10 +186,11 @@ class MetricsLogger:
         if self.consumer_thread_manager:
             self.consumer_thread_manager.join()
             self.logger.info("Consumer thread stopped")
-        self.prometheus_httpd.shutdown()
-        self.prometheus_httpd.server_close()
-        self.logger.info("Prometheus server stopped")
-        if self.prometheus_server_thread:
+        if self.prometheus_httpd is not None:
+            self.prometheus_httpd.shutdown()
+            self.prometheus_httpd.server_close()
+            self.logger.info("Prometheus server stopped")
+        if self.prometheus_server_thread is not None:
             self.prometheus_server_thread.join()
             self.logger.info("Prometheus server thread stopped")
         self.logger.info("MetricsLogger gracefully shutdown")
