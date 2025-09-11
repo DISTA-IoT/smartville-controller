@@ -236,12 +236,14 @@ def launch(**kwargs):
           intrusion_detection_args['models'] = kwargs.get("models", {})
         except Exception as e:
           logger.error(f"Error parsing initialisation command: {e}")
+          shutdown()
           return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
         
         try:
           flow_logger = FlowLogger(**args)
         except Exception as e:
           logger.error(f"Error initialising flow logger: {e}")
+          shutdown()
           return {"status_code": 500, "msg": f"Error initialising flow logger: {e}"}
 
         try:
@@ -256,26 +258,31 @@ def launch(**kwargs):
           controller_brain = TigerBrain(args)
         except Exception as e:
           logger.error(f"Error creating controller brain: {e}")
+          shutdown()
           return {"status_code": 500, "msg": f"Error creating controller brain: {e}"}
 
-
-        if not core.hasComponent("smart_switch"):
-          try:
+        
+        try:
+          if not core.hasComponent("smart_switch"):
+          
             # Registering Switch component:
             smart_switch = SmartSwitch(
               flow_logger=flow_logger,
               **get_switching_args())
             core.register("smart_switch", smart_switch) 
             core.listen_to_dependencies(smart_switch)
-          except Exception as e:
-            logger.error(f"Error creating SmartSwitch: {e}")
-            return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
-        else:
-          logger.info("SmartSwitch already registered")
-          smart_switch = core.components["smart_switch"]
-          smart_switch.flow_logger = flow_logger # we need to update the flow logger instance attached to the SmartSwitch
-          smart_switch.initialize()
+          
+          else:
+            logger.info("SmartSwitch already registered")
+            smart_switch = core.components["smart_switch"]
+            smart_switch.flow_logger = flow_logger # we need to update the flow logger instance attached to the SmartSwitch
+            smart_switch.initialize()
 
+        except Exception as e:
+            logger.error(f"Error creating SmartSwitch: {e}")
+            shutdown()
+            return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
+        
         FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
         if FLOWSTATS_FREQ_SECS > 0:

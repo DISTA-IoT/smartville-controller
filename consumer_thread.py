@@ -15,7 +15,7 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
-from confluent_kafka import Consumer, KafkaException
+from confluent_kafka import Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
 import threading
 import math
@@ -193,7 +193,7 @@ class ConsumerThread(threading.Thread):
                 self.logger.debug(f'Got message: {msg.value().decode("utf-8")} from partition {msg.partition()}')
 
                 if msg.error():
-                    if msg.error().code() == KafkaException._PARTITION_EOF:
+                    if msg.error().code() == KafkaError._PARTITION_EOF:
                         self.logger.warning(f'End of partition reached for {msg.topic()}')
                         continue
                     else:

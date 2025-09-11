@@ -363,10 +363,7 @@ class TigerBrain():
         self.episode_count = -1
         self.env = NewTigerEnvironment(args)
         if self.wbt:
-            self.wbl = WandBTracker(
-                wanb_project_name=args.wandb.wb_project_name,
-                run_name=args.wandb.wb_run_name,
-                config_dict=kwargs).wb_logger  
+            self.wbl = WandBTracker(kwargs).wb_logger
         args.intrusion_detection.wbl = self.wbl
         self.init_agents(args)
         self.init_intelligence()
