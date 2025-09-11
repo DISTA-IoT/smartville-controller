@@ -324,13 +324,13 @@ class TigerBrain():
         self._lock = threading.Lock()
         self._epistemic_lock = threading.Lock()
         self.eval = args.intrusion_detection.eval
+        self.kwargs = kwargs
         self.intrusion_detection_kwargs = kwargs['intrusion_detection']
         self.use_packet_feats = args.intrusion_detection.use_packet_feats
         self.use_node_feats = args.intrusion_detection.node_features
         self.flow_feat_dim = args.intrusion_detection.flow_feat_dim
         self.packet_feat_dim = args.intrusion_detection.packet_feat_dim
         self.h_dim = args.intrusion_detection.h_dim
-        self.dropout = args.intrusion_detection.dropout
         self.multi_class = args.intrusion_detection.multi_class
         self.AI_DEBUG = args.intrusion_detection.ai_debug
         self.step_counter = 0
@@ -351,7 +351,6 @@ class TigerBrain():
         self.online_eval_rounds = args.intrusion_detection.online_evaluation_rounds
         self.load_pretrained_inference_module = args.intrusion_detection.pretrained_inference
         self.clustering_loss_backprop = args.intrusion_detection.clustering_loss_backprop
-        self.kernel_regressor_heads = args.intrusion_detection.kernel_regressor_heads
         self.attractive_weight = args.intrusion_detection.attractive_weight
         self.repulsive_weight = args.intrusion_detection.repulsive_weight
         self.learning_rate= float(args.intrusion_detection.learning_rate)
@@ -515,10 +514,16 @@ class TigerBrain():
         
         if KERNEL_REGRESSION_LOSS_CLASS_NAME not in model_classes:
             raise RuntimeError(f"A class named {KERNEL_REGRESSION_LOSS_CLASS_NAME} was not found in your models.py file")
-        self.kr_criterion = model_classes[KERNEL_REGRESSION_LOSS_CLASS_NAME](
-            repulsive_weigth=self.repulsive_weight, 
-            attractive_weigth=self.attractive_weight
-            ).to(self.device)
+        
+        try:
+            self.kr_criterion = model_classes[KERNEL_REGRESSION_LOSS_CLASS_NAME](
+                repulsive_weigth=self.repulsive_weight, 
+                attractive_weigth=self.attractive_weight
+                ).to(self.device)
+        except Exception as e:
+            raise RuntimeError(f"Error initializing {KERNEL_REGRESSION_LOSS_CLASS_NAME} criterion: {e}" + \
+                f" repulsive weight: {self.repulsive_weight}, attractive weight: {self.attractive_weight} from configs" +\
+                f" did your {KERNEL_REGRESSION_LOSS_CLASS_NAME} class have the correct constructor?")
         
         if self.use_packet_feats:
             if self.use_node_feats:
@@ -526,55 +531,46 @@ class TigerBrain():
                     raise RuntimeError(f"Using packet features and node features requires three features stream for inference " + \
                         f", but a class named {THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes[THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                    flow_input_size=self.flow_feat_dim, 
-                    second_stream_input_size=self.packet_feat_dim,
-                    third_stream_input_size=5,
-                    hidden_size=self.h_dim,
-                    kr_heads=self.kernel_regressor_heads,
-                    dropout_prob=self.dropout,
-                    device=self.device,
-                    kwargs=self.intrusion_detection_kwargs)
-            
+                try:
+                    self.classifier = model_classes[THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
+                        kwargs=self.kwargs['neural_modules'])
+                except Exception as e:
+                    raise RuntimeError(f"Error initializing {THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
+                
             else: 
                 if TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
                     raise RuntimeError(f"Using packet features requires two features stream for inference " + \
                         f", but a class named {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                    flow_input_size=self.flow_feat_dim, 
-                    second_stream_input_size=self.packet_feat_dim,
-                    hidden_size=self.h_dim,
-                    kr_heads=self.kernel_regressor_heads,
-                    dropout_prob=self.dropout,
-                    device=self.device,
-                    kwargs=self.intrusion_detection_kwargs)
+                try:
+                    self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
+                        kwargs=self.kwargs['neural_modules'])
+                except Exception as e:
+                    raise RuntimeError(f"Error initializing {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
+                
         else:
             if self.use_node_feats:
                 if TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
                     raise RuntimeError(f"Using node features requires two features stream for inference " + \
                         f", but a class named {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                    flow_input_size=self.flow_feat_dim, 
-                    second_stream_input_size=5,
-                    hidden_size=self.h_dim,
-                    kr_heads=self.kernel_regressor_heads,
-                    dropout_prob=self.dropout,
-                    device=self.device,
-                    kwargs=self.intrusion_detection_kwargs)
+                try:
+                    self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
+                        kwargs=self.kwargs['neural_modules'])
+                except Exception as e:
+                    raise RuntimeError(f"Error initializing {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
+                
+
             else:
                 if ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
                     raise RuntimeError(f"Using flow features only requires one features stream for inference " + \
                         f", but a class named {ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
                 
-                self.classifier = model_classes[ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                    input_size=self.flow_feat_dim, 
-                    hidden_size=self.h_dim,
-                    dropout_prob=self.dropout,
-                    kr_heads=self.kernel_regressor_heads,
-                    device=self.device,
-                    kwargs=self.intrusion_detection_kwargs)
+                try:
+                    self.classifier = model_classes[ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
+                        kwargs=self.kwargs['neural_modules'])
+                except Exception as e:
+                    raise RuntimeError(f"Error initializing {ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
             
 
         self.check_pretrained()
