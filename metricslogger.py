@@ -51,6 +51,7 @@ class MetricsLogger:
         self.sortcount = 0
         self.kafka_admin_client = None
         self.max_conn_retries = kwargs['health']['max_conn_retries'] 
+        self.metrics_to_monitor = kwargs['health']['probe_metrics']
         self.metrics_dict = {}
         self.node_features_time_window = kwargs['health']['node_features_time_window']
         self.grafana_connection = GrafanaFace(
@@ -220,14 +221,9 @@ class MetricsLogger:
 
                 self.graph_generator.generate_all_graphs(topic_name)
 
-                
-                self.metrics_dict[topic_name] = {
-                    CPU: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window), 
-                    RTT: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window), 
-                    INBOUND: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window), 
-                    OUTBOUND: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window),
-                    RAM: deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window) 
-                    }
+                self.metrics_dict[topic_name] = {}
+                for metric in self.metrics_to_monitor:
+                    self.metrics_dict[topic_name][metric] = deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window)
                 
 
                 

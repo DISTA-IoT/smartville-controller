@@ -294,25 +294,15 @@ class DynamicLabelEncoder:
         return add_replay_buffer_signal
 
 
-def get_metrics_tensor(metrics_dict, ip):
+def get_metrics_tensor(metrics_dict, ip, health_args ):
+            metrics_to_monitor = health_args['probe_metrics']
+            time_window_len = health_args['node_features_time_window']
             if ip in metrics_dict.keys():
-                """
-                return torch.hstack(
-                    [torch.Tensor(metrics_dict[ip][CPU]).unsqueeze(1),
-                    torch.Tensor(metrics_dict[ip][RAM]).unsqueeze(1),
-                    torch.Tensor(metrics_dict[ip][INBOUND]).unsqueeze(1),
-                    torch.Tensor(metrics_dict[ip][OUTBOUND]).unsqueeze(1),
-                    torch.Tensor(metrics_dict[ip][RTT]).unsqueeze(1)])
-                """
                 return torch.Tensor([
-                        metrics_dict[ip][CPU], 
-                        metrics_dict[ip][RAM], 
-                        metrics_dict[ip][INBOUND], 
-                        metrics_dict[ip][OUTBOUND], 
-                        metrics_dict[ip][RTT]]).T
+                        metrics_dict[ip][metric] for metric in metrics_to_monitor]).T 
             else:
                 return -1 * torch.ones(
-                    size=(10,5))
+                    size=(time_window_len,len(metrics_to_monitor)))
             
 
 class TigerBrain():
@@ -2028,7 +2018,7 @@ class TigerBrain():
             if self.use_packet_feats:
                 packet_input_batch.append(flow.get_packet_features().unsqueeze(0))
             if self.use_node_feats:
-                node_feat_input_batch.append(get_metrics_tensor(node_feats, flow.dest_ip).unsqueeze(0))
+                node_feat_input_batch.append(get_metrics_tensor(node_feats, flow.dest_ip, self.kwargs['health']).unsqueeze(0))
                     
         flow_input_batch = torch.vstack(flow_input_batch)
         if self.use_packet_feats:
