@@ -156,7 +156,7 @@ def smart_check(period):
 
       controller_brain.process_input(
         flows=list(flow_logger.flows_dict.values()),
-        node_feats=(metrics_logger.metrics_dict if args['intrusion_detection']['node_features'] else None))
+        node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
       
     time.sleep(period)
 
@@ -247,8 +247,10 @@ def launch(**kwargs):
           return {"status_code": 500, "msg": f"Error initialising flow logger: {e}"}
 
         try:
-          if intrusion_detection_args.get("node_features"):
+          if args['health_monitoring']:
               metrics_logger = MetricsLogger(args)
+          else:
+             logger.info("Metrics logger is not enabled")
         except Exception as e:
           logger.error(f"Error creating metrics logger: {e}")
           return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"} 

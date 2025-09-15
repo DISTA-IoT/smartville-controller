@@ -39,11 +39,11 @@ class FlowLogger(object):
       self.flows_dict = {}
       self.unprocessed_packets_buffers = {}
       self.logger_instance = args.logger
-      self.packet_buffer_len = args.intrusion_detection.packet_buffer_len
-      self.packet_feat_dim = args.intrusion_detection.packet_feat_dim
+      self.packet_buffer_len = int(args.intrusion_detection.packet_buffer_len)
+      self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
       self.anomyn_ports = args.intrusion_detection.anonymize_transport_ports
-      self.flow_feat_dim = args.intrusion_detection.flow_feat_dim
-      self.flow_buff_len = args.intrusion_detection.flow_buff_len
+      self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
+      self.flow_buff_len = int(args.intrusion_detection.flow_buff_len)
       self.use_packet_feats = args.intrusion_detection.use_packet_feats
 
 

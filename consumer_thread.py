@@ -130,24 +130,50 @@ class ConsumerThread(threading.Thread):
         self.received_messages += 1
 
         if CPU in self.kwargs['health']['probe_metrics']:
-            self.logger.debug(f'CPU probe received from {self.topic_name}: {message[self.topic_name+"_"+CPU]}')
-            self.update_cpu_metric(float(message[self.topic_name+"_"+CPU]), self.topic_name)
+            if self.topic_name+"_"+CPU in message.keys():
+                self.logger.debug(f'CPU probe received from {self.topic_name}: {message[self.topic_name+"_"+CPU]}')
+                self.update_cpu_metric(float(message[self.topic_name+"_"+CPU]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {CPU} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+            
 
         if RAM in self.kwargs['health']['probe_metrics']:
-            self.logger.debug(f'RAM probe received from {self.topic_name}: {message[self.topic_name+"_"+RAM]}')
-            self.update_ram_metric(float(message[self.topic_name+"_"+RAM]), self.topic_name)
+            if self.topic_name+"_"+RAM in message.keys():
+                self.logger.debug(f'RAM probe received from {self.topic_name}: {message[self.topic_name+"_"+RAM]}')
+                self.update_ram_metric(float(message[self.topic_name+"_"+RAM]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {RAM} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
 
         if RTT in self.kwargs['health']['probe_metrics']:
-            self.logger.debug(f'RTT probe received from {self.topic_name}: {message[self.topic_name+"_"+RTT]}')
-            self.update_rtt_metric(float(message[self.topic_name+"_"+RTT]), self.topic_name)
+            if self.topic_name+"_"+RTT in message.keys():
+                self.logger.debug(f'RTT probe received from {self.topic_name}: {message[self.topic_name+"_"+RTT]}')
+                self.update_rtt_metric(float(message[self.topic_name+"_"+RTT]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {RTT} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
 
         if INBOUND in self.kwargs['health']['probe_metrics']:
-            self.logger.debug(f'IN_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+INBOUND]}')
-            self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+INBOUND]), self.topic_name)
+            if self.topic_name+"_"+INBOUND in message.keys():
+                self.logger.debug(f'IN_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+INBOUND]}')
+                self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+INBOUND]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {INBOUND} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
 
         if OUTBOUND in self.kwargs['health']['probe_metrics']:
-            self.logger.debug(f'OUT_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+OUTBOUND]}')
-            self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+OUTBOUND]), self.topic_name)
+            if self.topic_name+"_"+OUTBOUND in message.keys():
+                self.logger.debug(f'OUT_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+OUTBOUND]}')
+                self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+OUTBOUND]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {OUTBOUND} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
 
 
     def run(self):
