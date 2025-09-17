@@ -634,40 +634,43 @@ class TigerBrain():
                 hiddens: 
                 predicted_kernel:
         """
-        if self.use_packet_feats:
-            if self.use_node_feats:
-                logits, hiddens, predicted_kernel = self.classifier(
-                    batch.flow_features, 
-                    batch.packet_features, 
-                    batch.node_features,
-                    batch.class_labels, 
-                    self.current_known_classes_count,
-                    query_mask)
+        try:
+            if self.use_packet_feats:
+                if self.use_node_feats:
+                    logits, hiddens, predicted_kernel = self.classifier(
+                        batch.flow_features, 
+                        batch.packet_features, 
+                        batch.node_features,
+                        batch.class_labels, 
+                        self.current_known_classes_count,
+                        query_mask)
+                else:
+                    logits, hiddens, predicted_kernel = self.classifier(
+                        batch.flow_features, 
+                        batch.packet_features, 
+                        batch.class_labels, 
+                        self.current_known_classes_count,
+                        query_mask)
             else:
-                logits, hiddens, predicted_kernel = self.classifier(
-                    batch.flow_features, 
-                    batch.packet_features, 
-                    batch.class_labels, 
-                    self.current_known_classes_count,
-                    query_mask)
-        else:
-            if self.use_node_feats:
-                logits, hiddens, predicted_kernel = self.classifier(
-                    batch.flow_features, 
-                    batch.node_features, 
-                    batch.class_labels, 
-                    self.current_known_classes_count,
-                    query_mask)
-            else:
-                logits, hiddens, predicted_kernel = self.classifier(
-                    batch.flow_features, 
-                    batch.class_labels, 
-                    self.current_known_classes_count,
-                    query_mask)
+                if self.use_node_feats:
+                    logits, hiddens, predicted_kernel = self.classifier(
+                        batch.flow_features, 
+                        batch.node_features, 
+                        batch.class_labels, 
+                        self.current_known_classes_count,
+                        query_mask)
+                else:
+                    logits, hiddens, predicted_kernel = self.classifier(
+                        batch.flow_features, 
+                        batch.class_labels, 
+                        self.current_known_classes_count,
+                        query_mask)
 
 
-        return logits, hiddens, predicted_kernel
-
+            return logits, hiddens, predicted_kernel
+        except Exception as e:
+            self.logger_instance.error(f'Error while using your classifier instance: {e}')
+            raise RuntimeError(f'Error while using your classifier instance: {e}')
 
     def push_to_replay_buffers(
             self,
@@ -790,9 +793,17 @@ class TigerBrain():
             # known class horizonal mask:
             known_class_h_mask = self.get_known_classes_mask(batch, one_hot_labels)
             
-            # separate between candidate known traffic and unknown traffic.
-            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-
+            try:
+                # separate between candidate known traffic and unknown traffic.
+                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+            except:
+                self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
+                self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
+                self.logger_instance.error(f'logits shape: {logits.shape}')
+                self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
+                self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
+                raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
+        
             # using the inference module to classify anomalies. 
             self.zda_classification_step(
                 zda_labels=batch.zda_labels[query_mask], 
@@ -1716,9 +1727,18 @@ class TigerBrain():
         
         loss = 0
 
-        # separate between candidate known traffic and unknown traffic.
-        zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-        
+        try:
+            # separate between candidate known traffic and unknown traffic.
+            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+        except:
+            self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
+            self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
+            self.logger_instance.error(f'logits shape: {logits.shape}')
+            self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
+            self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
+            raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
+            
+
         if self.multi_class:
             # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
             # if instead we are on a binary attack/non attack classification setting, 
@@ -1840,9 +1860,17 @@ class TigerBrain():
             # known class horizonal mask:
             known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
 
-            # separate between candidate known traffic and unknown traffic.
-            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-
+            try:
+                # separate between candidate known traffic and unknown traffic.
+                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+            except:
+                self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
+                self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
+                self.logger_instance.error(f'logits shape: {logits.shape}')
+                self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
+                self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
+                raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
+        
             _, ad_acc = self.zda_classification_step(
                 zda_labels=eval_batch.zda_labels[query_mask], 
                 zda_predictions=zda_predictions,
@@ -2149,8 +2177,21 @@ class TigerBrain():
         color_iterator = itertools.cycle(colors)
         
         pca = PCA(n_components=2)
-        score_vectors = pca.fit_transform(score_vectors.detach())
 
+        if score_vectors.shape[1] < 2:
+            self.logger_instance.warning(f'PCA not applied to score vectors because they are too low dimensional')
+            return
+        if score_vectors.shape[1] > 2:
+            try:
+                score_vectors = pca.fit_transform(score_vectors.detach())
+            except Exception as e:
+                self.logger_instance.warning(f'Error during PCA applied to score vectors: {e}')
+                return
+        else:
+            self.logger_instance.info(f'PCA not applied to score vectors because they are already 2 dimensional')
+            score_vectors = score_vectors.detach()
+
+                    
         plt.figure(figsize=(10, 6))
 
         # Two plots:

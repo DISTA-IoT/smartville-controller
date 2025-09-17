@@ -154,10 +154,16 @@ def smart_check(period):
 
     with tiger_lock:
 
-      controller_brain.process_input(
-        flows=list(flow_logger.flows_dict.values()),
-        node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
+      try:
       
+        controller_brain.process_input(
+          flows=list(flow_logger.flows_dict.values()),
+          node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
+      
+      except Exception as e:
+        logger.error(f"Error processing input: {e}")
+        shutdown_process()
+
     time.sleep(period)
 
 
@@ -169,7 +175,29 @@ def fix_no_proxy(monitor_ip):
   os.environ['no_proxy'] = no_proxy
   logger.info(f"Fixed no_proxy to {no_proxy}")
     
-    
+
+
+def shutdown_process():
+  global stop_tiger_threads, inference_thread, flowstatreq_thread, metrics_logger, controller_brain
+
+  logger.info("Shutdown command received")
+  
+  stop_tiger_threads = True
+  if inference_thread is not None:
+    inference_thread.join()
+  if flowstatreq_thread is not None:
+    flowstatreq_thread.join()
+
+  if metrics_logger is not None:
+    metrics_logger.shutdown()
+  metrics_logger = None
+
+  if controller_brain is not None:
+    controller_brain.shutdown()
+  controller_brain = None
+   
+
+
 def launch(**kwargs):     
     global app, app_thread, openflow_connection, smart_switch
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
@@ -184,29 +212,14 @@ def launch(**kwargs):
 
     @app.post("/stop")
     async def shutdown():
-        global stop_tiger_threads, inference_thread, flowstatreq_thread, metrics_logger, controller_brain
-
-        logger.info("Shutdown command received")
         
-        stop_tiger_threads = True
-        if inference_thread is not None:
-          inference_thread.join()
-        if flowstatreq_thread is not None:
-          flowstatreq_thread.join()
-
-        if metrics_logger is not None:
-          metrics_logger.shutdown()
-        metrics_logger = None
-      
-        if controller_brain is not None:
-          controller_brain.shutdown()
-        controller_brain = None
+        shutdown_process()
 
         return {"status_code": 200, "msg": "SmartSwitch is stopped"}
 
     def cleanup():
       logger.info("Cleaning up before exit")
-      return shutdown()
+      return shutdown_process()
 
     def handle_sigterm(signum, frame):
       cleanup()
@@ -236,14 +249,14 @@ def launch(**kwargs):
           intrusion_detection_args['models'] = kwargs.get("models", {})
         except Exception as e:
           logger.error(f"Error parsing initialisation command: {e}")
-          shutdown()
+          shutdown_process()
           return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
         
         try:
           flow_logger = FlowLogger(**args)
         except Exception as e:
           logger.error(f"Error initialising flow logger: {e}")
-          shutdown()
+          shutdown_process()
           return {"status_code": 500, "msg": f"Error initialising flow logger: {e}"}
 
         try:
@@ -260,7 +273,7 @@ def launch(**kwargs):
           controller_brain = TigerBrain(args)
         except Exception as e:
           logger.error(f"Error creating controller brain: {e}")
-          shutdown()
+          shutdown_process()
           return {"status_code": 500, "msg": f"Error creating controller brain: {e}"}
 
         
@@ -282,7 +295,7 @@ def launch(**kwargs):
 
         except Exception as e:
             logger.error(f"Error creating SmartSwitch: {e}")
-            shutdown()
+            shutdown_process()
             return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
         
 
@@ -291,7 +304,7 @@ def launch(**kwargs):
               metrics_logger.init()
         except Exception as e:
           logger.error(f"Error initialising metrics logger: {e}")
-          shutdown()
+          shutdown_process()
           return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"}
 
 
