@@ -180,10 +180,12 @@ class MetricsLogger:
 
 
     def shutdown(self):
+        self.active = False
+        
         for consumer_thread in self.consumer_threads:
             consumer_thread.stop()
             consumer_thread.join()
-        self.active = False
+        
         if self.consumer_thread_manager:
             self.consumer_thread_manager.join()
             self.logger.info("Consumer thread stopped")
@@ -200,6 +202,7 @@ class MetricsLogger:
     def start_consuming(self):
 
         while self.active:
+
             updated_topic_list = []
             curr_topics_dict = self.kafka_admin_client.list_topics().topics
 
