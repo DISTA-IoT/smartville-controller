@@ -939,10 +939,10 @@ class TigerBrain():
             )
 
         if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == True:
-            # we just accept the known traffic (for the ACID paper)
+            # we just accept the known traffic 
             action_signal = torch.Tensor([0]).long()
         else:
-            # an agent decides this (as in the TIGER paper)
+            # an agent decides this 
             action_signal = self.act(state_vec)
               
         # advance the game steps:
