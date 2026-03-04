@@ -164,7 +164,7 @@ def smart_check(period):
         logger.error(f"Error processing input: {e}")
         shutdown_process()
 
-    time.sleep(period)
+    # time.sleep(period)
 
 
 def fix_no_proxy(monitor_ip):
