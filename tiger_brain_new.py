@@ -15,8 +15,6 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
-from smartController.neural_modules import  MultiClassFlowClassifier, ThreeStreamMulticlassFlowClassifier, \
-        TwoStreamMulticlassFlowClassifier, KernelRegressionLoss, ConfidenceDecoder
 from smartController.replay_buffer import RawReplayBuffer, Batch
 import os
 import torch
