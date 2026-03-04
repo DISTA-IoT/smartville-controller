@@ -1725,28 +1725,32 @@ class TigerBrain():
         
         loss = 0
 
-        try:
-            # separate between candidate known traffic and unknown traffic.
-            zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-        except:
-            self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
-            self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
-            self.logger_instance.error(f'logits shape: {logits.shape}')
-            self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
-            self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
-            raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
-            
+        if torch.any(known_class_h_mask):
+            try:
+                # separate between candidate known traffic and unknown traffic.
+                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+            except:
+                self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
+                self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
+                self.logger_instance.error(f'logits shape: {logits.shape}')
+                self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
+                self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
+                raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
+                
 
-        if self.multi_class:
-            # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
-            # if instead we are on a binary attack/non attack classification setting, 
-            # we do not care if the detected attacks are known or unknown.. 
-            zda_detection_loss, _ = self.zda_classification_step(
-                zda_labels=training_batch.zda_labels[query_mask], 
-                zda_predictions=zda_predictions,
-                accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
-                mode=TRAINING)
-            loss += zda_detection_loss
+            if self.multi_class:
+                # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
+                # if instead we are on a binary attack/non attack classification setting, 
+                # we do not care if the detected attacks are known or unknown.. 
+                zda_detection_loss, _ = self.zda_classification_step(
+                    zda_labels=training_batch.zda_labels[query_mask], 
+                    zda_predictions=zda_predictions,
+                    accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
+                    mode=TRAINING)
+                loss += zda_detection_loss
+
+        else:
+            self.logger_instance.warning(f'Have not seen samples from known classes so far. Cannot train the confidence decoder yet.')
 
         # clusterise everything you have labels about. 
         kr_loss, predicted_clusters, _ = self.kernel_regression_evaluation(
