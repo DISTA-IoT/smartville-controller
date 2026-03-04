@@ -142,7 +142,7 @@ class SmartSwitch(EventMixin):
             # containing the buffer id and the input port of the switch.
             po = of.ofp_packet_out(buffer_id=packet_id, in_port = in_port)
             core.openflow.sendToDPID(switch_id, po)
-            self.logger.debug(f"Expired packet {packet_id} for {flow_metadata}")
+            self.logger.info(f"Expired packet {packet_id} for {flow_metadata}")
 
     # Remove empty flow entries from the unprocessed_flows dictionary
     # Remove also the forwarding rules
