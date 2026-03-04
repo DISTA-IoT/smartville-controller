@@ -77,7 +77,7 @@ class DQN(nn.Module):
         self.fc1_prime = nn.Linear(6, kwargs['h_dim'])
         self.fc2 = nn.Linear(2 * kwargs['state_size'], kwargs['h_dim'] // 5)
         self.fc2_prime = nn.Linear(kwargs['h_dim'], 4 * (kwargs['h_dim'] // 5))
-        self.fc3 = nn.Linear(kwargs['h_dim'], kwargs['action_size'])
+        self.fc3 = nn.Linear(5 * (kwargs['h_dim'] // 5), kwargs['action_size'])
 
 
     def forward(self, x):
