@@ -193,7 +193,7 @@ class SmartSwitch(EventMixin):
       for fr in to_delete_frs:
           self.forwardingRules[switch_id].remove(fr)
 
-      self.logger.info(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
+      self.logger.debug(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
 
 
   def learn_or_update_arp_table(
@@ -263,7 +263,7 @@ class SmartSwitch(EventMixin):
       connection.send(msg.pack())
       self.forwardingRules[switch_id].append(forwarding_rule)
 
-      self.logger.info(f"Added new forwarding flow rule to: {switch_id}"+\
+      self.logger.debug(f"Added new forwarding flow rule to: {switch_id}"+\
                 f" source: {match.nw_src} dest: {match.nw_dst} outgoing port: {outgoing_port}")
 
 
