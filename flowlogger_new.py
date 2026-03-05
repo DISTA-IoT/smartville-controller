@@ -141,7 +141,15 @@ class FlowLogger(object):
       
       hostname = ips_containers[sender_ip_addr]
       if hostname not in traffic_dict.keys():
-         self.logger_instance.error(f"Hostname {hostname} not found in traffic_dict!")
+         """
+         in this version of Smartville we are not labelling the traffic from honeypots. 
+         We could do that taking care of differentiating labelling between: 
+         - benign traffic from honeypots (request and responses)
+         - responses from honeypots to malicious nodes. 
+         - requests from honeypots to malicious nodes (if we allow for benign nodes to send traffic to malicious nodes)
+         This should not be impossible, we could keep a mirror traffic dict to keep track of reverse traffic and not labelling it, that should be enough.
+         """
+         self.logger_instance.info(f"Traffic from {hostname}. Not labelling.")
          return
       
       flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])
