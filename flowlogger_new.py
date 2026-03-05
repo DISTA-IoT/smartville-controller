@@ -149,7 +149,7 @@ class FlowLogger(object):
          - requests from honeypots to malicious nodes (if we allow for benign nodes to send traffic to malicious nodes)
          This should not be impossible, we could keep a mirror traffic dict to keep track of reverse traffic and not labelling it, that should be enough.
          """
-         self.logger_instance.info(f"Traffic from {hostname}. Not labelling.")
+         self.logger_instance.debug(f"Traffic from {hostname}. Not labelling.")
          return
       
       flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])
