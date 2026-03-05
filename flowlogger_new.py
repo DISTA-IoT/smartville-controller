@@ -15,6 +15,7 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
+from pox.core import core
 from pox.openflow.of_json import flow_stats_to_list
 from smartController.flow import Flow, CircularBuffer
 from smartController.attr_dict import AttrDict
@@ -38,7 +39,9 @@ class FlowLogger(object):
       args = AttrDict(kwargs)
       self.flows_dict = {}
       self.unprocessed_packets_buffers = {}
-      self.logger_instance = args.logger
+      self.logger_instance = core.getLogger()
+      self.logger_instance.name = "FlowLogger"
+      self.logger_instance.setLevel(kwargs.get("flow_logger_log_level").upper())
       self.packet_buffer_len = int(args.intrusion_detection.packet_buffer_len)
       self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
       self.anomyn_ports = args.intrusion_detection.anonymize_transport_ports
@@ -130,6 +133,7 @@ class FlowLogger(object):
       dest_ip_addr = of_flowstats_obj['match']['nw_dst'].split('/')[0]
 
       if sender_ip_addr not in ips_containers:
+         self.logger_instance.error(f"IP address {sender_ip_addr} not found in ips_containers!")
          return
       
       if ips_containers[sender_ip_addr] == 'pox-controller':
@@ -137,7 +141,7 @@ class FlowLogger(object):
       
       hostname = ips_containers[sender_ip_addr]
       if hostname not in traffic_dict.keys():
-         self.logger_instance.debug(f"Hostname {hostname} not found in traffic_dict")
+         self.logger_instance.error(f"Hostname {hostname} not found in traffic_dict!")
          return
       
       flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])

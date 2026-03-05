@@ -89,7 +89,9 @@ class SmartSwitch(EventMixin):
     self.max_buffered_packets = int(kwargs.get('max_buffered_packets'))
     self.max_buffering_secs = int(kwargs.get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs.get('arp_req_exp_secs'))
-    self.logger = kwargs.get('logger')
+    self.logger = core.getLogger()
+    self.logger.name = "SmartSwitch"
+    self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
     self.flow_logger = flow_logger
     self.initialize()
 
@@ -205,23 +207,39 @@ class SmartSwitch(EventMixin):
       
       switch_id = connection.dpid 
 
-      if ip_addr in self.arpTables[switch_id] and \
-        self.arpTables[switch_id][ip_addr] != (port, mac_addr):
+      if ip_addr in self.arpTables[switch_id]:
+        
+        if self.arpTables[switch_id][ip_addr] == (port, mac_addr):
             
+            entry = self.arpTables[switch_id][ip_addr]
+            entry.timeout = time.time() + self.arp_timeout
+
+            self.logger.debug("Updated timeout on ARP table for ip %s", ip_addr)
+
+
+        else:
+            old_port, old_mac = self.arpTables[switch_id][ip_addr]
             # Update switch_port/MAC info
             self.delete_ip_flow_matching_rules(
               dest_ip=ip_addr,
               connection=connection)
-
-      # Learn switch_port/MAC info
-      self.arpTables[switch_id][ip_addr] = Entry(
+            
+            self.arpTables[switch_id][ip_addr] = Entry(
                                             port=port, 
                                             mac=mac_addr, 
                                             ARP_TIMEOUT=self.arp_timeout)
-      
-      self.logger.debug(f"Entry added/updated to switch {switch_id}'s internal arp table: "+\
-                f"(port:{port} ip:{ip_addr})")
-        
+            
+            self.logger.debug(f"Changed entry on switch {switch_id}'s ARP table: "+\
+                f"for (ip:{ip_addr} old_port:{old_port} old_mac:{old_mac} new_port:{port} new_mac:{mac_addr})")
+                       
+      else:
+          self.arpTables[switch_id][ip_addr] = Entry(
+                                            port=port, 
+                                            mac=mac_addr, 
+                                            ARP_TIMEOUT=self.arp_timeout)
+          self.logger.debug(f"NEW entry added on switch {switch_id}'s ARP table: "+\
+              f"for (ip:{ip_addr} port:{port} mac:{mac_addr})")
+
 
   def add_ip_to_ip_flow_matching_rule(self, 
                                  switch_id,
@@ -403,7 +421,7 @@ class SmartSwitch(EventMixin):
         packet = packet_in_event.parsed  # DNS parsing error occurs during this step
       except:
         # If the parsing fails, just skip this packet without raising an exception
-        self.logger.warning(f'error while parsing ipv4 packet_in_event: {packet_in_event}') 
+        self.logger.error(f'error while parsing IPV4 packet_in_event: {packet_in_event}') 
         return
 
       self.logger.debug("IPV4 DETECTED - SWITCH: %i ON PORT: %i IP SENDER: %s IP RECEIVER %s", 
@@ -476,7 +494,7 @@ class SmartSwitch(EventMixin):
         packet = packet_in_event.parsed  # DNS parsing error occurs during this step
       except:
         # If the parsing fails, just skip this packet without raising an exception
-        self.logger.warning(f'error while parsing arp packet_in_event: {packet_in_event}') 
+        self.logger.error(f'error while parsing ARP packet_in_event: {packet_in_event}') 
         return
       
       packet = packet_in_event.parsed
@@ -521,7 +539,7 @@ class SmartSwitch(EventMixin):
                 return
 
       # Didn't know how to answer or otherwise handle the received ARP, so just flood it
-      self.logger.debug(f"Flooding ARP {arp_operation} Switch: {switch_id} IN_PORT: {incomming_port} from:{inner_packet.protosrc} to:{inner_packet.protodst}")
+      self.logger.info(f"Flooding ARP {arp_operation} Switch: {switch_id} IN_PORT: {incomming_port} from:{inner_packet.protosrc} to:{inner_packet.protodst}")
 
       msg = of.ofp_packet_out(
          in_port = incomming_port, 
@@ -540,7 +558,7 @@ class SmartSwitch(EventMixin):
       packet = event.parsed  # DNS parsing error occurs during this step
     except:
       # If the parsing fails, just skip this packet without raising an exception
-      self.logger.warning(f'error while parsing openflow packet_in_event: {event}') 
+      self.logger.error(f'error while parsing OPENFLOW packet_in_event: {event}') 
       return 
        
     if not packet.parsed:
