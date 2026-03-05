@@ -164,7 +164,7 @@ def smart_check(period):
         logger.error(f"Error processing input: {e}")
         shutdown_process()
 
-    # time.sleep(period)
+    time.sleep(period)
 
 
 def fix_no_proxy(monitor_ip):
@@ -232,7 +232,7 @@ def launch(**kwargs):
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
 
         try:
-          logger.setLevel(kwargs.get("smart_switch_log_level").upper())
+          logger.setLevel(kwargs.get("smart_controller_log_level").upper())
           logger.info(f"Initialisation command received")
 
           pprint(kwargs)
@@ -279,11 +279,15 @@ def launch(**kwargs):
         
         try:
           if not core.hasComponent("smart_switch"):
+
+            switch_args = get_switching_args()
+            switch_args.update(args)
           
             # Registering Switch component:
             smart_switch = SmartSwitch(
               flow_logger=flow_logger,
-              **get_switching_args())
+              **switch_args
+              )
             core.register("smart_switch", smart_switch) 
             core.listen_to_dependencies(smart_switch)
           
