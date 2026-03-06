@@ -26,6 +26,7 @@ class CircularBuffer:
         self.buffer = torch.zeros(buffer_size, feature_size)
         self.is_full = False
         self.calls_to_add = 0
+        self.curr_elements = 0
 
 
     def add(self, new_tensor):
@@ -34,8 +35,35 @@ class CircularBuffer:
         # Add new tensor to the last row
         self.buffer[-1] = new_tensor
         self.calls_to_add += 1
+        self.curr_elements += 1
         if self.calls_to_add >= self.buffer_size:
             self.is_full = True
+            self.curr_elements = self.buffer_size
+
+    def get_buffer(self):
+        return self.buffer
+    
+
+class PacketCircularBuffer:
+    def __init__(self, buffer_size=10, feature_size=4):
+        self.buffer_size = buffer_size
+        self.feature_size = feature_size
+        self.buffer = torch.zeros(buffer_size, feature_size)
+        self.is_full = False
+        self.calls_to_add = 0
+        self.curr_elements = 0
+
+
+    def add(self, new_tensor):
+        # Roll the buffer up by 1 along the first dimension
+        self.buffer = torch.roll(self.buffer, shifts=-1, dims=0)
+        # Add new tensor to the last row
+        self.buffer[-1] = new_tensor
+        self.calls_to_add += 1
+        self.curr_elements += 1
+        if self.calls_to_add >= self.buffer_size:
+            self.is_full = True
+            self.curr_elements = self.buffer_size
 
     def get_buffer(self):
         return self.buffer
@@ -48,20 +76,24 @@ class Flow():
         dest_ip, 
         switch_output_port,
         flow_feat_dim,
-        flow_buff_len,
+        flows_per_sample,
         packet_feat_dim,
-        packet_buffer_len):
+        packets_per_sample,
+        replay_buffer_max_capacity):
         
         self.source_ip = source_ip
         self.dest_ip = dest_ip
         self.switch_output_port = switch_output_port
         self.flow_id = self.source_ip + "_" + self.dest_ip + "_" + str(self.switch_output_port)
         self.switch_input_port = None
-        self.__flow_feat_circular_buffer = CircularBuffer(
-                            buffer_size=flow_buff_len, 
+        self.replay_buffer_max_capacity = replay_buffer_max_capacity
+        self.flows_per_sample = flows_per_sample
+        self.flow_feat_circular_buffer = CircularBuffer(
+                            buffer_size=replay_buffer_max_capacity, 
                             feature_size=flow_feat_dim)
-        self.__packet_feat_circular_buffer = CircularBuffer(
-                            buffer_size=packet_buffer_len, 
+        self.packets_per_sample = packets_per_sample
+        self.packet_feat_circular_buffer = CircularBuffer(
+                            buffer_size=replay_buffer_max_capacity, 
                             feature_size=packet_feat_dim)
         self.node_feats = None
         self.element_class = BENIGN
@@ -69,21 +101,8 @@ class Flow():
         self.test_zda = False
 
 
-    def add_to_packet_buffer(self, incomming):
-        if type(incomming) == CircularBuffer:
-            for slice in incomming.buffer:
-                self.__packet_feat_circular_buffer.add(slice)
-            return
-        else:
-            self.__packet_feat_circular_buffer.add(incomming)
-    
-    
-    def enrich_flow_features(self, feat_slice: torch.Tensor):
-            self.__flow_feat_circular_buffer.add(feat_slice)
-
-
     def get_flow_features(self):
-        return self.__flow_feat_circular_buffer.buffer
+        return self.flow_feat_circular_buffer.buffer[:-self.flows_per_sample]
     
     def get_packet_features(self):
-        return self.__packet_feat_circular_buffer.buffer
+        return self.packet_feat_circular_buffer.buffer[:-self.packets_per_sample]

@@ -22,8 +22,7 @@ from smartController.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
 from pox.lib.packet.ipv4 import ipv4
-from types import SimpleNamespace
-
+from pprint import pprint
 
 class FlowLogger(object):
     
@@ -38,15 +37,16 @@ class FlowLogger(object):
       """
       args = AttrDict(kwargs)
       self.flows_dict = {}
-      self.unprocessed_packets_buffers = {}
+      self.packet_buffers = {}
       self.logger_instance = core.getLogger()
       self.logger_instance.name = "FlowLogger"
       self.logger_instance.setLevel(kwargs.get("flow_logger_log_level").upper())
-      self.packet_buffer_len = int(args.intrusion_detection.packet_buffer_len)
+      self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
+      self.packets_per_sample = int(args.intrusion_detection.packets_per_sample)
       self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
       self.anomyn_ports = args.intrusion_detection.anonymize_transport_ports
       self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
-      self.flow_buff_len = int(args.intrusion_detection.flow_buff_len)
+      self.flows_per_sample = int(args.intrusion_detection.flows_per_sample)
       self.use_packet_feats = args.intrusion_detection.use_packet_feats
 
 
@@ -101,25 +101,23 @@ class FlowLogger(object):
 
         returns a flag indicating if the buffer is full of data.
         """
+
         partial_flow_id = str(src_ip) + "_" + str(dst_ip)
-        packet_tensor = self.build_packet_tensor(packet=packet.next)
-
-        if partial_flow_id in self.unprocessed_packets_buffers.keys():
-            # A tensor already exists:
-            curr_packets_circ_buff = self.unprocessed_packets_buffers[partial_flow_id]
-        else:
-           # Create new circular buffer:
-           curr_packets_circ_buff = CircularBuffer(
-              buffer_size=self.packet_buffer_len, 
-              feature_size=self.packet_feat_dim)
-           self.logger_instance.debug(f"Created packet buffer for {partial_flow_id}") 
 
 
-        curr_packets_circ_buff.add(packet_tensor)
-        self.unprocessed_packets_buffers[partial_flow_id] = curr_packets_circ_buff
-        self.logger_instance.debug(f"Updated packet buffer for {partial_flow_id}") 
-        
-        return curr_packets_circ_buff.is_full
+        for key in self.flows_dict.keys():
+            
+            if partial_flow_id in key:
+               # We have at this moment a flow object that is interested in this packet.
+         
+               # Extract packet tensor
+               packet_tensor = self.build_packet_tensor(packet=packet.next)
+
+               # Add packet to the buffer
+               self.flows_dict[key].packet_feat_circular_buffer.add(packet_tensor)
+
+               self.logger_instance.debug(f"Updated packet buffer for {partial_flow_id}")
+
 
 
     def process_received_flow(
@@ -141,60 +139,44 @@ class FlowLogger(object):
       
       hostname = ips_containers[sender_ip_addr]
       if hostname not in traffic_dict.keys():
-         """
-         in this version of Smartville we are not labelling the traffic from honeypots. 
-         We could do that taking care of differentiating labelling between: 
-         - benign traffic from honeypots (request and responses)
-         - responses from honeypots to malicious nodes. 
-         - requests from honeypots to malicious nodes (if we allow for benign nodes to send traffic to malicious nodes)
-         This should not be impossible, we could keep a mirror traffic dict to keep track of reverse traffic and not labelling it, that should be enough.
-         """
-         self.logger_instance.debug(f"Traffic from {hostname}. Not labelling.")
+         self.logger_instance.error(f"Traffic from unknown host: {hostname}. Not labelling this flow.")
          return
       
-      flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])
-      if flow_id not in self.flows_dict.keys():
-         # Create new flow object
-         flow = Flow(
-            source_ip=sender_ip_addr, 
-            dest_ip=dest_ip_addr, 
-            switch_output_port=of_flowstats_obj['actions'][1]['port'],
-            flow_feat_dim=self.flow_feat_dim,
-            flow_buff_len=self.flow_buff_len,
-            packet_feat_dim=self.packet_feat_dim,
-            packet_buffer_len=self.packet_buffer_len)
-         self.flows_dict[flow.flow_id] = flow
-      else:
-         flow = self.flows_dict[flow_id]
-         
+      if traffic_dict[hostname]['dest_ip'] == dest_ip_addr and traffic_dict[hostname]['src_ip'] == sender_ip_addr:
+
+         # This is a flow that we are interested in
+         flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])
       
-      # This is where our labelling takes place... 
-      flow_info = traffic_dict[hostname]
-      flow.element_class = flow_info['pattern']
-      flow.test_zda = flow_info['pattern'] in current_knowledge['G2s']
-      flow.zda = flow.test_zda or flow_info['pattern'] in current_knowledge['G1s']
-      
-      # flow feature extraction
-      flow_features = self.extract_flow_feature_tensor(flow=of_flowstats_obj)
-      flow.enrich_flow_features(flow_features)
+         if flow_id in self.flows_dict.keys():
+            # Flow already exists
+            flow = self.flows_dict[flow_id]
+         else:
+            # Create new flow object
+            self.logger_instance.info(f"Creating new flow object: {flow_id}")
+            flow = Flow(
+               source_ip=sender_ip_addr, 
+               dest_ip=dest_ip_addr, 
+               switch_output_port=of_flowstats_obj['actions'][1]['port'],
+               flow_feat_dim=self.flow_feat_dim,
+               flows_per_sample=self.flows_per_sample,
+               packet_feat_dim=self.packet_feat_dim,
+               packets_per_sample=self.packets_per_sample,
+               replay_buffer_max_capacity=self.replay_buffer_max_capacity)
+            self.flows_dict[flow.flow_id] = flow
 
-      # packet feature extraction
-      packet_circular_buffer = self.get_unprocessed_packet_buffer(flow)
-      if packet_circular_buffer != None:
-         flow.add_to_packet_buffer(packet_circular_buffer)
+
+         # This is where our labelling takes place...
+         self.logger_instance.debug(f"Updating labels for flow: {flow.flow_id}")
+                  
+         flow_info = traffic_dict[hostname]
+         flow.element_class = flow_info['pattern']  # this is not changing over time in this version of Smartville
+         flow.test_zda = flow_info['pattern'] in current_knowledge['G2s'] # these change
+         flow.zda = flow.test_zda or flow_info['pattern'] in current_knowledge['G1s'] # these change
          
-
-    def get_unprocessed_packet_buffer(self, flow_object):
-       """
-       Attack the cached packets tensor to the flow entry in flows_dict
-       """
-       packets_buffer = None
-       partial_flow_id = "_".join(flow_object.flow_id.split("_")[:-1])
-       if partial_flow_id in self.unprocessed_packets_buffers.keys():
-          packets_buffer = self.unprocessed_packets_buffers[partial_flow_id]
-          del self.unprocessed_packets_buffers[partial_flow_id]
-
-       return packets_buffer
+         # flow feature extraction ( packet feature circular buffer is updated asychonously...)
+         curr_flow_stats_vec = self.extract_flow_feature_tensor(flow=of_flowstats_obj)
+         # update the flow feature circular buffer
+         flow.flow_feat_circular_buffer.add(curr_flow_stats_vec)
 
     
     def _handle_flowstats_received(self, event, current_knowledge, traffic_dict, ips_containers):
@@ -207,6 +189,7 @@ class FlowLogger(object):
            current_knowledge=current_knowledge,
            traffic_dict=traffic_dict,
            ips_containers=ips_containers)
+      
 
     def reset_all_flows_metadata(self):
        self.flows_dict = {}
