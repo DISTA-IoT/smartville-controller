@@ -322,7 +322,6 @@ class TigerBrain():
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
         self.h_dim = int(args.intrusion_detection.h_dim)
         self.multi_class = args.intrusion_detection.multi_class
-        self.AI_DEBUG = args.intrusion_detection.ai_debug
         self.step_counter = 0
         self.wbt = args.wandb.wb_tracking
         self.wbl = None
