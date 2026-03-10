@@ -33,6 +33,8 @@ from smartController.tiger_environment_new import NewTigerEnvironment
 from smartController.tiger_agents import ValueLearningAgent, DAIP_Agent, DAIA_Agent, DAIF_Agent, DAISA_Agent
 from functools import wraps
 from smartController.attr_dict import AttrDict
+import time
+from contextlib import contextmanager
 
 # List of colors
 colors = [
@@ -356,6 +358,29 @@ class TigerBrain():
         self.init_intelligence()
         self.epistemic_agency = args.intrusion_detection.epistemic_agency
         self.save_models_flag = args.intrusion_detection.save_models
+        self.profiling_stats = {}  # Dict to hold lists of timings
+
+
+    @contextmanager
+    def profile(self, name):
+        """Elegant context manager for timing code blocks. Appends to lists for mean calculation."""
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            
+        start = time.perf_counter()
+        
+        yield  # The wrapped code runs here
+        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        key = f"time_ms/{name}"
+        
+        # Initialize the list if it doesn't exist, then append the new time
+        if key not in self.profiling_stats:
+            self.profiling_stats[key] = []
+        self.profiling_stats[key].append(elapsed_ms)
 
              
     def shutdown(self):
@@ -1199,22 +1224,24 @@ class TigerBrain():
         # the online batch is enriched with auxiliary samples for prototypical classification
         merged_batch, merged_query_mask, accuracy_mask = self.prepare_online_batch(online_batch)
 
-        # prototypical classification and kernel regression
-        logits, hidden_vectors, predicted_kernel = self.infer(
-            merged_batch,
-            query_mask=merged_query_mask)           
+        with self.profile("onl_inf_forward_pass"):
+            # prototypical classification and kernel regression
+            logits, hidden_vectors, predicted_kernel = self.infer(
+                merged_batch,
+                query_mask=merged_query_mask)           
         
         # one hot labels for the predictions
         one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
 
-        # (Individual) Anomaly detection:    
-        zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
-            batch=merged_batch,
-            logits=logits,
-            one_hot_labels=one_hot_labels,
-            query_mask=merged_query_mask,
-            accuracy_mask=accuracy_mask
-            )
+        with self.profile("onl_inf_AD"):
+            # (Individual) Anomaly detection:    
+            zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
+                batch=merged_batch,
+                logits=logits,
+                one_hot_labels=one_hot_labels,
+                query_mask=merged_query_mask,
+                accuracy_mask=accuracy_mask
+                )
         
         # We needed the aux samples to perform inference in the prototypical way, but
         # actually, we only care about online anomalies:
@@ -1249,42 +1276,44 @@ class TigerBrain():
 
         if number_of_predicted_known_samples > 0:
 
-            self.act_on_known_traffic(
-                num_of_predicted_anomalies, 
-                number_of_predicted_known_samples, 
-                cs_correct_classif_mask,
-                hidden_vectors,
-                predicted_online_zda_mask,
-                sample_rewards
-                )
+            with self.profile("onl_inf_act_known"):
+                self.act_on_known_traffic(
+                    num_of_predicted_anomalies, 
+                    number_of_predicted_known_samples, 
+                    cs_correct_classif_mask,
+                    hidden_vectors,
+                    predicted_online_zda_mask,
+                    sample_rewards
+                    )
             
 
         # Anomaly clustering is going to be done only if there are predicted anomalies.
         if num_of_predicted_anomalies > 0:
 
-            predicted_clusters_oh, centroids, missing_clusters = self.collective_anomaly_detection( 
-                merged_batch,
-                predicted_kernel, 
-                one_hot_labels, 
-                predicted_online_zda_mask, 
-                num_of_online_samples,
-                hidden_vectors
-            )
-            
-            self.act_on_unknown_clusters(
-                predicted_clusters_oh, 
-                centroids, 
-                missing_clusters, 
-                num_of_predicted_anomalies, 
-                number_of_predicted_known_samples, 
-                predicted_online_zda_mask,
-                sample_rewards
+            with self.profile("onl_inf_CAD"):
+                predicted_clusters_oh, centroids, missing_clusters = self.collective_anomaly_detection( 
+                    merged_batch,
+                    predicted_kernel, 
+                    one_hot_labels, 
+                    predicted_online_zda_mask, 
+                    num_of_online_samples,
+                    hidden_vectors
                 )
+            
+            with self.profile("onl_inf_act_unknown"):
+                self.act_on_unknown_clusters(
+                    predicted_clusters_oh, 
+                    centroids, 
+                    missing_clusters, 
+                    num_of_predicted_anomalies, 
+                    number_of_predicted_known_samples, 
+                    predicted_online_zda_mask,
+                    sample_rewards
+                    )
 
-        self.logger_instance.info('\033[92mStarting experience replay...\033[0m') # green text
         # train!
-        self.mitigation_agent.replay(self.step_counter)
-        self.logger_instance.info('\033[92mExperience replay ended...\033[0m')     
+        with self.profile("onl_inf_ER"):
+            self.mitigation_agent.replay(self.step_counter)
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
@@ -1305,16 +1334,30 @@ class TigerBrain():
         # eventually reset the environment. 
         if self.env.has_episode_ended(self.step_counter): 
             if self.wbt:
-                self.wbl.log(
-                    {
+                metrics_to_log = {
                         'episode_count': self.episode_count,
                         'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
                         'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
                         'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
                         'epistemic_actions_per_episode': self.env.epistemic_actions,
                         'steps_per_episode': self.env.steps_done
-                    }, 
-                    step=self.step_counter)                
+                    }
+                
+                # 2. Compute the mean for all profiling lists and add them to the metrics
+                for key, times_list in self.profiling_stats.items():
+                    if len(times_list) > 0:
+                        # Pure python mean calculation (no numpy, no tensor overhead)
+                        mean_time = sum(times_list) / len(times_list)
+                        metrics_to_log[key] = mean_time
+                        
+                        # Optional: If we also want to log the max time (useful for finding spikes)
+                        # metrics_to_log[f"{key}_max"] = max(times_list) 
+
+                self.wbl.log(metrics_to_log, step=self.step_counter)
+
+            # 4. VERY IMPORTANT: Clear the dictionary so the next step starts fresh!
+            self.profiling_stats.clear()
+
             self.reset_environment()
             
 
@@ -1439,30 +1482,29 @@ class TigerBrain():
         """
         """
         
-
         if len(flows) > 0:
+            with self.profile("process_input_total"):
             
-            batch = self.assembly_input_tensor(flows, node_feats)
-  
-            self.push_to_replay_buffers(
-                batch.flow_features, 
-                batch.packet_features,
-                batch.node_features,  
-                batch_labels=batch.class_labels)
+                with self.profile("input_assembly"):
+                    batch = self.assembly_input_tensor(flows, node_feats)
+        
+                self.push_to_replay_buffers(
+                    batch.flow_features, 
+                    batch.packet_features,
+                    batch.node_features,  
+                    batch_labels=batch.class_labels)
 
-            # this fella could be toogling because of a new class arriving... 
-            with self._lock:
-                if self.batch_processing_allowed and self.epistemic_agency:
-                    self.logger_instance.info(f'starting online inference')
-                    self.online_inference(batch)
-                    self.logger_instance.info(f'ending online inference')
-            with self._lock:
-                if self.batch_processing_allowed:
-                    self.logger_instance.info(f'starting experience learning')
-                    self.experience_learning()
-                    self.logger_instance.info(f'ending experience learning')
-                if not self.epistemic_agency:
-                    self.step_counter += 1
+                # this fella could be toogling because of a new class arriving... 
+                with self._lock:
+                    if self.batch_processing_allowed and self.epistemic_agency:
+                        with self.profile("online_inference_total"):
+                            self.online_inference(batch)
+                with self._lock:
+                    if self.batch_processing_allowed:
+                        with self.profile("experience_learning_total"):
+                            self.experience_learning()
+                    if not self.epistemic_agency:
+                        self.step_counter += 1
 
 
 
@@ -1720,9 +1762,10 @@ class TigerBrain():
         
         query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
-        logits, hidden_vectors, predicted_kernel = self.infer(
-            batch=training_batch,
-            query_mask=query_mask)
+        with self.profile("EL_forward_pass"):
+            logits, hidden_vectors, predicted_kernel = self.infer(
+                batch=training_batch,
+                query_mask=query_mask)
         
         one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
         # known class horizonal mask:
@@ -1747,30 +1790,33 @@ class TigerBrain():
                 # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
                 # if instead we are on a binary attack/non attack classification setting, 
                 # we do not care if the detected attacks are known or unknown.. 
-                zda_detection_loss, _ = self.zda_classification_step(
-                    zda_labels=training_batch.zda_labels[query_mask], 
-                    zda_predictions=zda_predictions,
-                    accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
-                    mode=TRAINING)
+                with self.profile("EL_zda_classif_step"):
+                    zda_detection_loss, _ = self.zda_classification_step(
+                        zda_labels=training_batch.zda_labels[query_mask], 
+                        zda_predictions=zda_predictions,
+                        accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
+                        mode=TRAINING)
                 loss += zda_detection_loss
 
         else:
             self.logger_instance.warning(f'Have not seen samples from known classes so far. Cannot train the confidence decoder yet.')
 
-        # clusterise everything you have labels about. 
-        kr_loss, predicted_clusters, _ = self.kernel_regression_evaluation(
-            predicted_kernel, 
-            one_hot_labels, 
-            TRAINING)
+        with self.profile("EL_KR"):
+            # clusterise everything you have labels about. 
+            kr_loss, predicted_clusters, _ = self.kernel_regression_evaluation(
+                predicted_kernel, 
+                one_hot_labels, 
+                TRAINING)
         
         if self.clustering_loss_backprop: loss += kr_loss
         
-        # This helps to converge 
-        classification_loss, cs_acc = self.class_classification_step(
-            training_batch.class_labels, 
-            logits, 
-            TRAINING, 
-            query_mask)
+        with self.profile("EL_class_classif"):
+            # This helps to converge 
+            classification_loss, cs_acc = self.class_classification_step(
+                training_batch.class_labels, 
+                logits, 
+                TRAINING, 
+                query_mask)
         
         self.training_cs_cm += efficient_cm(
         preds=logits.detach(),
@@ -1793,19 +1839,21 @@ class TigerBrain():
         
 
         if self.step_counter % self.report_step_freq == 0:
-            self.report(
-                preds=logits[:,known_class_h_mask],  
-                hiddens=hidden_vectors.detach(), 
-                labels=training_batch.class_labels,
-                predicted_clusters=predicted_clusters, 
-                query_mask=query_mask,
-                phase=TRAINING)
+            with self.profile("EL_report"):
+                self.report(
+                    preds=logits[:,known_class_h_mask],  
+                    hiddens=hidden_vectors.detach(), 
+                    labels=training_batch.class_labels,
+                    predicted_clusters=predicted_clusters, 
+                    query_mask=query_mask,
+                    phase=TRAINING)
 
             # Update the target value network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
             
             if self.online_evaluation:
-                self.evaluate_models()
+                with self.profile("EL_online_eval"):
+                    self.evaluate_models()
             
 
     @epistemic_thread_safe 
@@ -1841,7 +1889,6 @@ class TigerBrain():
     
 
     def evaluate_models(self):
-        self.logger_instance.info('\033[38;5;202mPerforming online evaluation\033[0m')
         self.classifier.eval()
         self.confidence_decoder.eval()
         
@@ -1928,7 +1975,6 @@ class TigerBrain():
 
         self.classifier.train()
         self.confidence_decoder.train()
-        self.logger_instance.info('\033[38;5;202mOnline evaluation Ended\033[0m')
 
 
     def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase):
