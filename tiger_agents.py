@@ -1,4 +1,4 @@
-from smartController.neural_modules import DQN, PolicyNet, NEFENet, TransitionNet, VariationalTransitionNet, NewTransitionNet
+from smartController.neural_modules import DQN, PolicyNet, NEFENet, VariationalTransitionNet, NewTransitionNet
 import torch.optim as optim
 from collections import deque
 import torch
@@ -6,7 +6,6 @@ import random
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as distributions
-from smartController.attr_dict import AttrDict
 
 
 class DAIF_Agent:
