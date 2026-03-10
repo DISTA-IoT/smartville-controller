@@ -101,8 +101,7 @@ class RawReplayBuffer():
     This buffer is not using binary labels for zdas and test zdas,
     instead, it will ask the zda labellings to the dynamic curriculum in the caller.
     """
-    def __init__(self, capacity, batch_size, seed):
-        self.batch_size = batch_size
+    def __init__(self, capacity, seed):
         self.buffer = deque(maxlen=capacity)
         random.seed(seed)
 
