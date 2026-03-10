@@ -638,7 +638,7 @@ class TigerBrain():
                         self.logger_instance.info(f"Pre-trained weights not found at {self.confidence_decoder_path}.pt")             
                 
 
-            elif self.AI_DEBUG:
+            else:
                 self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
 
 
@@ -739,7 +739,7 @@ class TigerBrain():
                 self.batch_processing_allowed = torch.all(
                         torch.Tensor([buff_len  > self.batch_size for (_, buff_len) in buff_lengths]))        
 
-            if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
+            self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
 
 
     def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
@@ -1315,8 +1315,7 @@ class TigerBrain():
         with self.profile("onl_inf_ER"):
             self.mitigation_agent.replay(self.step_counter)
 
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
+        self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
         if self.wbt:
             self.wbl.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
@@ -1687,15 +1686,12 @@ class TigerBrain():
                     mode+'_'+ANOMALY_BALANCE: zda_balance
                 }, 
                 step=self.step_counter)
-
-        
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
-            self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-            self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
-            self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
-        
-
+         
+        self.logger_instance.debug(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
+        self.logger_instance.debug(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
+        self.logger_instance.debug(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+        self.logger_instance.debug(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
+    
         return os_loss, cummulative_os_acc
     
 
@@ -1731,9 +1727,9 @@ class TigerBrain():
                     }, 
                     step=self.step_counter)
             
-            if self.AI_DEBUG: 
-                self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
-                self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
+            
+            self.logger_instance.debug(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
+            self.logger_instance.debug(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
             
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
@@ -1836,10 +1832,10 @@ class TigerBrain():
             self.optimizer.step()
 
         
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
-            self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
-            self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
+         
+        self.logger_instance.debug(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
+        self.logger_instance.debug(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
+        self.logger_instance.debug(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
         
 
         if self.step_counter % self.report_step_freq == 0:
@@ -1878,8 +1874,7 @@ class TigerBrain():
             )
 
             if add_replay_buff:
-                if self.AI_DEBUG:
-                    self.logger_instance.info(f'label {new_label} bought proactively!')
+                self.logger_instance.info(f'label {new_label} bought proactively!')
                 # we cant invoke this function here because it would be a deadlock 
                 # self.add_class_to_knowledge_base(updates_dict['new_label'])
                 # fo we repeat the code: 
@@ -1951,8 +1946,7 @@ class TigerBrain():
             mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
             mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
 
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\
+        self.logger_instance.debug(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\
                                         f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
                                         f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
         if self.wbt:
@@ -2009,9 +2003,9 @@ class TigerBrain():
             self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
         
 
-        if self.AI_DEBUG:
-            self.logger_instance.info(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
-            self.logger_instance.info(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
+        
+        self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
+        self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
         
         if phase == TRAINING:
             self.reset_train_cms()
@@ -2048,16 +2042,16 @@ class TigerBrain():
         torch.save(
             self.classifier.state_dict(), 
             self.classifier_path+postfix+'.pt')
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'New {postfix} flow classifier model version saved to {self.classifier_path}{postfix}.pt')
+         
+        self.logger_instance.info(f'New {postfix} flow classifier model version saved to {self.classifier_path}{postfix}.pt')
 
 
     def save_ad_model(self, postfix='single'):
         torch.save(
             self.confidence_decoder.state_dict(), 
             self.confidence_decoder_path+postfix+'.pt')
-        if self.AI_DEBUG: 
-            self.logger_instance.info(f'New {postfix} confidence decoder model version saved to {self.confidence_decoder_path}{postfix}.pt')
+         
+        self.logger_instance.info(f'New {postfix} confidence decoder model version saved to {self.confidence_decoder_path}{postfix}.pt')
 
 
     def save_models(self):
