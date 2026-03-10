@@ -329,8 +329,8 @@ class TigerBrain():
         self.device= args.intrusion_detection.device
         self.seed =int(args.intrusion_detection.seed)
         random.seed(self.seed)
-        self.k_shot = int(args.intrusion_detection.init_k_shot)
-        self.replay_buff_batch_size = int(args.intrusion_detection.batch_size)
+        self.k_shot = int(args.intrusion_detection.k_shot)
+        self.batch_size = int(args.intrusion_detection.batch_size)
         self.report_step_freq = int(args.intrusion_detection.report_step_freq)
         self.use_neural_AD = args.intrusion_detection.use_neural_AD
         self.use_neural_KR = args.intrusion_detection.use_neural_KR
@@ -430,7 +430,6 @@ class TigerBrain():
         
         self.replay_buffers[self.current_known_classes_count-1] = RawReplayBuffer(
             capacity=self.replay_buffer_max_capacity,
-            batch_size=self.replay_buff_batch_size,
             seed=self.seed)
         self.logger_instance.info(f'Replay buffer with code: {self.current_known_classes_count-1} for class: {class_name} was added')
     
@@ -713,7 +712,7 @@ class TigerBrain():
       
             if len(buff_lengths) > 1:
                 self.batch_processing_allowed = torch.all(
-                        torch.Tensor([buff_len  > self.replay_buff_batch_size for (_, buff_len) in buff_lengths]))        
+                        torch.Tensor([buff_len  > self.batch_size for (_, buff_len) in buff_lengths]))        
 
             if self.AI_DEBUG: self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
 
@@ -824,7 +823,7 @@ class TigerBrain():
 
             # sample from the replay buffers
             aux_batch = self.sample_from_replay_buffers(
-                                    samples_per_class=self.replay_buff_batch_size,
+                                    samples_per_class=self.batch_size,
                                     mode=INFERENCE)
         
             # query masks
@@ -1282,8 +1281,10 @@ class TigerBrain():
                 sample_rewards
                 )
 
+        self.logger_instance.info('\033[92mStarting experience replay...\033[0m') # green text
         # train!
-        self.mitigation_agent.replay(self.step_counter)     
+        self.mitigation_agent.replay(self.step_counter)
+        self.logger_instance.info('\033[92mExperience replay ended...\033[0m')     
 
         if self.AI_DEBUG: 
             self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
@@ -1452,10 +1453,14 @@ class TigerBrain():
             # this fella could be toogling because of a new class arriving... 
             with self._lock:
                 if self.batch_processing_allowed and self.epistemic_agency:
+                    self.logger_instance.info(f'starting online inference')
                     self.online_inference(batch)
+                    self.logger_instance.info(f'ending online inference')
             with self._lock:
                 if self.batch_processing_allowed:
+                    self.logger_instance.info(f'starting experience learning')
                     self.experience_learning()
+                    self.logger_instance.info(f'ending experience learning')
                 if not self.epistemic_agency:
                     self.step_counter += 1
 
@@ -1555,8 +1560,8 @@ class TigerBrain():
         (the mask will have dimensions N times M, where N is the number of classes in the knowledge base)
         """
 
-        N = whole_batch_size // self.replay_buff_batch_size
-        M = self.replay_buff_batch_size
+        N = whole_batch_size // self.batch_size
+        M = self.batch_size
 
         query_mask = torch.ones(
             size=(N, M),
@@ -1707,7 +1712,7 @@ class TigerBrain():
         """
 
         training_batch = self.sample_from_replay_buffers(
-                samples_per_class=self.replay_buff_batch_size,
+                samples_per_class=self.batch_size,
                 mode=TRAINING)
         
         # get zda labels for the online batch
@@ -1836,7 +1841,7 @@ class TigerBrain():
     
 
     def evaluate_models(self):
-
+        self.logger_instance.info('\033[38;5;202mPerforming online evaluation\033[0m')
         self.classifier.eval()
         self.confidence_decoder.eval()
         
@@ -1847,7 +1852,7 @@ class TigerBrain():
         for _ in range(self.online_eval_rounds):
                 
             eval_batch = self.sample_from_replay_buffers(
-                                    samples_per_class=self.replay_buff_batch_size,
+                                    samples_per_class=self.batch_size,
                                     mode=INFERENCE)
             
             query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
@@ -1923,6 +1928,7 @@ class TigerBrain():
 
         self.classifier.train()
         self.confidence_decoder.train()
+        self.logger_instance.info('\033[38;5;202mOnline evaluation Ended\033[0m')
 
 
     def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase):
