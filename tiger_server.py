@@ -148,7 +148,7 @@ def get_switching_args():
   return switching_args
 
 
-def smart_check(period):
+def smart_check():
   global args
 
   logger.info("Starting SmartSwitch inference loop")
@@ -173,8 +173,6 @@ def smart_check(period):
       if inference_count % 100 == 0:
         for key in flow_logger.flows_dict.keys():
               logger.info(f"Packets seen for {key}: {flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add}")
-
-    # time.sleep(period)
 
 
 def fix_no_proxy(monitor_ip):
@@ -346,7 +344,6 @@ def launch(**kwargs):
 
           inference_thread = threading.Thread(
             target=smart_check,
-            args=(intrusion_detection_args['inference_freq_secs'],),
             daemon=True
           )
 
