@@ -1767,16 +1767,18 @@ class TigerBrain():
                 batch=training_batch,
                 query_mask=query_mask)
         
-        one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
-        # known class horizonal mask:
-        known_class_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
+        with self.profile("EL_preproc"):
+            one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
+            # known class horizonal mask:
+            known_class_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
         
         loss = 0
 
         if torch.any(known_class_h_mask):
             try:
-                # separate between candidate known traffic and unknown traffic.
-                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+                with self.profile("EL_conf_dec"):
+                    # separate between candidate known traffic and unknown traffic.
+                    zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
             except:
                 self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
                 self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
@@ -1818,18 +1820,20 @@ class TigerBrain():
                 TRAINING, 
                 query_mask)
         
-        self.training_cs_cm += efficient_cm(
-        preds=logits.detach(),
-        targets_onehot=one_hot_labels[query_mask])      
+        with self.profile("EL_confmat"):
+            self.training_cs_cm += efficient_cm(
+                preds=logits.detach(),
+                targets_onehot=one_hot_labels[query_mask])      
         
         loss += classification_loss
-            
-        # Only during training we learn from feedback errors.  
-        # backward pass
-        self.optimizer.zero_grad()
-        loss.backward()
-        # update weights
-        self.optimizer.step()
+
+        with self.profile("EL_backprop"):
+            # Only during training we learn from feedback errors.  
+            # backward pass
+            self.optimizer.zero_grad()
+            loss.backward()
+            # update weights
+            self.optimizer.step()
 
         
         if self.AI_DEBUG: 
