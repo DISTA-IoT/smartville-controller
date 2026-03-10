@@ -102,7 +102,7 @@ class Flow():
 
 
     def get_flow_features(self):
-        return self.flow_feat_circular_buffer.buffer[:-self.flows_per_sample]
+        return self.flow_feat_circular_buffer.buffer[-self.flows_per_sample:]
     
     def get_packet_features(self):
-        return self.packet_feat_circular_buffer.buffer[:-self.packets_per_sample]
+        return self.packet_feat_circular_buffer.buffer[-self.packets_per_sample:]
