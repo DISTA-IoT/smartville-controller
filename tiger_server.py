@@ -81,7 +81,6 @@ controller_brain = None
 stop_tiger_threads = True
 flowstatreq_thread = None
 inference_thread = None
-inference_count = 0
 
 tiger_lock = Lock()
 
@@ -150,11 +149,14 @@ def get_switching_args():
 
 
 def smart_check(period):
-  global args, inference_count
+  global args
 
-  inference_count += 1
+  logger.info("Starting SmartSwitch inference loop")
+  inference_count = 0
   
   while not stop_tiger_threads:
+
+    inference_count += 1
 
     with tiger_lock:
 
@@ -168,11 +170,11 @@ def smart_check(period):
         logger.error(f"Error processing input: {e}")
         shutdown_process()
 
-    if inference_count % 1000 == 0:
-            for key in flow_logger.flows_dict.keys():
-                  logger.info(f"Packets seen for {key}: {flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add}")
+      if inference_count % 100 == 0:
+        for key in flow_logger.flows_dict.keys():
+              logger.info(f"Packets seen for {key}: {flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add}")
 
-    time.sleep(period)
+    # time.sleep(period)
 
 
 def fix_no_proxy(monitor_ip):
