@@ -1847,9 +1847,10 @@ class TigerBrain():
                     predicted_clusters=predicted_clusters, 
                     query_mask=query_mask,
                     phase=TRAINING)
-
-            # Update the target value network in the mitigation agent! 
-            self.mitigation_agent.update_target_model()
+                
+            with self.profile("EL_model_update"):
+                # Update the target value network in the mitigation agent! 
+                self.mitigation_agent.update_target_model()
             
             if self.online_evaluation:
                 with self.profile("EL_online_eval"):
