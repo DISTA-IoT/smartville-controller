@@ -385,7 +385,14 @@ class TigerBrain():
     def shutdown(self):
         if self.wbl is not None:
             self.wbl.finish()
-            # subprocess.run(["wandb", "sync", "latest-run"], check=True)
+            if self.wbt:
+                run_dir = self.wbl.run.dir if self.wbl.run else './wandb/latest-run'  # Get actual path
+                self.logger_instance.info("Now syncing the run. please wait...")
+                result = subprocess.run(["wandb", "sync", run_dir], capture_output=True, text=True)
+                if result.returncode != 0:
+                    self.logger_instance.error(f"Sync failed: {result.stderr}")  # Debug without crashing
+                else:
+                    self.logger_instance.info("Run synced!!!...")
     
     def init_intelligence(self):
         self.eval_queue = queue.Queue()
@@ -1676,10 +1683,10 @@ class TigerBrain():
                 }, 
                 step=self.step_counter)
          
-        self.logger_instance.debug(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
-        self.logger_instance.debug(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-        self.logger_instance.debug(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
-        self.logger_instance.debug(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
+        self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
+        self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
+        self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+        self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
     
         return os_loss, cummulative_os_acc
     
@@ -1717,8 +1724,8 @@ class TigerBrain():
                     step=self.step_counter)
             
             
-            self.logger_instance.debug(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
-            self.logger_instance.debug(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
+            self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
+            self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
             
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
@@ -1823,9 +1830,9 @@ class TigerBrain():
 
         
          
-        self.logger_instance.debug(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
-        self.logger_instance.debug(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
-        self.logger_instance.debug(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
+        self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
+        self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
+        self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
         
 
         if self.step_counter % self.report_step_freq == 0:
@@ -1845,8 +1852,7 @@ class TigerBrain():
             self.mitigation_agent.update_target_model()
             
             if self.online_evaluation:
-                with self.profile("EL_online_eval"):
-                    self.start_async_evaluation()
+                self.start_async_evaluation()
 
             # Check if the background thread has finished any evaluation recently.
             # If it has, log it at the CURRENT main thread step!
@@ -1854,6 +1860,14 @@ class TigerBrain():
                 async_results = self.eval_queue.get()
                 if self.wbt:
                     self.wbl.log(async_results, step=self.step_counter)
+
+                # Save the models using the main thread (prevents file corruption)
+                if self.save_models_flag:
+                    self.check_progress(
+                        curr_cs_acc=async_results['Mean EVAL CS ACC'],
+                        curr_ad_acc=async_results['Mean EVAL AD ACC'],
+                        curr_kr_acc=async_results['Mean EVAL KR PREC']
+                    )
             
 
     @epistemic_thread_safe 
@@ -1911,131 +1925,132 @@ class TigerBrain():
         """
         The background worker that runs completely lock-free.
         """
-        # 1. Instantiate completely independent model clones
-        classifier_clone = copy.deepcopy(self.classifier)
-        classifier_clone.eval()
+        with self.profile("EL_online_eval"):
+            # 1. Instantiate completely independent model clones
+            classifier_clone = copy.deepcopy(self.classifier)
+            classifier_clone.eval()
 
-        if self.multi_class:
-            decoder_clone = copy.deepcopy(self.confidence_decoder)
-            decoder_clone.eval()
-        else:
-            decoder_clone = None
+            if self.multi_class:
+                decoder_clone = copy.deepcopy(self.confidence_decoder)
+                decoder_clone.eval()
+            else:
+                decoder_clone = None
 
 
-        mean_eval_ad_acc = 0.0
-        mean_eval_cs_acc = 0.0
-        mean_eval_kr_ari = 0.0
-        
-        # 2. Isolated local confusion matrices so we don't overwrite the main thread's CMS
-        local_eval_cs_cm = torch.zeros([known_classes_count, known_classes_count], device=self.device)
-        local_eval_os_cm = torch.zeros(size=(2, 2), device=self.device)
+            mean_eval_ad_acc = 0.0
+            mean_eval_cs_acc = 0.0
+            mean_eval_kr_ari = 0.0
+            
+            # 2. Isolated local confusion matrices so we don't overwrite the main thread's CMS
+            local_eval_cs_cm = torch.zeros([known_classes_count, known_classes_count], device=self.device)
+            local_eval_os_cm = torch.zeros(size=(2, 2), device=self.device)
 
-        # Variables to hold the final batch's data for the plots
-        last_logits, last_hiddens, last_labels = None, None, None
-        last_pred_clusters, last_query_mask, last_known_h_mask = None, None, None
+            # Variables to hold the final batch's data for the plots
+            last_logits, last_hiddens, last_labels = None, None, None
+            last_pred_clusters, last_query_mask, last_known_h_mask = None, None, None
 
-        # 3. Disable gradients for massive memory and speed optimizations
-        with torch.no_grad(): 
-            for _ in range(self.online_eval_rounds):
-                
-                # Sample batch safely
-                eval_batch = self.sample_from_replay_buffers(
-                    samples_per_class=self.batch_size,
-                    mode=INFERENCE
-                )
-                
-                query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
-
-                assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
-
-                logits, hidden_vectors, predicted_kernel = self.infer(
-                    classifier_clone,
-                    eval_batch,
-                    query_mask=query_mask)
-
-                one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
-                known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
-
-                # --- Anomaly Detection ---
-                ad_acc = 0.0
-                if self.multi_class and decoder_clone is not None:
-                    zda_predictions = decoder_clone(scores=logits[:, known_class_h_mask])
+            # 3. Disable gradients for massive memory and speed optimizations
+            with torch.no_grad(): 
+                for _ in range(self.online_eval_rounds):
                     
-                    zda_labels = eval_batch.zda_labels[query_mask]
-                    onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
-                    onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
-
-                    batch_os_cm = efficient_os_cm(
-                        preds=(zda_predictions > 0.5).long(),
-                        targets_onehot=onehot_zda_labels
+                    # Sample batch safely
+                    eval_batch = self.sample_from_replay_buffers(
+                        samples_per_class=self.batch_size,
+                        mode=INFERENCE
                     )
-                    local_eval_os_cm += batch_os_cm
-                    zda_balance = zda_labels.to(torch.float32).mean().item()
-                    ad_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance).item()
-
-                # --- Kernel Regression ---
-                kr_precision = 0.0
-                predicted_clusters = None
-                if self.kernel_regression:
-                    decimal_sematic_kernel = one_hot_labels.max(1)[1].cpu().numpy()
-                    decimal_predicted_kernel = get_clusters(predicted_kernel)
-                    np_dec_pred_kernel = decimal_predicted_kernel.cpu().numpy()
                     
-                    kr_precision = adjusted_rand_score(decimal_sematic_kernel, np_dec_pred_kernel)
-                    predicted_clusters = decimal_predicted_kernel
+                    query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
 
-                # --- Closed Set Classification ---
-                local_eval_cs_cm += efficient_cm(
-                    preds=logits,
-                    targets_onehot=one_hot_labels[query_mask]
-                )
-                
-                match_mask = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][query_mask]
-                cs_acc = (match_mask.sum() / match_mask.shape[0]).item()
+                    assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
 
-                mean_eval_ad_acc += (ad_acc / self.online_eval_rounds)
-                mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
-                mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
+                    logits, hidden_vectors, predicted_kernel = self.infer(
+                        classifier_clone,
+                        eval_batch,
+                        query_mask=query_mask)
 
-                # Cache data for the final plot reporting
-                last_logits, last_hiddens, last_labels = logits, hidden_vectors, eval_batch.class_labels
-                last_pred_clusters, last_query_mask = predicted_clusters, query_mask
-                last_known_h_mask = known_class_h_mask
+                    one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
+                    known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
 
-        self.logger_instance.debug(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc:.2f} \n'+\
-                                   f'EVAL mean eval CS accuracy: {mean_eval_cs_acc:.2f} \n' +\
-                                   f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
+                    # --- Anomaly Detection ---
+                    ad_acc = 0.0
+                    if self.multi_class and decoder_clone is not None:
+                        zda_predictions = decoder_clone(scores=logits[:, known_class_h_mask])
+                        
+                        zda_labels = eval_batch.zda_labels[query_mask]
+                        onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
+                        onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
 
-        
-        # 4. Generate the plots. (This calls the modified `report` function that returns a dict of Plotly figures)
-        plots_dict = {}
-        if self.wbt and self.kwargs['wandb']['plots']:
-            try:
-                plots_dict = self.report(
-                    preds=last_logits[:, last_known_h_mask], 
-                    hiddens=last_hiddens, 
-                    labels=last_labels,
-                    predicted_clusters=last_pred_clusters, 
-                    query_mask=last_query_mask,
-                    phase=INFERENCE,
-                    custom_cs_cm=local_eval_cs_cm,
-                    custom_os_cm=local_eval_os_cm
-                )
-            except Exception as e:
-                self.logger_instance.error(f"Error generating Plotly graphs in eval thread: {e}")
+                        batch_os_cm = efficient_os_cm(
+                            preds=(zda_predictions > 0.5).long(),
+                            targets_onehot=onehot_zda_labels
+                        )
+                        local_eval_os_cm += batch_os_cm
+                        zda_balance = zda_labels.to(torch.float32).mean().item()
+                        ad_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance).item()
 
-        # 5. Package results for the main thread queue
-        # Note: We do NOT call wbl.log() or check_progress() here. The main thread will do it!
-        results_to_log = {
-            'Mean EVAL AD ACC': mean_eval_ad_acc,
-            'Mean EVAL CS ACC': mean_eval_cs_acc,
-            'Mean EVAL KR PREC': mean_eval_kr_ari,
-            **plots_dict  # Unpack the Plotly figures into the dict
-        }
+                    # --- Kernel Regression ---
+                    kr_precision = 0.0
+                    predicted_clusters = None
+                    if self.kernel_regression:
+                        decimal_sematic_kernel = one_hot_labels.max(1)[1].cpu().numpy()
+                        decimal_predicted_kernel = get_clusters(predicted_kernel)
+                        np_dec_pred_kernel = decimal_predicted_kernel.cpu().numpy()
+                        
+                        kr_precision = adjusted_rand_score(decimal_sematic_kernel, np_dec_pred_kernel)
+                        predicted_clusters = decimal_predicted_kernel
 
-        # 6. Push to Queue
-        if hasattr(self, 'eval_queue'):
-            self.eval_queue.put(results_to_log)
+                    # --- Closed Set Classification ---
+                    local_eval_cs_cm += efficient_cm(
+                        preds=logits,
+                        targets_onehot=one_hot_labels[query_mask]
+                    )
+                    
+                    match_mask = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][query_mask]
+                    cs_acc = (match_mask.sum() / match_mask.shape[0]).item()
+
+                    mean_eval_ad_acc += (ad_acc / self.online_eval_rounds)
+                    mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
+                    mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
+
+                    # Cache data for the final plot reporting
+                    last_logits, last_hiddens, last_labels = logits, hidden_vectors, eval_batch.class_labels
+                    last_pred_clusters, last_query_mask = predicted_clusters, query_mask
+                    last_known_h_mask = known_class_h_mask
+
+            self.logger_instance.info(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc:.2f} \n'+\
+                                    f'EVAL mean eval CS accuracy: {mean_eval_cs_acc:.2f} \n' +\
+                                    f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
+
+            
+            # 4. Generate the plots. (This calls the modified `report` function that returns a dict of Plotly figures)
+            plots_dict = {}
+            if self.wbt and self.kwargs['wandb']['plots']:
+                try:
+                    plots_dict = self.report(
+                        preds=last_logits[:, last_known_h_mask], 
+                        hiddens=last_hiddens, 
+                        labels=last_labels,
+                        predicted_clusters=last_pred_clusters, 
+                        query_mask=last_query_mask,
+                        phase=INFERENCE,
+                        custom_cs_cm=local_eval_cs_cm,
+                        custom_os_cm=local_eval_os_cm
+                    )
+                except Exception as e:
+                    self.logger_instance.error(f"Error generating Plotly graphs in eval thread: {e}")
+
+            # 5. Package results for the main thread queue
+            # Note: We do NOT call wbl.log() or check_progress() here. The main thread will do it!
+            results_to_log = {
+                'Mean EVAL AD ACC': mean_eval_ad_acc,
+                'Mean EVAL CS ACC': mean_eval_cs_acc,
+                'Mean EVAL KR PREC': mean_eval_kr_ari,
+                **plots_dict  # Unpack the Plotly figures into the dict
+            }
+
+            # 6. Push to Queue
+            if hasattr(self, 'eval_queue'):
+                self.eval_queue.put(results_to_log)
 
 
    
@@ -2076,8 +2091,8 @@ class TigerBrain():
             if fig_scores: log_dict[f"{phase} PCA of ass. scores"] = fig_scores
         
 
-        self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
-        self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
+        self.logger_instance.info(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
+        self.logger_instance.info(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
 
         # Compute the mean for all profiling lists and add them to the metrics
         metrics_to_log = {}
