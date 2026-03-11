@@ -93,10 +93,11 @@ def periodically_requests_stats(period):
   while not stop_tiger_threads:
     
     with tiger_lock:
+      connections_snapshot = list(core.openflow._connections.values())[:]
     
-      for connection in core.openflow._connections.values():
-        connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
-        connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
+    for connection in connections_snapshot:
+      connection.send(of.ofp_stats_request(body=of.ofp_flow_stats_request()))
+      connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
     
     logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
     logger.debug(f"{smart_switch.openflow_packets_received} OpenFlow packets received")

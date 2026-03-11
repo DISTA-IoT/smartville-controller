@@ -79,7 +79,8 @@ class WandBTracker():
             config=kwargs,
             mode=("online" if args.wandb.wb_tracking else "disabled"),
             )
-        
+
+        """
         if args.wandb.wb_tracking:
             try:
                 self.workspace =  ws.Workspace.from_url(
@@ -103,11 +104,13 @@ class WandBTracker():
 
             try:
                 self.set_workspace()
+                pass
             except Exception as e:
                 self.logger.error(f"Failed to set workspace: {e}")
                 if self.wb_logger is not None:
                     self.wb_logger.finish()
                 raise RuntimeError(f"Failed to set workspace: {e}")
+        """
             
 
     def set_workspace(self):
