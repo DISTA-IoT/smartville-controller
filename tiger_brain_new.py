@@ -21,11 +21,7 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from smartController.wandb_tracker import WandBTracker
-import seaborn as sns
-import matplotlib.pyplot as plt
 import threading
-from wandb import Image as wandbImage
-import itertools
 from sklearn.decomposition import PCA
 import random
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
@@ -35,6 +31,8 @@ from functools import wraps
 from smartController.attr_dict import AttrDict
 import time
 from contextlib import contextmanager
+import plotly.express as px
+
 
 # List of colors
 colors = [
@@ -1019,7 +1017,7 @@ class TigerBrain():
         self.env.episode_budgets.append(self.env.current_budget)
 
         # reporting
-        if self.wbt:
+        if self.wbt and self.step_counter % self.report_step_freq == 0:
             self.wbl.log({
                 AGENT+'_'+'reward': classification_reward,
                 AGENT+'_'+'budget': self.env.current_budget,
@@ -1186,7 +1184,7 @@ class TigerBrain():
             self.env.episode_budgets.append(self.env.current_budget)
 
             # reporting
-            if self.wbt:
+            if self.wbt and self.step_counter % self.report_step_freq == 0:
                 self.wbl.log({
                     AGENT+'_'+'reward': current_reward.item(),
                     AGENT+'_'+'budget': self.env.current_budget,
@@ -1316,7 +1314,7 @@ class TigerBrain():
 
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
-        if self.wbt:
+        if self.wbt and self.step_counter % self.report_step_freq == 0:
             self.wbl.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
                           'num_predicted_knowns': number_of_predicted_known_samples.item(),
                           'num_predicted_unknowns': num_of_predicted_anomalies.item(),
@@ -1340,21 +1338,6 @@ class TigerBrain():
                         'epistemic_actions_per_episode': self.env.epistemic_actions,
                         'steps_per_episode': self.env.steps_done
                     }
-                
-                # 2. Compute the mean for all profiling lists and add them to the metrics
-                for key, times_list in self.profiling_stats.items():
-                    if len(times_list) > 0:
-                        # Pure python mean calculation (no numpy, no tensor overhead)
-                        mean_time = sum(times_list) / len(times_list)
-                        metrics_to_log[key] = mean_time
-                        
-                        # Optional: If we also want to log the max time (useful for finding spikes)
-                        # metrics_to_log[f"{key}_max"] = max(times_list) 
-
-                self.wbl.log(metrics_to_log, step=self.step_counter)
-
-            # 4. VERY IMPORTANT: Clear the dictionary so the next step starts fresh!
-            self.profiling_stats.clear()
 
             self.reset_environment()
             
@@ -1385,7 +1368,7 @@ class TigerBrain():
             query_mask=query_mask)
 
         # report progress
-        if self.wbt:
+        if self.wbt and self.step_counter % self.report_step_freq == 0:
             self.wbl.log(
                 {
                     mode+'_'+CS_ACC: acc.item(),
@@ -1677,7 +1660,7 @@ class TigerBrain():
         cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
 
         
-        if self.wbt:
+        if self.wbt and self.step_counter % self.report_step_freq == 0:
             self.wbl.log(
                 {
                     mode+'_'+OS_ACC: cummulative_os_acc.item(),
@@ -1717,7 +1700,7 @@ class TigerBrain():
                 decimal_sematic_kernel,
                 np_dec_pred_kernel)
 
-            if self.wbt:
+            if self.wbt and self.step_counter % self.report_step_freq == 0:
                 self.wbl.log(
                     {
                         mode+'_'+KR_ARI: kr_ari,
@@ -1984,8 +1967,7 @@ class TigerBrain():
             cs_cm_to_plot = self.eval_cs_cm
             os_cm_to_plot = self.eval_os_cm
 
-        
-        if self.wbt:
+        if self.wbt and self.kwargs['wandb']['plots']:
             self.plot_confusion_matrix(
                 mod=CLOSED_SET,
                 cm=cs_cm_to_plot,
@@ -2005,6 +1987,22 @@ class TigerBrain():
         
         self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
         self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
+
+        # Compute the mean for all profiling lists and add them to the metrics
+        metrics_to_log = {}
+        for key, times_list in self.profiling_stats.items():
+            if len(times_list) > 0:
+                # Pure python mean calculation (no numpy, no tensor overhead)
+                mean_time = sum(times_list) / len(times_list)
+                metrics_to_log[key] = mean_time
+                
+                # Optional: If we also want to log the max time (useful for finding spikes)
+                # metrics_to_log[f"{key}_max"] = max(times_list) 
+
+        self.wbl.log(metrics_to_log, step=self.step_counter)
+
+        # 4. VERY IMPORTANT: Clear the dictionary so the next step starts fresh!
+        self.profiling_stats.clear()
         
         if phase == TRAINING:
             self.reset_train_cms()
@@ -2115,167 +2113,114 @@ class TigerBrain():
             class_labels=batch_labels)
          
     
-
-    def plot_confusion_matrix(
-            self,
-            mod,
-            cm,
-            phase,
-            norm=True,
-            dims=(10,10),
-            classes=None):
-
-        if norm:
-            # Rapresented classes:
-            rep_classes = cm.sum(1) > 0
-            # Normalize
-            denom = cm.sum(1).reshape(-1, 1)
-            denom[~rep_classes] = 1
-            cm = cm / denom
-            fmt_str = ".2f"
-        else:
-            fmt_str = ".0f"
-
-        # Plot heatmap using seaborn
-        sns.set_theme()
-        plt.figure(figsize=dims)
-        ax = sns.heatmap(
-            cm,
-            annot=True,
-            cmap='Blues',
-            fmt=fmt_str,
-            xticklabels=classes, 
-            yticklabels=classes)
-
-        # Rotate x-axis and y-axis labels vertically
-        ax.set_xticklabels(classes, rotation=90)
-        ax.set_yticklabels(classes, rotation=0)
-
-        # Add x and y axis labels
-        plt.xlabel("Predicted")
-        plt.ylabel("Baseline")
-        plt.title(f'{phase} Confusion Matrix')
-        
-        if self.wbl is not None:
-            self.wbl.log({f'{phase} {mod} Confusion Matrix': wandbImage(plt)}, step=self.step_counter)
-
-        plt.cla()
-        plt.close()
-    
-    
-    def plot_hidden_space(
-        self,
-        hiddens,
-        labels, 
-        predicted_labels,
-        phase):
-
-        color_iterator = itertools.cycle(colors)
-        # If dimensionality is > 2, reduce using PCA
-        if hiddens.shape[1]>2:
-            pca = PCA(n_components=2)
-            hiddens = pca.fit_transform(hiddens)
-
-        plt.figure(figsize=(16, 6))
-
-        # Real labels
-        plt.subplot(1, 2, 1)
-        # List of attacks:
-        unique_labels = torch.unique(labels)
-        for label in unique_labels:
-            data = hiddens[labels.squeeze(1) == label]
-            p_label = self.encoder.inverse_transform(label.unsqueeze(0))[0]
-            color_for_scatter = next(color_iterator)
-            plt.scatter(
-                data[:, 0],
-                data[:, 1],
-                label=p_label,
-                c=color_for_scatter,
-                alpha=0.5,
-                s=200)
-        plt.title(f'{phase} Ground-truth clusters')
-        plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
-        # Predicted labels
-        plt.subplot(1, 2, 2)
-        unique_labels = torch.unique(predicted_labels)
-        for label in unique_labels:
-            data = hiddens[predicted_labels == label]
-            color_for_scatter = next(color_iterator)
-            plt.scatter(
-                data[:, 0],
-                data[:, 1],
-                label=label.item(),
-                c=color_for_scatter,
-                alpha=0.5,
-                s=200)
-        plt.title(f'{phase} Predicted clusters')
-        plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
-        plt.tight_layout()
-
-        if self.wbl is not None:
-            self.wbl.log({f"{phase} Latent Space Representations": wandbImage(plt)}, step=self.step_counter)
-
-        plt.cla()
-        plt.close()
-
-
-    def plot_scores_vectors(
-        self,
-        score_vectors,
-        labels,
-        phase):
-
-        # Create an iterator that cycles through the colors
-        color_iterator = itertools.cycle(colors)
-        
-        pca = PCA(n_components=2)
-
-        if score_vectors.shape[1] < 2:
-            self.logger_instance.warning(f'PCA not applied to score vectors because they are too low dimensional')
+    def plot_confusion_matrix(self, mod, cm, phase, norm=True, classes=None):
+        if self.wbl is None:
             return
-        if score_vectors.shape[1] > 2:
+
+        cm_np = cm.detach().cpu().numpy().astype(float)
+        
+        if norm:
+            # Normalize and prevent division by zero
+            denom = cm_np.sum(axis=1, keepdims=True)
+            denom[denom == 0] = 1.0
+            cm_np = cm_np / denom
+            fmt_str = '.2f'
+        else:
+            fmt_str = '.0f'
+
+        # Ensure classes are strings
+        str_classes = [str(c) for c in classes]
+
+        # Generate a Plotly Heatmap
+        fig = px.imshow(
+            cm_np,
+            x=str_classes,
+            y=str_classes,
+            labels=dict(x="Predicted", y="Baseline", color="Count"),
+            color_continuous_scale="Blues",
+            text_auto=fmt_str,
+            title=f'{phase} {mod} Confusion Matrix'
+        )
+        
+        fig.update_xaxes(side="bottom")
+
+        # Log it directly to wandb. It renders instantly as a plot!
+        self.wbl.log({f'{phase} {mod} Confusion Matrix': fig}, step=self.step_counter)
+
+
+    def plot_hidden_space(self, hiddens, labels, predicted_labels, phase):
+        if self.wbl is None:
+            return
+
+        hiddens_np = hiddens.detach().cpu().numpy()
+        if hiddens_np.shape[1] > 2:
+            pca = PCA(n_components=2)
+            hiddens_np = pca.fit_transform(hiddens_np)
+
+        labels_np = labels.squeeze(1).detach().cpu().numpy()
+        nl_labels =[str(lbl) for lbl in self.encoder.inverse_transform(labels_np)]
+        pred_labels_np = [str(lbl) for lbl in predicted_labels.detach().cpu().numpy()]
+
+        # Prepare a lightweight dictionary for Plotly
+        data_dict = {
+            "PCA_1": hiddens_np[:, 0],
+            "PCA_2": hiddens_np[:, 1],
+            "Ground Truth": nl_labels,
+            "Predicted Cluster": pred_labels_np
+        }
+
+        # Plot 1: Ground Truth
+        fig_gt = px.scatter(
+            data_dict, x="PCA_1", y="PCA_2", color="Ground Truth", 
+            title=f'{phase} Ground-truth clusters'
+        )
+        # Enlarge the markers a bit
+        fig_gt.update_traces(marker=dict(size=10, opacity=0.7))
+
+        # Plot 2: Predicted Clusters
+        fig_pred = px.scatter(
+            data_dict, x="PCA_1", y="PCA_2", color="Predicted Cluster", 
+            title=f'{phase} Predicted clusters'
+        )
+        fig_pred.update_traces(marker=dict(size=10, opacity=0.7))
+
+        # Log both. They will appear as interactive scatter plots natively in W&B
+        self.wbl.log({
+            f"{phase} Ground-truth clusters": fig_gt,
+            f"{phase} Predicted clusters": fig_pred
+        }, step=self.step_counter)
+
+
+    def plot_scores_vectors(self, score_vectors, labels, phase):
+        if self.wbl is None:
+            return
+
+        scores_np = score_vectors.detach().cpu().numpy()
+        
+        if scores_np.shape[1] < 2:
+            self.logger_instance.warning('PCA not applied to score vectors because they are too low dimensional')
+            return
+        elif scores_np.shape[1] > 2:
             try:
-                score_vectors = pca.fit_transform(score_vectors.detach())
+                scores_np = PCA(n_components=2).fit_transform(scores_np)
             except Exception as e:
                 self.logger_instance.warning(f'Error during PCA applied to score vectors: {e}')
                 return
-        else:
-            self.logger_instance.info(f'PCA not applied to score vectors because they are already 2 dimensional')
-            score_vectors = score_vectors.detach()
 
-                    
-        plt.figure(figsize=(10, 6))
+        labels_np = labels.squeeze(1).detach().cpu().numpy()
+        nl_labels =[str(lbl) for lbl in self.encoder.inverse_transform(labels_np)]
 
-        # Two plots:
-        plt.subplot(1, 1, 1)
-        
-        # List of attacks:
-        unique_labels = torch.unique(labels)
+        # Lightweight dictionary
+        data_dict = {
+            "Score_X": scores_np[:, 0],
+            "Score_Y": scores_np[:, 1],
+            "Ground Truth": nl_labels
+        }
 
-        # Print points for each attack
-        for label in unique_labels:
+        fig = px.scatter(
+            data_dict, x="Score_X", y="Score_Y", color="Ground Truth", 
+            title=f'{phase} PCA reduction of association scores'
+        )
+        fig.update_traces(marker=dict(size=10, opacity=0.7))
 
-            data = score_vectors[labels.squeeze(1) == label]
-            p_label = self.encoder.inverse_transform(label.unsqueeze(0))[0]
-
-            color_for_scatter = next(color_iterator)
-
-            plt.scatter(
-                data[:, 0],
-                data[:, 1],
-                label=p_label,
-                c=color_for_scatter,
-                alpha=0.5,
-                s=200)
-                
-        plt.title(f'{phase} PCA reduction of association scores')
-        plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
-
-
-        plt.tight_layout()
-        
-        if self.wbl is not None:
-            self.wbl.log({f"{phase} PCA of ass. scores": wandbImage(plt)}, step=self.step_counter)
-
-        plt.cla()
-        plt.close()
+        self.wbl.log({f"{phase} PCA of ass. scores": fig}, step=self.step_counter)
