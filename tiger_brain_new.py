@@ -386,7 +386,7 @@ class TigerBrain():
         if self.wbl is not None:
             self.wbl.finish()
             if self.wbt:
-                run_dir = self.wbl.run.dir if self.wbl.run else './wandb/latest-run'  # Get actual path
+                run_dir = self.wbl.dir if self.wbl else './wandb/latest-run'  # Get actual path
                 self.logger_instance.info("Now syncing the run. please wait...")
                 result = subprocess.run(["wandb", "sync", run_dir], capture_output=True, text=True)
                 if result.returncode != 0:
@@ -1683,8 +1683,8 @@ class TigerBrain():
                 }, 
                 step=self.step_counter)
          
-        self.logger_instance.info(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
-        self.logger_instance.info(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
+        self.logger_instance.debug(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
+        self.logger_instance.debug(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
         self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
         self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
     
@@ -1830,8 +1830,8 @@ class TigerBrain():
 
         
          
-        self.logger_instance.info(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
-        self.logger_instance.info(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
+        self.logger_instance.debug(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
+        self.logger_instance.debug(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
         self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
         
 
