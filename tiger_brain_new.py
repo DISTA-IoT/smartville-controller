@@ -32,7 +32,9 @@ from smartController.attr_dict import AttrDict
 import time
 from contextlib import contextmanager
 import plotly.express as px
-
+import subprocess
+import copy
+import queue
 
 # List of colors
 colors = [
@@ -383,8 +385,10 @@ class TigerBrain():
     def shutdown(self):
         if self.wbl is not None:
             self.wbl.finish()
+            # subprocess.run(["wandb", "sync", "latest-run"], check=True)
     
     def init_intelligence(self):
+        self.eval_queue = queue.Queue()
         self.current_known_classes_count = 0
         self.current_test_known_classes_count = 0
         self.batch_processing_allowed = False
@@ -641,6 +645,7 @@ class TigerBrain():
 
     def infer(
             self,
+            classifier,
             batch,
             query_mask):
         """
@@ -653,10 +658,11 @@ class TigerBrain():
                 hiddens: 
                 predicted_kernel:
         """
+
         try:
             if self.use_packet_feats:
                 if self.use_node_feats:
-                    logits, hiddens, predicted_kernel = self.classifier(
+                    logits, hiddens, predicted_kernel = classifier(
                         batch.flow_features, 
                         batch.packet_features, 
                         batch.node_features,
@@ -664,7 +670,7 @@ class TigerBrain():
                         self.current_known_classes_count,
                         query_mask)
                 else:
-                    logits, hiddens, predicted_kernel = self.classifier(
+                    logits, hiddens, predicted_kernel = classifier(
                         batch.flow_features, 
                         batch.packet_features, 
                         batch.class_labels, 
@@ -672,14 +678,14 @@ class TigerBrain():
                         query_mask)
             else:
                 if self.use_node_feats:
-                    logits, hiddens, predicted_kernel = self.classifier(
+                    logits, hiddens, predicted_kernel = classifier(
                         batch.flow_features, 
                         batch.node_features, 
                         batch.class_labels, 
                         self.current_known_classes_count,
                         query_mask)
                 else:
-                    logits, hiddens, predicted_kernel = self.classifier(
+                    logits, hiddens, predicted_kernel = classifier(
                         batch.flow_features, 
                         batch.class_labels, 
                         self.current_known_classes_count,
@@ -1224,6 +1230,7 @@ class TigerBrain():
         with self.profile("onl_inf_forward_pass"):
             # prototypical classification and kernel regression
             logits, hidden_vectors, predicted_kernel = self.infer(
+                self.classifier,
                 merged_batch,
                 query_mask=merged_query_mask)           
         
@@ -1742,6 +1749,7 @@ class TigerBrain():
 
         with self.profile("EL_forward_pass"):
             logits, hidden_vectors, predicted_kernel = self.infer(
+                classifier=self.classifier,
                 batch=training_batch,
                 query_mask=query_mask)
         
@@ -1822,21 +1830,30 @@ class TigerBrain():
 
         if self.step_counter % self.report_step_freq == 0:
             with self.profile("EL_report"):
-                self.report(
+                plots_dict = self.report(
                     preds=logits[:,known_class_h_mask],  
                     hiddens=hidden_vectors.detach(), 
                     labels=training_batch.class_labels,
                     predicted_clusters=predicted_clusters, 
                     query_mask=query_mask,
                     phase=TRAINING)
+                if self.wbt:
+                    self.wbl.log(plots_dict, step=self.step_counter)
                 
-            with self.profile("EL_model_update"):
-                # Update the target value network in the mitigation agent! 
-                self.mitigation_agent.update_target_model()
+            
+            # Update the target value network in the mitigation agent! 
+            self.mitigation_agent.update_target_model()
             
             if self.online_evaluation:
                 with self.profile("EL_online_eval"):
-                    self.evaluate_models()
+                    self.start_async_evaluation()
+
+            # Check if the background thread has finished any evaluation recently.
+            # If it has, log it at the CURRENT main thread step!
+            while not self.eval_queue.empty():
+                async_results = self.eval_queue.get()
+                if self.wbt:
+                    self.wbl.log(async_results, step=self.step_counter)
             
 
     @epistemic_thread_safe 
@@ -1870,121 +1887,195 @@ class TigerBrain():
         return updates_dict
     
 
-    def evaluate_models(self):
-        self.classifier.eval()
-        self.confidence_decoder.eval()
+    def start_async_evaluation(self):
+  
         
-        mean_eval_ad_acc = 0
-        mean_eval_cs_acc = 0
-        mean_eval_kr_ari = 0
+        # 1. Prevent overlapping evaluation threads (prevents crashing if eval takes too long)
+        if hasattr(self, '_eval_thread') and self._eval_thread is not None and self._eval_thread.is_alive():
+            self.logger_instance.warning("Previous evaluation thread still running. Skipping this eval cycle.")
+            return
+            
+        known_classes_count = self.current_known_classes_count
+        
+        # 3. Spin up the background thread
+        self._eval_thread = threading.Thread(
+            target=self._async_evaluate_models,
+            args=(known_classes_count,)
+        )
+        self._eval_thread.start()
+        
+        
 
-        for _ in range(self.online_eval_rounds):
+
+    def _async_evaluate_models(self, known_classes_count):
+        """
+        The background worker that runs completely lock-free.
+        """
+        # 1. Instantiate completely independent model clones
+        classifier_clone = copy.deepcopy(self.classifier)
+        classifier_clone.eval()
+
+        if self.multi_class:
+            decoder_clone = copy.deepcopy(self.confidence_decoder)
+            decoder_clone.eval()
+        else:
+            decoder_clone = None
+
+
+        mean_eval_ad_acc = 0.0
+        mean_eval_cs_acc = 0.0
+        mean_eval_kr_ari = 0.0
+        
+        # 2. Isolated local confusion matrices so we don't overwrite the main thread's CMS
+        local_eval_cs_cm = torch.zeros([known_classes_count, known_classes_count], device=self.device)
+        local_eval_os_cm = torch.zeros(size=(2, 2), device=self.device)
+
+        # Variables to hold the final batch's data for the plots
+        last_logits, last_hiddens, last_labels = None, None, None
+        last_pred_clusters, last_query_mask, last_known_h_mask = None, None, None
+
+        # 3. Disable gradients for massive memory and speed optimizations
+        with torch.no_grad(): 
+            for _ in range(self.online_eval_rounds):
                 
-            eval_batch = self.sample_from_replay_buffers(
-                                    samples_per_class=self.batch_size,
-                                    mode=INFERENCE)
-            
-            query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
+                # Sample batch safely
+                eval_batch = self.sample_from_replay_buffers(
+                    samples_per_class=self.batch_size,
+                    mode=INFERENCE
+                )
+                
+                query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
 
-            assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
+                assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
 
-            logits, hidden_vectors, predicted_kernel = self.infer(
-                eval_batch,
-                query_mask=query_mask)
+                logits, hidden_vectors, predicted_kernel = self.infer(
+                    classifier_clone,
+                    eval_batch,
+                    query_mask=query_mask)
 
-            one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
-            # known class horizonal mask:
-            known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
+                one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
+                known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
 
-            try:
-                # separate between candidate known traffic and unknown traffic.
-                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-            except:
-                self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
-                self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
-                self.logger_instance.error(f'logits shape: {logits.shape}')
-                self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
-                self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
-                raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
+                # --- Anomaly Detection ---
+                ad_acc = 0.0
+                if self.multi_class and decoder_clone is not None:
+                    zda_predictions = decoder_clone(scores=logits[:, known_class_h_mask])
+                    
+                    zda_labels = eval_batch.zda_labels[query_mask]
+                    onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
+                    onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
+
+                    batch_os_cm = efficient_os_cm(
+                        preds=(zda_predictions > 0.5).long(),
+                        targets_onehot=onehot_zda_labels
+                    )
+                    local_eval_os_cm += batch_os_cm
+                    zda_balance = zda_labels.to(torch.float32).mean().item()
+                    ad_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance).item()
+
+                # --- Kernel Regression ---
+                kr_precision = 0.0
+                predicted_clusters = None
+                if self.kernel_regression:
+                    decimal_sematic_kernel = one_hot_labels.max(1)[1].cpu().numpy()
+                    decimal_predicted_kernel = get_clusters(predicted_kernel)
+                    np_dec_pred_kernel = decimal_predicted_kernel.cpu().numpy()
+                    
+                    kr_precision = adjusted_rand_score(decimal_sematic_kernel, np_dec_pred_kernel)
+                    predicted_clusters = decimal_predicted_kernel
+
+                # --- Closed Set Classification ---
+                local_eval_cs_cm += efficient_cm(
+                    preds=logits,
+                    targets_onehot=one_hot_labels[query_mask]
+                )
+                
+                match_mask = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][query_mask]
+                cs_acc = (match_mask.sum() / match_mask.shape[0]).item()
+
+                mean_eval_ad_acc += (ad_acc / self.online_eval_rounds)
+                mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
+                mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
+
+                # Cache data for the final plot reporting
+                last_logits, last_hiddens, last_labels = logits, hidden_vectors, eval_batch.class_labels
+                last_pred_clusters, last_query_mask = predicted_clusters, query_mask
+                last_known_h_mask = known_class_h_mask
+
+        self.logger_instance.debug(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc:.2f} \n'+\
+                                   f'EVAL mean eval CS accuracy: {mean_eval_cs_acc:.2f} \n' +\
+                                   f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
+
         
-            _, ad_acc = self.zda_classification_step(
-                zda_labels=eval_batch.zda_labels[query_mask], 
-                zda_predictions=zda_predictions,
-                accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
-                mode=INFERENCE)
-            
-            _, predicted_clusters, kr_precision = self.kernel_regression_evaluation(
-                predicted_kernel, 
-                one_hot_labels,
-                INFERENCE)         
+        # 4. Generate the plots. (This calls the modified `report` function that returns a dict of Plotly figures)
+        plots_dict = {}
+        if self.wbt and self.kwargs['wandb']['plots']:
+            try:
+                plots_dict = self.report(
+                    preds=last_logits[:, last_known_h_mask], 
+                    hiddens=last_hiddens, 
+                    labels=last_labels,
+                    predicted_clusters=last_pred_clusters, 
+                    query_mask=last_query_mask,
+                    phase=INFERENCE,
+                    custom_cs_cm=local_eval_cs_cm,
+                    custom_os_cm=local_eval_os_cm
+                )
+            except Exception as e:
+                self.logger_instance.error(f"Error generating Plotly graphs in eval thread: {e}")
 
-            self.eval_cs_cm += efficient_cm(
-                preds=logits.detach(),
-                targets_onehot=one_hot_labels[query_mask])
-            
-            _, cs_acc = self.class_classification_step(eval_batch.class_labels, logits, INFERENCE, query_mask)
+        # 5. Package results for the main thread queue
+        # Note: We do NOT call wbl.log() or check_progress() here. The main thread will do it!
+        results_to_log = {
+            'Mean EVAL AD ACC': mean_eval_ad_acc,
+            'Mean EVAL CS ACC': mean_eval_cs_acc,
+            'Mean EVAL KR PREC': mean_eval_kr_ari,
+            **plots_dict  # Unpack the Plotly figures into the dict
+        }
 
-            mean_eval_ad_acc += (ad_acc / self.online_eval_rounds)
-            mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
-            mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
-
-        self.logger_instance.debug(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc.item():.2f} \n'+\
-                                        f'EVAL mean eval CS accuracy: {mean_eval_cs_acc.item():.2f} \n' +\
-                                        f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
-        if self.wbt:
-            self.wbl.log(
-                {
-                    'Mean EVAL AD ACC': mean_eval_ad_acc.item(),
-                    'Mean EVAL CS ACC': mean_eval_cs_acc.item(),
-                    'Mean EVAL KR PREC': mean_eval_kr_ari
-                }, 
-                step=self.step_counter)
-
-        if self.save_models_flag:
-            self.check_progress(
-                curr_cs_acc=mean_eval_cs_acc.item(),
-                curr_ad_acc=mean_eval_ad_acc.item(),
-                curr_kr_acc=mean_eval_kr_ari)
-
-        self.report(
-                preds=logits[:,known_class_h_mask], 
-                hiddens=hidden_vectors.detach(), 
-                labels=eval_batch.class_labels,
-                predicted_clusters=predicted_clusters, 
-                query_mask=query_mask,
-                phase=INFERENCE)
-
-        self.classifier.train()
-        self.confidence_decoder.train()
+        # 6. Push to Queue
+        if hasattr(self, 'eval_queue'):
+            self.eval_queue.put(results_to_log)
 
 
-    def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase):
+   
+    def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase, custom_cs_cm=None, custom_os_cm=None):
 
         if phase == TRAINING:
             cs_cm_to_plot = self.training_cs_cm
             os_cm_to_plot = self.training_os_cm
-        elif phase == INFERENCE:
-            cs_cm_to_plot = self.eval_cs_cm
-            os_cm_to_plot = self.eval_os_cm
+        else:
+        # INFERENCE
+            cs_cm_to_plot = custom_cs_cm if custom_cs_cm is not None else self.eval_cs_cm
+            os_cm_to_plot = custom_os_cm if custom_os_cm is not None else self.eval_os_cm
+
+        log_dict = {}
 
         if self.wbt and self.kwargs['wandb']['plots']:
-            self.plot_confusion_matrix(
+            cs_conf_mat = self.plot_confusion_matrix(
                 mod=CLOSED_SET,
                 cm=cs_cm_to_plot,
                 phase=phase,
                 norm=False,
                 classes=self.encoder.get_labels())
-            self.plot_confusion_matrix(
+            if cs_conf_mat: log_dict[f'{phase} {CLOSED_SET} Confusion Matrix']
+            
+            os_conf_mat = self.plot_confusion_matrix(
                 mod=ANOMALY_DETECTION,
                 cm=os_cm_to_plot,
                 phase=phase,
                 norm=False,
                 classes=['Known', 'ZdA'])
-            self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
-            self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
+            if os_conf_mat: log_dict[f'{phase} {ANOMALY_DETECTION} Confusion Matrix']
+            
+            fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
+            if fig_gt: log_dict[f"{phase} Ground-truth clusters"] = fig_gt
+            if fig_pred: log_dict[f"{phase} Predicted clusters"] = fig_pred
+
+            fig_scores = self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
+            if fig_scores: log_dict[f"{phase} PCA of ass. scores"] = fig_scores
         
 
-        
         self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
         self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
 
@@ -1999,7 +2090,7 @@ class TigerBrain():
                 # Optional: If we also want to log the max time (useful for finding spikes)
                 # metrics_to_log[f"{key}_max"] = max(times_list) 
 
-        self.wbl.log(metrics_to_log, step=self.step_counter)
+        log_dict.update(metrics_to_log)
 
         # 4. VERY IMPORTANT: Clear the dictionary so the next step starts fresh!
         self.profiling_stats.clear()
@@ -2008,6 +2099,9 @@ class TigerBrain():
             self.reset_train_cms()
         elif phase == INFERENCE:
             self.reset_test_cms()
+        
+        return log_dict
+
 
 
 
@@ -2115,7 +2209,7 @@ class TigerBrain():
     
     def plot_confusion_matrix(self, mod, cm, phase, norm=True, classes=None):
         if self.wbl is None:
-            return
+            return None
 
         cm_np = cm.detach().cpu().numpy().astype(float)
         
@@ -2143,14 +2237,12 @@ class TigerBrain():
         )
         
         fig.update_xaxes(side="bottom")
-
-        # Log it directly to wandb. It renders instantly as a plot!
-        self.wbl.log({f'{phase} {mod} Confusion Matrix': fig}, step=self.step_counter)
+        return fig
 
 
     def plot_hidden_space(self, hiddens, labels, predicted_labels, phase):
         if self.wbl is None:
-            return
+            return None, None
 
         hiddens_np = hiddens.detach().cpu().numpy()
         if hiddens_np.shape[1] > 2:
@@ -2184,11 +2276,7 @@ class TigerBrain():
         )
         fig_pred.update_traces(marker=dict(size=10, opacity=0.7))
 
-        # Log both. They will appear as interactive scatter plots natively in W&B
-        self.wbl.log({
-            f"{phase} Ground-truth clusters": fig_gt,
-            f"{phase} Predicted clusters": fig_pred
-        }, step=self.step_counter)
+        return fig_gt, fig_pred
 
 
     def plot_scores_vectors(self, score_vectors, labels, phase):
@@ -2223,4 +2311,4 @@ class TigerBrain():
         )
         fig.update_traces(marker=dict(size=10, opacity=0.7))
 
-        self.wbl.log({f"{phase} PCA of ass. scores": fig}, step=self.step_counter)
+        return fig
