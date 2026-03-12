@@ -17,7 +17,6 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 
 from pox.core import core
-from pox.lib.util import str_to_bool
 import pox.openflow.libopenflow_01 as of
 from pox.lib.addresses import EthAddr
 
@@ -26,10 +25,8 @@ from smartController.tiger_brain_new import TigerBrain
 from smartController.metricslogger import MetricsLogger
 from smartController.smart_switch import SmartSwitch
 
-
+import subprocess
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-
 import uvicorn
 import threading
 import os
@@ -225,6 +222,17 @@ def launch(**kwargs):
         shutdown_process()
 
         return {"status_code": 200, "msg": "SmartSwitch is stopped"}
+    
+
+    @app.post("/sync_wandb")
+    async def sync_wandb():
+        root_dir = '/pox/pox/smartController/wandb'
+        folders = [f.path for f in os.scandir(root_dir) if f.is_dir() and 'run-' in f.path]
+        # Loop through each folder and sync it with wandb
+        for folder in folders:
+            print(f"Syncing {folder}")
+            subprocess.run(['wandb', 'sync', folder])
+        return {"status_code": 200, "msg": "Wandb is synced"}
 
     def cleanup():
       logger.info("Cleaning up before exit")

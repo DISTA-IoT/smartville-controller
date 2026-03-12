@@ -2091,8 +2091,8 @@ class TigerBrain():
             if fig_scores: log_dict[f"{phase} PCA of ass. scores"] = fig_scores
         
 
-        self.logger_instance.info(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
-        self.logger_instance.info(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
+        self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
+        self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
 
         # Compute the mean for all profiling lists and add them to the metrics
         metrics_to_log = {}
@@ -2149,7 +2149,7 @@ class TigerBrain():
             self.classifier.state_dict(), 
             self.classifier_path+postfix+'.pt')
          
-        self.logger_instance.info(f'New {postfix} flow classifier model version saved to {self.classifier_path}{postfix}.pt')
+        self.logger_instance.info(f'\033[95mNew {postfix} flow classifier model version saved to {self.classifier_path}{postfix}.pt\033[0m')
 
 
     def save_ad_model(self, postfix='single'):
@@ -2157,7 +2157,7 @@ class TigerBrain():
             self.confidence_decoder.state_dict(), 
             self.confidence_decoder_path+postfix+'.pt')
          
-        self.logger_instance.info(f'New {postfix} confidence decoder model version saved to {self.confidence_decoder_path}{postfix}.pt')
+        self.logger_instance.info(f'\033[95mNew {postfix} confidence decoder model version saved to {self.confidence_decoder_path}{postfix}.pt\033[0m')
 
 
     def save_models(self):
