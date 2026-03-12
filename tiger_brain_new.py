@@ -324,7 +324,8 @@ class TigerBrain():
         self.multi_class = args.intrusion_detection.multi_class
         self.step_counter = 0
         self.wbt = args.wandb.wb_tracking
-        self.wbl = None
+        self.wb_run = None
+        self.wb_tracker = None
         self.kernel_regression = args.intrusion_detection.kernel_regression
         self.logger_instance = kwargs['logger']
         self.device= args.intrusion_detection.device
@@ -351,8 +352,10 @@ class TigerBrain():
         self.episode_count = -1
         self.env = NewTigerEnvironment(args)
         if self.wbt:
-            self.wbl = WandBTracker(kwargs).wb_logger
-        args.intrusion_detection.wbl = self.wbl
+            self.wb_tracker = WandBTracker(kwargs)
+            self.wb_run = self.wb_tracker.wb_run
+
+        args.intrusion_detection.wbl = self.wb_run
         self.init_agents(args)
         self.init_intelligence()
         self.epistemic_agency = args.intrusion_detection.epistemic_agency
@@ -383,17 +386,10 @@ class TigerBrain():
 
              
     def shutdown(self):
-        if self.wbl is not None:
-            self.wbl.finish()
-            if self.wbt:
-                run_dir = self.wbl.dir if self.wbl else './wandb/latest-run'  # Get actual path
-                self.logger_instance.info("Now syncing the run. please wait...")
-                result = subprocess.run(["wandb", "sync", run_dir], capture_output=True, text=True)
-                if result.returncode != 0:
-                    self.logger_instance.error(f"Sync failed: {result.stderr}")  # Debug without crashing
-                else:
-                    self.logger_instance.info("Run synced!!!...")
-    
+        if self.wb_run is not None:
+            self.wb_tracker.shutdown()
+            
+
     def init_intelligence(self):
         self.eval_queue = queue.Queue()
         self.current_known_classes_count = 0
@@ -734,8 +730,7 @@ class TigerBrain():
                         node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
                         label=batch_labels[mask][sample_idx].unsqueeze(0))
                 except:
-                    print('something went wrong')
-                    assert 1 == 0
+                    raise RuntimeError(f'Error while pushing sample {sample_idx} with label {label} to replay buffer {label}')
 
         if not self.batch_processing_allowed:
 
@@ -1031,7 +1026,7 @@ class TigerBrain():
 
         # reporting
         if self.wbt and self.step_counter % self.report_step_freq == 0:
-            self.wbl.log({
+            self.wb_run.log({
                 AGENT+'_'+'reward': classification_reward,
                 AGENT+'_'+'budget': self.env.current_budget,
                 'classification_reward': classification_reward,
@@ -1198,7 +1193,7 @@ class TigerBrain():
 
             # reporting
             if self.wbt and self.step_counter % self.report_step_freq == 0:
-                self.wbl.log({
+                self.wb_run.log({
                     AGENT+'_'+'reward': current_reward.item(),
                     AGENT+'_'+'budget': self.env.current_budget,
                     'clustering_reward': current_reward.item(),
@@ -1329,7 +1324,7 @@ class TigerBrain():
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
         if self.wbt and self.step_counter % self.report_step_freq == 0:
-            self.wbl.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
+            self.wb_run.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
                           'num_predicted_knowns': number_of_predicted_known_samples.item(),
                           'num_predicted_unknowns': num_of_predicted_anomalies.item(),
                           'known_classif_confidente': self.cs_classif_confidence.item(),
@@ -1383,7 +1378,7 @@ class TigerBrain():
 
         # report progress
         if self.wbt and self.step_counter % self.report_step_freq == 0:
-            self.wbl.log(
+            self.wb_run.log(
                 {
                     mode+'_'+CS_ACC: acc.item(),
                     mode+'_'+CS_LOSS: cs_loss.item()
@@ -1482,22 +1477,26 @@ class TigerBrain():
             
                 with self.profile("input_assembly"):
                     batch = self.assembly_input_tensor(flows, node_feats)
-        
-                self.push_to_replay_buffers(
-                    batch.flow_features, 
-                    batch.packet_features,
-                    batch.node_features,  
-                    batch_labels=batch.class_labels)
 
-                # this fella could be toogling because of a new class arriving... 
                 with self._lock:
-                    if self.batch_processing_allowed and self.epistemic_agency:
-                        with self.profile("online_inference_total"):
-                            self.online_inference(batch)
-                with self._lock:
+
+                    self.push_to_replay_buffers(
+                        batch.flow_features, 
+                        batch.packet_features,
+                        batch.node_features,  
+                        batch_labels=batch.class_labels)
+
+                    # this fella could be toogling because of a new class arriving... 
                     if self.batch_processing_allowed:
+                        
+                        if self.epistemic_agency:
+                            with self.profile("online_inference_total"):
+                                self.online_inference(batch)
+                
+                    
                         with self.profile("experience_learning_total"):
                             self.experience_learning()
+
                     if not self.epistemic_agency:
                         self.step_counter += 1
 
@@ -1675,7 +1674,7 @@ class TigerBrain():
 
         
         if self.wbt and self.step_counter % self.report_step_freq == 0:
-            self.wbl.log(
+            self.wb_run.log(
                 {
                     mode+'_'+OS_ACC: cummulative_os_acc.item(),
                     mode+'_'+OS_LOSS: os_loss.item(),
@@ -1715,7 +1714,7 @@ class TigerBrain():
                 np_dec_pred_kernel)
 
             if self.wbt and self.step_counter % self.report_step_freq == 0:
-                self.wbl.log(
+                self.wb_run.log(
                     {
                         mode+'_'+KR_ARI: kr_ari,
                         mode+'_'+KR_NMI: kr_nmi,
@@ -1845,7 +1844,7 @@ class TigerBrain():
                     query_mask=query_mask,
                     phase=TRAINING)
                 if self.wbt:
-                    self.wbl.log(plots_dict, step=self.step_counter)
+                    self.wb_run.log(plots_dict, step=self.step_counter)
                 
             
             # Update the target value network in the mitigation agent! 
@@ -1859,7 +1858,7 @@ class TigerBrain():
             while not self.eval_queue.empty():
                 async_results = self.eval_queue.get()
                 if self.wbt:
-                    self.wbl.log(async_results, step=self.step_counter)
+                    self.wb_run.log(async_results, step=self.step_counter)
 
                 # Save the models using the main thread (prevents file corruption)
                 if self.save_models_flag:
@@ -2017,9 +2016,7 @@ class TigerBrain():
                     last_pred_clusters, last_query_mask = predicted_clusters, query_mask
                     last_known_h_mask = known_class_h_mask
 
-            self.logger_instance.info(f'\n EVAL mean eval AD accuracy: {mean_eval_ad_acc:.2f} \n'+\
-                                    f'EVAL mean eval CS accuracy: {mean_eval_cs_acc:.2f} \n' +\
-                                    f'EVAL mean eval KR accuracy: {mean_eval_kr_ari:.2f}')
+            self.logger_instance.info(f'\033[92mEVAL mean AD acc.: {mean_eval_ad_acc:.2f} CS acc.: {mean_eval_cs_acc:.2f} KR ARI.: {mean_eval_kr_ari:.2f}\033[0m')
 
             
             # 4. Generate the plots. (This calls the modified `report` function that returns a dict of Plotly figures)
@@ -2040,7 +2037,7 @@ class TigerBrain():
                     self.logger_instance.error(f"Error generating Plotly graphs in eval thread: {e}")
 
             # 5. Package results for the main thread queue
-            # Note: We do NOT call wbl.log() or check_progress() here. The main thread will do it!
+            # Note: We do NOT call wb_run.log() or check_progress() here. The main thread will do it!
             results_to_log = {
                 'Mean EVAL AD ACC': mean_eval_ad_acc,
                 'Mean EVAL CS ACC': mean_eval_cs_acc,
@@ -2223,7 +2220,7 @@ class TigerBrain():
          
     
     def plot_confusion_matrix(self, mod, cm, phase, norm=True, classes=None):
-        if self.wbl is None:
+        if self.wb_run is None:
             return None
 
         cm_np = cm.detach().cpu().numpy().astype(float)
@@ -2256,7 +2253,7 @@ class TigerBrain():
 
 
     def plot_hidden_space(self, hiddens, labels, predicted_labels, phase):
-        if self.wbl is None:
+        if self.wb_run is None:
             return None, None
 
         hiddens_np = hiddens.detach().cpu().numpy()
@@ -2295,7 +2292,7 @@ class TigerBrain():
 
 
     def plot_scores_vectors(self, score_vectors, labels, phase):
-        if self.wbl is None:
+        if self.wb_run is None:
             return
 
         scores_np = score_vectors.detach().cpu().numpy()
