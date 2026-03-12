@@ -1685,8 +1685,8 @@ class TigerBrain():
          
         self.logger_instance.debug(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
         self.logger_instance.debug(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-        self.logger_instance.info(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
-        self.logger_instance.info(f'{mode} Episode ZDA detection accuracy: {cummulative_os_acc:.2f}')
+        self.logger_instance.debug(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
+        self.logger_instance.info(f'{mode} Cummulative Episode ZDA detection accuracy: {cummulative_os_acc:.2f}\n')
     
         return os_loss, cummulative_os_acc
     
@@ -1725,7 +1725,7 @@ class TigerBrain():
             
             
             self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
-            self.logger_instance.info(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
+            self.logger_instance.debug(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
             
             return kernel_loss, decimal_predicted_kernel, kr_ari
 
