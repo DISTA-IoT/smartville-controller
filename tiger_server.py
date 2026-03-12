@@ -76,7 +76,7 @@ flow_logger = None
 metrics_logger = None
 controller_brain = None
 stop_tiger_threads = True
-flowstatreq_thread = None
+flowstats_req_thread = None
 inference_thread = None
 
 tiger_lock = Lock()
@@ -97,8 +97,13 @@ def periodically_requests_stats(period):
       connection.send(of.ofp_stats_request(body=of.ofp_port_stats_request()))
     
     logger.debug("Sent %i flow/port stats request(s)", len(core.openflow._connections))
-    logger.debug(f"{smart_switch.openflow_packets_received} OpenFlow packets received")
-    time.sleep(period)
+    
+    # Sleep in small increments to react quickly to shutdown ---
+    elapsed = 0
+    while elapsed < period and not stop_tiger_threads:
+        time.sleep(0.1)
+        elapsed += 0.1
+
 
 
 def pprint(obj):
@@ -184,15 +189,15 @@ def fix_no_proxy(monitor_ip):
 
 
 def shutdown_process():
-  global stop_tiger_threads, inference_thread, flowstatreq_thread, metrics_logger, controller_brain
+  global stop_tiger_threads, inference_thread, flowstats_req_thread, metrics_logger, controller_brain
 
   logger.info("Shutdown command received")
   
   stop_tiger_threads = True
   if inference_thread is not None:
     inference_thread.join()
-  if flowstatreq_thread is not None:
-    flowstatreq_thread.join()
+  if flowstats_req_thread is not None:
+    flowstats_req_thread.join()
 
   if metrics_logger is not None:
     metrics_logger.shutdown()
