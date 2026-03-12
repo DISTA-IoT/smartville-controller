@@ -87,8 +87,16 @@ class WandBTracker():
         self._stop_event = threading.Event()
         self._psutil_process = psutil.Process()  # cache the process object
         self.cpu_count = os.cpu_count()
+
+        self._prev_bytes_sent = 0
+        self._prev_bytes_recv = 0
+        self._prev_packets_sent = 0
+        self._prev_packets_recv = 0
+
         self.monitor_interval_secs = args.wandb.resource_monitor_interval_secs
         self.start_resource_monitor()
+
+        
 
         """
         if args.wandb.wb_tracking:
@@ -169,10 +177,39 @@ class WandBTracker():
                     holistic_cpu = psutil.cpu_percent(interval=0)          # % of all vCPUs
                     proc_raw = self._psutil_process.cpu_percent(interval=0)  # raw (includes all your threads)
 
+
+                    # Network I/O (cumulative since last sample)
+                    net_io = psutil.net_io_counters()
+                    bytes_sent = net_io.bytes_sent
+                    bytes_recv = net_io.bytes_recv
+                    packets_sent = net_io.packets_sent
+                    packets_recv = net_io.packets_recv
+
+                    # compute deltas (first time will be full cumulative, then rates)
+                    sent_delta = bytes_sent - getattr(self, '_prev_bytes_sent', 0)
+                    recv_delta = bytes_recv - getattr(self, '_prev_bytes_recv', 0)
+                    psent_delta = packets_sent - getattr(self, '_prev_packets_sent', 0)
+                    precv_delta = packets_recv - getattr(self, '_prev_packets_recv', 0)
+
+                    # Update previous for next loop
+                    self._prev_bytes_sent = bytes_sent
+                    self._prev_bytes_recv = bytes_recv
+                    self._prev_packets_sent = packets_sent
+                    self._prev_packets_recv = packets_recv
+
+
                     self.wb_run.log({
                         "holistic_system_cpu_percent": holistic_cpu,
                         "controller_process_raw_cpu_percent": proc_raw,
                         "controller_process_normalized_cpu_percent": (proc_raw / self.cpu_count) * 100,
+                        "holistic_network_bytes_sent_total": bytes_sent,
+                        "holistic_network_bytes_recv_total": bytes_recv,
+                        "holistic_network_bytes_sent_rate_Bps": sent_delta / self.monitor_interval_secs,
+                        "holistic_network_bytes_recv_rate_Bps": recv_delta / self.monitor_interval_secs,
+                        "holistic_network_MBps_sent": (sent_delta / self.monitor_interval_secs) / (1024 * 1024),
+                        "holistic_network_MBps_recv": (recv_delta / self.monitor_interval_secs) / (1024 * 1024),
+                        "holistic_network_packets_sent_rate_pps": psent_delta / self.monitor_interval_secs,
+                        "holistic_network_packets_recv_rate_pps": precv_delta / self.monitor_interval_secs,
                     })
                 except Exception as e:
                     self.logger.warning(f"CPU monitor error (non-fatal): {e}")
