@@ -114,7 +114,7 @@ class RawReplayBuffer():
         try:
             batch = random.sample(self.buffer, num_of_samples)
         except:
-            print('something went wrong')
+            raise RuntimeError("Error during sampling replay buffer. The buffer is probably empty.")
 
         flow_state_batch, packet_state_batch, node_state_batch, label_batch = zip(*batch)
         

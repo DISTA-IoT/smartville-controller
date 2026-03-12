@@ -18,9 +18,12 @@
 import wandb
 import wandb_workspaces.workspaces as ws
 import wandb_workspaces.reports.v2 as wr
-
+import os
 from smartController.attr_dict import AttrDict
-
+import subprocess
+import threading
+import time
+import psutil
 
 TRAINING_METRICS_SECTION_NAME = "Training Metrics"
 EVALUATION_METRICS_SECTION_NAME = "Evaluation Metrics"
@@ -71,7 +74,7 @@ class WandBTracker():
     def __init__(self, kwargs):
         args = AttrDict(kwargs)
         self.logger = args.logger
-        self.wb_logger = wandb.init(
+        self.wb_run = wandb.init(
             # Set the project where this run will be logged
             project=args.wandb.wb_project_name,
             name=args.wandb.wb_run_name,
@@ -79,6 +82,13 @@ class WandBTracker():
             config=kwargs,
             mode=("online" if args.wandb.wb_tracking else "disabled"),
             )
+        # Resource monitor (holistic CPU for the reviewers)
+        self._monitor_thread = None
+        self._stop_event = threading.Event()
+        self._psutil_process = psutil.Process()  # cache the process object
+        self.cpu_count = os.cpu_count()
+        self.monitor_interval_secs = args.wandb.resource_monitor_interval_secs
+        self.start_resource_monitor()
 
         """
         if args.wandb.wb_tracking:
@@ -112,6 +122,70 @@ class WandBTracker():
                 raise RuntimeError(f"Failed to set workspace: {e}")
         """
             
+    def shutdown(self):
+        # Stop the monitor thread first
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._stop_event.set()
+            self._monitor_thread.join(timeout=5)
+            self.logger.info("Resource monitor thread stopped.")
+
+        self.wb_run.finish()
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        run_dirs = [f.path for f in os.scandir(this_dir+'/wandb') if f.is_dir() and 'run-' in f.path]
+        run_dir = run_dirs[-1] # Get actual path
+        self.logger.info(f"Now syncing the run {run_dir} please wait...")
+        result = subprocess.run(["wandb", "sync", run_dir], capture_output=True, text=True)
+        if result.returncode != 0:
+            self.logger.error(f"Sync failed: {result.stderr}")  # Debug without crashing
+        else:
+            self.logger.info("Run synced!!!...")
+    
+
+    def start_resource_monitor(self):
+        """
+        Starts a background daemon thread that logs:
+        - holistic_system_cpu_percent          → total usage of the host
+        - controller_process_raw_cpu_percent   → raw value
+        - controller_process_normalized        → should match native WandB metric
+        """
+
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self.logger.info("CPU monitor already running")
+            return
+
+        self._stop_event.clear()
+
+        def monitor_loop():
+            # Prime the counters (required by psutil for accurate % calculation)
+            psutil.cpu_percent(interval=0.1)
+            self._psutil_process.cpu_percent(interval=0.1)
+
+            while not self._stop_event.is_set():
+                time.sleep(self.monitor_interval_secs)
+                if self._stop_event.is_set():
+                    break
+
+                try:
+                    holistic_cpu = psutil.cpu_percent(interval=0)          # % of all vCPUs
+                    proc_raw = self._psutil_process.cpu_percent(interval=0)  # raw (includes all your threads)
+
+                    self.wb_run.log({
+                        "holistic_system_cpu_percent": holistic_cpu,
+                        "controller_process_raw_cpu_percent": proc_raw,
+                        "controller_process_normalized_cpu_percent": (proc_raw / self.cpu_count) * 100,
+                    })
+                except Exception as e:
+                    self.logger.warning(f"CPU monitor error (non-fatal): {e}")
+
+        self._monitor_thread = threading.Thread(
+            target=monitor_loop,
+            daemon=True,
+            name="WandB_Resource_Monitor"
+        )
+        self._monitor_thread.start()
+        self.logger.info(f"✅ Resource monitor started (logs every {self.monitor_interval_secs}s)")
+
+
 
     def set_workspace(self):
     
