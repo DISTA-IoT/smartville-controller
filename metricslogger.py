@@ -128,7 +128,14 @@ class MetricsLogger:
                 try:
                     conf = {'bootstrap.servers': self.kafka_endpoint}
                     self.kafka_admin_client = AdminClient(conf)
-                    self.topics = self.kafka_admin_client.list_topics(timeout=5)
+                    self.topics = self.kafka_admin_client.list_topics(timeout=5).topics
+
+                    # let's delete all topics, we need to start from zero!
+                    for topic in self.topics:
+                        self.logger.info(f"Deleting topic {topic}")
+                        returned_futmap = self.kafka_admin_client.delete_topics([topic])
+                        self.logger.info(f"Deleted topic {returned_futmap}")
+
                     return True
                 except KafkaException as e:
                     self.logger.error(f"Kafka connection error {e}")

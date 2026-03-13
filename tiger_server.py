@@ -163,16 +163,11 @@ def smart_check():
     inference_count += 1
 
     with tiger_lock:
-
-      try:
       
-        controller_brain.process_input(
-          flows=list(flow_logger.flows_dict.values()),
-          node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
+      controller_brain.process_input(
+        flows=list(flow_logger.flows_dict.values()),
+        node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
       
-      except Exception as e:
-        logger.error(f"Error processing input: {e}")
-        shutdown_process()
 
       if inference_count % 100 == 0:
         for key in flow_logger.flows_dict.keys():

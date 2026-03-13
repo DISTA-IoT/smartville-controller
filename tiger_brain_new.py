@@ -861,6 +861,9 @@ class TigerBrain():
             aux_batch = self.sample_from_replay_buffers(
                                     samples_per_class=self.batch_size,
                                     mode=INFERENCE)
+            
+            if aux_batch is None:
+                return None
         
             # query masks
             aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
@@ -1233,8 +1236,11 @@ class TigerBrain():
         self.confidence_decoder.eval()
 
         # the online batch is enriched with auxiliary samples for prototypical classification
-        merged_batch, merged_query_mask, accuracy_mask = self.prepare_online_batch(online_batch)
-
+        online_batch_tuple = self.prepare_online_batch(online_batch)
+        if online_batch_tuple is None:
+            return
+        
+        merged_batch, merged_query_mask, accuracy_mask = online_batch_tuple
         with self.profile("onl_inf_forward_pass"):
             # prototypical classification and kernel regression
             logits, hidden_vectors, predicted_kernel = self.infer(
@@ -1540,11 +1546,15 @@ class TigerBrain():
                 if class_nl_label in self.env.current_knowledge['G2s']:
                     test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
             
-            flow_batch, \
-                packet_batch, \
-                    node_feat_batch, \
-                        batch_labels = replay_buff.sample(samples_per_class)
-            
+            try:
+                flow_batch, \
+                    packet_batch, \
+                        node_feat_batch, \
+                            batch_labels = replay_buff.sample(samples_per_class)
+            except:
+                self.logger_instance.warning('Buffer sync failed. Skipping this batch.')
+                return None
+
             if init:
                 balanced_flow_batch = flow_batch
                 balanced_labels = batch_labels
@@ -1572,6 +1582,10 @@ class TigerBrain():
                        [balanced_node_feat_batch, node_feat_batch])
 
             init = False
+
+        if init == True:
+            self.logger_instance.warning('Only G2s for now. Skipping this batch.')
+            return None
 
         return Batch(
             flow_features=balanced_flow_batch, 
