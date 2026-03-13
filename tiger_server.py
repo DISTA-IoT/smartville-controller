@@ -41,7 +41,8 @@ SUPPRESSED_ENDPOINTS = [
    '/check_kafka',
    '/check_prometheus',
    '/check_grafana',
-   '/metrics'
+   '/metrics',
+   '/echo'
  ]
 
 class SuppressEndpointFilter(logging.Filter):
