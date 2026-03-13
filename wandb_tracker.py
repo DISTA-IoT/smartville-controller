@@ -175,7 +175,7 @@ class WandBTracker():
 
                 try:
                     holistic_cpu = psutil.cpu_percent(interval=0)          # % of all vCPUs
-                    proc_raw = self._psutil_process.cpu_percent(interval=0)  # raw (includes all your threads)
+                    proc_raw = self._psutil_process.cpu_percent(interval=0)  # only the controller
 
 
                     # Network I/O (cumulative since last sample)
