@@ -30,9 +30,9 @@ import threading
 
 RAM = 'RAM'
 CPU = 'CPU'
-INBOUND = 'INBOUND'
-OUTBOUND = 'OUTBOUND'
-RTT = 'RTT'
+inbound_MBps = 'inbound_MBps'
+outbound_MBps = 'outbound_MBps'
+external_http_rtt = 'external_http_rtt'
 
 
 
@@ -164,14 +164,14 @@ class MetricsLogger:
         if RAM in self.kwargs['health']['probe_metrics']:
             self.RAM_metric = Gauge(RAM, RAM, ['label_name'],  registry=registry)
         
-        if RTT in self.kwargs['health']['probe_metrics']:
-            self.RTT_metric = Gauge(RTT, RTT, ['label_name'],  registry=registry)
+        if external_http_rtt in self.kwargs['health']['probe_metrics']:
+            self.RTT_metric = Gauge(external_http_rtt, external_http_rtt, ['label_name'],  registry=registry)
         
-        if INBOUND in self.kwargs['health']['probe_metrics']:
-            self.INBOUND_metric = Gauge(INBOUND, INBOUND, ['label_name'],  registry=registry)
+        if inbound_MBps in self.kwargs['health']['probe_metrics']:
+            self.INBOUND_metric = Gauge(inbound_MBps, inbound_MBps, ['label_name'],  registry=registry)
         
-        if OUTBOUND in self.kwargs['health']['probe_metrics']:
-            self.OUTBOUND_metric = Gauge(OUTBOUND, OUTBOUND, ['label_name'],  registry=registry)
+        if outbound_MBps in self.kwargs['health']['probe_metrics']:
+            self.OUTBOUND_metric = Gauge(outbound_MBps, outbound_MBps, ['label_name'],  registry=registry)
         
         # prometheus_connection will permit the graph generator 
         # to organize graphs...  

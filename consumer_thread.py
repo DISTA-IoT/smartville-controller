@@ -25,9 +25,6 @@ import json
 
 RAM = 'RAM'
 CPU = 'CPU'
-INBOUND = 'INBOUND'
-OUTBOUND = 'OUTBOUND'
-RTT = 'RTT'
 
 external_http_rtt = 'external_http_rtt'
 icmp_min_rtt_ms = 'icmp_min_rtt_ms'
@@ -98,21 +95,21 @@ class ConsumerThread(threading.Thread):
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
-            self.controller_metrics_dict[self.topic_name][RTT].append(value)
+            self.controller_metrics_dict[self.topic_name][external_http_rtt].append(value)
 
     def update_incoming_traffic_metric(self, value, label_value):
         self.inbound_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
-            self.controller_metrics_dict[self.topic_name][INBOUND].append(value)
+            self.controller_metrics_dict[self.topic_name][inbound_MBps].append(value)
 
     def update_outcoming_traffic_metric(self, value, label_value):
         self.outbound_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
-            self.controller_metrics_dict[self.topic_name][OUTBOUND].append(value)
+            self.controller_metrics_dict[self.topic_name][outbound_MBps].append(value)
 
 
     def update_generic_metric(self, value, label_value, metric_name):
