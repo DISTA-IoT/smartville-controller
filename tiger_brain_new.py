@@ -32,7 +32,7 @@ from smartController.attr_dict import AttrDict
 import time
 from contextlib import contextmanager
 import plotly.express as px
-import subprocess
+import requests
 import copy
 import queue
 
@@ -350,6 +350,10 @@ class TigerBrain():
         self.ips_containers = args.ips_containers
         self.traffic_dict = args.traffic_dict
         self.episode_count = -1
+        # Overhead Monitoring Setup ---
+        self._stop_monitoring = threading.Event()
+        self._monitoring_threads =[]
+
         self.env = NewTigerEnvironment(args)
         if self.wbt:
             self.wb_tracker = WandBTracker(kwargs)
@@ -361,6 +365,7 @@ class TigerBrain():
         self.epistemic_agency = args.intrusion_detection.epistemic_agency
         self.save_models_flag = args.intrusion_detection.save_models
         self.profiling_stats = {}  # Dict to hold lists of timings
+        self.start_overhead_monitoring_threads()
 
 
     @contextmanager
@@ -385,7 +390,107 @@ class TigerBrain():
         self.profiling_stats[key].append(elapsed_ms)
 
              
+
+    def start_overhead_monitoring_threads(self):
+        """
+        Parses the traffic_dict to find honeypots, and launches
+        ICMP and HTTP monitoring threads for each one.
+        """
+        if not self.traffic_dict:
+            self.logger_instance.warning("No traffic_dict found. Skipping overhead monitoring.")
+            return
+            
+        honeypot_ips =[]
+        # Find all honeypots (marked as benign)
+        for node_name, config in self.traffic_dict.items():
+            if config.get('benign'):
+                honeypot_ips.append(config['src_ip'])
+                
+        # Launch 2 threads per honeypot (one for ICMP, one for HTTP)
+        for hp_ip in honeypot_ips:
+            for mode in ['icmp', 'http']:
+                t = threading.Thread(
+                    target=self._monitor_overhead_worker,
+                    args=(hp_ip, mode),
+                    daemon=True,
+                    name=f"Monitor_{hp_ip}_{mode}"
+                )
+                t.start()
+                self._monitoring_threads.append(t)
+        
+        self.logger_instance.info(f"Started overhead monitoring threads for honeypots: {honeypot_ips}")
+
+
+    def add_ip_to_no_proxy_env_var(self, some_ip):
+        no_proxy = os.environ.get('no_proxy', '')
+        if no_proxy != '':
+            no_proxy += ','
+        no_proxy += some_ip
+        os.environ['no_proxy'] = no_proxy
+        self.logger_instance.info(f"Added {some_ip} to no_proxy env var...")
+
+
+
+    def _monitor_overhead_worker(self, honeypot_ip, mode):
+        """
+        Continuously calls the honeypot's /measure_overhead endpoint.
+        The honeypot will ping/HTTP-request the Controller, calculate stats, and return them.
+        """
+
+        self.add_ip_to_no_proxy_env_var(honeypot_ip)
+
+        hp_port = int(self.kwargs['topology_creator']['victim']['SERVER_PORT'])
+        url = f"http://{honeypot_ip}:{hp_port}/measure_overhead"
+        
+        # Assuming the Controller FastAPI (with the /echo endpoint) runs on this port
+        controller_port = int(self.kwargs['topology_creator']['controller']['SERVER_PORT'])
+        controller_ip = self.kwargs['topology_creator']['controller_ip']
+        while not self._stop_monitoring.is_set():
+            payload = {
+                "target_ip": controller_ip,
+                "target_port": controller_port,
+                "num_requests": 10,       # Number of pings per batch
+                "interval_ms": 100,       # 100ms interval -> 1 batch takes ~1 second
+                "mode": mode
+            }
+            
+            try:
+                # Give it a slightly higher timeout than the batch takes to execute
+                response = requests.post(url, json=payload, timeout=3.0)
+                
+                if response.status_code == 200:
+                    metrics = response.json()
+                    
+                    if self.wbt and self.wb_run is not None:
+                        # Log directly to WandB. 
+                        # We don't use 'step=self.step_counter' here so WandB plots this
+                        # dynamically based on actual wall-clock time. This ensures you
+                        # catch the exact 1-second delay spikes when sampling occurs!
+                        self.wb_run.log({
+                            f"Overhead/{honeypot_ip}_{mode}_min_rtt_ms": metrics.get("min_rtt_ms", 0),
+                            f"Overhead/{honeypot_ip}_{mode}_max_rtt_ms": metrics.get("max_rtt_ms", 0),
+                            f"Overhead/{honeypot_ip}_{mode}_avg_rtt_ms": metrics.get("avg_rtt_ms", 0),
+                            f"Overhead/{honeypot_ip}_{mode}_loss_percent": metrics.get("loss_percent", 0),
+                        },
+                        step=self.step_counter)
+
+                    self.logger_instance.debug(f"Overhead monitor for {honeypot_ip} ({mode}): {metrics}")
+
+            except Exception as e:
+                # Use debug to avoid log spam if a honeypot goes offline
+                self.logger_instance.error(f"Overhead monitor failed for {honeypot_ip} ({mode}): {e}")
+            
+            # Brief pause before the next batch
+            time.sleep(5)
+
+
     def shutdown(self):
+        if hasattr(self, '_stop_monitoring'):
+            self._stop_monitoring.set()
+            for t in self._monitoring_threads:
+                if t.is_alive():
+                    t.join(timeout=2.0)
+
         if self.wb_run is not None:
             self.wb_tracker.shutdown()
             
@@ -1834,7 +1939,7 @@ class TigerBrain():
         self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
         
 
-        if self.step_counter % self.report_step_freq == 0:
+        if self.step_counter % (self.report_step_freq * 5 )== 0:
             with self.profile("EL_report"):
                 plots_dict = self.report(
                     preds=logits[:,known_class_h_mask],  

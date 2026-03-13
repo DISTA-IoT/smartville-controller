@@ -178,7 +178,7 @@ def smart_check():
               logger.info(f"Packets seen for {key}: {flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add}")
 
 
-def fix_no_proxy(monitor_ip):
+def add_ip_to_no_proxy_env_var(monitor_ip):
   no_proxy = os.environ.get('no_proxy', '')
   if no_proxy != '':
       no_proxy += ','
@@ -247,6 +247,16 @@ def launch(**kwargs):
       cleanup()
       os._exit(0)  # Force exit
 
+
+    @app.get("/echo")
+    def echo_target():
+        """
+        Application-layer echo.
+        Simulates a lightweight microservice response.
+        """
+        return {"status": "ok", "timestamp": time.time()}
+
+
     @app.post("/initialize")
     async def initialize(kwargs: dict):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
@@ -259,7 +269,7 @@ def launch(**kwargs):
 
           pprint(kwargs)
 
-          fix_no_proxy(kwargs.get("monitor_ip"))
+          add_ip_to_no_proxy_env_var(kwargs.get("monitor_ip"))
 
           args = kwargs
           args['logger'] = logger
