@@ -36,7 +36,6 @@ RTT = 'RTT'
 
 
 
-
 class MetricsLogger: 
 
     def __init__(

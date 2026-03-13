@@ -29,6 +29,20 @@ INBOUND = 'INBOUND'
 OUTBOUND = 'OUTBOUND'
 RTT = 'RTT'
 
+external_http_rtt = 'external_http_rtt'
+icmp_min_rtt_ms = 'icmp_min_rtt_ms'
+icmp_max_rtt_ms = 'icmp_max_rtt_ms'
+icmp_avg_rtt_ms = 'icmp_avg_rtt_ms'
+icmp_loss_percent = 'icmp_loss_percent'
+http_min_rtt_ms = 'http_min_rtt_ms'
+http_max_rtt_ms = 'http_max_rtt_ms'
+http_avg_rtt_ms = 'http_avg_rtt_ms'
+inbound_MBps = 'inbound_MBps'
+inbound_packets_per_second = 'inbound_packets_per_second'
+outbound_MBps = 'outbound_MBps'
+outbound_packets_per_second = 'outbound_packets_per_second'
+
+
 
 class ConsumerThread(threading.Thread):
 
@@ -100,6 +114,12 @@ class ConsumerThread(threading.Thread):
                 value = -1.0
             self.controller_metrics_dict[self.topic_name][OUTBOUND].append(value)
 
+
+    def update_generic_metric(self, value, label_value, metric_name):
+        self.controller_metrics_dict[self.topic_name][metric_name].append(value)
+
+    
+
     def stop(self):
         self.logger.info(f"Stopping consumer thread for topic: {self.topic_name}")
         self.exit_signal.set()
@@ -135,7 +155,7 @@ class ConsumerThread(threading.Thread):
                 self.update_cpu_metric(float(message[self.topic_name+"_"+CPU]), self.topic_name)
             else:
                 self.logger.warning(f'Configuration says {CPU} is among the metrics to collect. \n' +\
-                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
             
 
@@ -145,34 +165,126 @@ class ConsumerThread(threading.Thread):
                 self.update_ram_metric(float(message[self.topic_name+"_"+RAM]), self.topic_name)
             else:
                 self.logger.warning(f'Configuration says {RAM} is among the metrics to collect. \n' +\
-                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if external_http_rtt in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+external_http_rtt in message.keys():
+                self.logger.debug(f'{external_http_rtt} probe received from {self.topic_name}: {message[self.topic_name+"_"+external_http_rtt]}')
+                self.update_rtt_metric(float(message[self.topic_name+"_"+external_http_rtt]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {external_http_rtt} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
 
-        if RTT in self.kwargs['health']['probe_metrics']:
-            if self.topic_name+"_"+RTT in message.keys():
-                self.logger.debug(f'RTT probe received from {self.topic_name}: {message[self.topic_name+"_"+RTT]}')
-                self.update_rtt_metric(float(message[self.topic_name+"_"+RTT]), self.topic_name)
+
+        if icmp_min_rtt_ms in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+icmp_min_rtt_ms in message.keys():
+                self.logger.debug(f'{icmp_min_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_min_rtt_ms]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_min_rtt_ms]), self.topic_name, icmp_min_rtt_ms)
             else:
-                self.logger.warning(f'Configuration says {RTT} is among the metrics to collect. \n' +\
-                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                self.logger.warning(f'Configuration says {icmp_min_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if icmp_max_rtt_ms in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+icmp_max_rtt_ms in message.keys():
+                self.logger.debug(f'{icmp_max_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_max_rtt_ms]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_max_rtt_ms]), self.topic_name, icmp_max_rtt_ms)
+            else:
+                self.logger.warning(f'Configuration says {icmp_max_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if icmp_avg_rtt_ms in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+icmp_avg_rtt_ms in message.keys():
+                self.logger.debug(f'{icmp_avg_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_avg_rtt_ms]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_avg_rtt_ms]), self.topic_name, icmp_avg_rtt_ms)
+            else:
+                self.logger.warning(f'Configuration says {icmp_avg_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if icmp_loss_percent in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+icmp_loss_percent in message.keys():
+                self.logger.debug(f'{icmp_loss_percent} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_loss_percent]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_loss_percent]), self.topic_name, icmp_loss_percent)
+            else:
+                self.logger.warning(f'Configuration says {icmp_loss_percent} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if http_avg_rtt_ms in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+http_avg_rtt_ms in message.keys():
+                self.logger.debug(f'{http_avg_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_avg_rtt_ms]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+http_avg_rtt_ms]), self.topic_name, http_avg_rtt_ms)
+            else:
+                self.logger.warning(f'Configuration says {http_avg_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+        if http_max_rtt_ms in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+http_max_rtt_ms in message.keys():
+                self.logger.debug(f'{http_max_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_max_rtt_ms]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+http_max_rtt_ms]), self.topic_name, http_max_rtt_ms)
+            else:
+                self.logger.warning(f'Configuration says {http_max_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+        
+        if http_min_rtt_ms in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+http_min_rtt_ms in message.keys():
+                self.logger.debug(f'{http_min_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_min_rtt_ms]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+http_min_rtt_ms]), self.topic_name, http_min_rtt_ms)
+            else:
+                self.logger.warning(f'Configuration says {http_min_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if inbound_MBps in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+inbound_MBps in message.keys():
+                self.logger.debug(f'{inbound_MBps} probe received from {self.topic_name}: {message[self.topic_name+"_"+inbound_MBps]}')
+                self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+inbound_MBps]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {inbound_MBps} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
 
-        if INBOUND in self.kwargs['health']['probe_metrics']:
-            if self.topic_name+"_"+INBOUND in message.keys():
-                self.logger.debug(f'IN_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+INBOUND]}')
-                self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+INBOUND]), self.topic_name)
+
+        if inbound_packets_per_second in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+inbound_packets_per_second in message.keys():
+                self.logger.debug(f'{inbound_packets_per_second} probe received from {self.topic_name}: {message[self.topic_name+"_"+inbound_packets_per_second]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+inbound_packets_per_second]), self.topic_name, inbound_packets_per_second)
             else:
-                self.logger.warning(f'Configuration says {INBOUND} is among the metrics to collect. \n' +\
-                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                self.logger.warning(f'Configuration says {inbound_packets_per_second} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
 
-        if OUTBOUND in self.kwargs['health']['probe_metrics']:
-            if self.topic_name+"_"+OUTBOUND in message.keys():
-                self.logger.debug(f'OUT_TRAFFIC probe received from {self.topic_name}: {message[self.topic_name+"_"+OUTBOUND]}')
-                self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+OUTBOUND]), self.topic_name)
+
+        if outbound_packets_per_second in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+outbound_packets_per_second in message.keys():
+                self.logger.debug(f'{outbound_packets_per_second} probe received from {self.topic_name}: {message[self.topic_name+"_"+outbound_packets_per_second]}')
+                self.update_generic_metric(float(message[self.topic_name+"_"+outbound_packets_per_second]), self.topic_name, outbound_packets_per_second)
             else:
-                self.logger.warning(f'Configuration says {OUTBOUND} is among the metrics to collect. \n' +\
-                                    f'However, a message without such metric was received in topic {self.topic_name}! \n' +\
+                self.logger.warning(f'Configuration says {outbound_packets_per_second} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if outbound_MBps in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+outbound_MBps in message.keys():
+                self.logger.debug(f'{outbound_MBps} probe received from {self.topic_name}: {message[self.topic_name+"_"+outbound_MBps]}')
+                self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+outbound_MBps]), self.topic_name)
+            else:
+                self.logger.warning(f'Configuration says {outbound_MBps} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
 
 
