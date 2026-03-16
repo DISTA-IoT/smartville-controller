@@ -145,7 +145,7 @@ def run_echo_server():
 
 
 def _handle_ConnectionUp (event):
-      global openflow_connection, app_thread, 
+      global openflow_connection, app_thread, echo_thread
       openflow_connection=event.connection
       logger.info("Connection is UP")
 
