@@ -36,13 +36,15 @@ from threading import Lock
 import time
 import logging 
 
+
+
+
 SUPPRESSED_ENDPOINTS = [
    '/check_zookeeper', 
    '/check_kafka',
    '/check_prometheus',
    '/check_grafana',
    '/metrics',
-   '/echo'
  ]
 
 class SuppressEndpointFilter(logging.Filter):
@@ -66,6 +68,8 @@ logger.name = "SmartvilleController"
 
 app_thread = None  # Thread for the FastAPI server
 app = None  # FastAPI app instance
+echo_app = None      # FastAPI instance for the parallel echo microservice
+echo_thread = None   # Thread for the echo server
 args = None
 openflow_connection = None  # openflow connection to switch is stored here
 FLOWSTATS_FREQ_SECS = None  # Interval in which the FLOW stats request is triggered
@@ -127,8 +131,21 @@ def run_server():
   uvicorn.run(app, host="0.0.0.0", port=port)
 
 
+def run_echo_server():
+    """Parallel lightweight echo microservice on the specific IP/port."""
+    global echo_app
+
+    try:
+       internal_ip = os.environ.get("INTERNAL_IP")
+       echo_port = int(os.environ.get("ECHO_PORT"))
+    except Exception as e:
+       print(f"Error parsing env vars: {e}")
+       assert False
+    uvicorn.run(echo_app, host=internal_ip, port=echo_port)
+
+
 def _handle_ConnectionUp (event):
-      global openflow_connection, app_thread
+      global openflow_connection, app_thread, 
       openflow_connection=event.connection
       logger.info("Connection is UP")
 
@@ -136,6 +153,12 @@ def _handle_ConnectionUp (event):
         logger.info("SmartSwitch API is starting...")
         app_thread = threading.Thread(target=run_server, daemon=True)
         app_thread.start()
+
+        # Start the parallel echo microservice (runs on 192.168.1.1:7778)
+        if echo_thread is None or not echo_thread.is_alive():
+          logger.info("Parallel Echo microservice is starting...")
+          echo_thread = threading.Thread(target=run_echo_server, daemon=True)
+          echo_thread.start()
      
 
 def get_switching_args():
@@ -206,10 +229,11 @@ def shutdown_process():
 
 
 def launch(**kwargs):     
-    global app, app_thread, openflow_connection, smart_switch
+    global app, app_thread, openflow_connection, smart_switch, echo_app
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
     
     app = FastAPI(title="SmartSwitch API", description="API for ML experiments")
+    echo_app = FastAPI(title="SmartSwitch Echo API", description="API for internal overhead tracking")
 
     @app.get("/")
     async def root():
@@ -244,7 +268,7 @@ def launch(**kwargs):
       os._exit(0)  # Force exit
 
 
-    @app.get("/echo")
+    @echo_app.get("/echo")
     def echo_target():
         """
         Application-layer echo.
