@@ -62,7 +62,12 @@ class MetricsLogger:
         self.prometheus_httpd = None
         self.prometheus_server_thread = None
         self.wb_tracker = wb_tracker
-
+        # Defining metric Gauges in Prometheus
+        self.CPU_metric = None
+        self.RAM_metric = None
+        self.RTT_metric = None
+        self.INBOUND_metric = None
+        self.OUTBOUND_metric = None
 
     def init(self):
 
@@ -159,15 +164,6 @@ class MetricsLogger:
             addr=self.kwargs['prometheus']['clienthost'],
             registry=registry
         )
-
-        
-        # Defining metric Gauges in Prometheus
-        self.CPU_metric = None
-        self.RAM_metric = None
-        self.RTT_metric = None
-        self.INBOUND_metric = None
-        self.OUTBOUND_metric = None
-        
         
         if CPU in self.kwargs['health']['probe_metrics']:
             self.CPU_metric = Gauge(CPU, CPU, ['label_name'],  registry=registry)
