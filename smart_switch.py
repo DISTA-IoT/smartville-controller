@@ -218,7 +218,9 @@ class SmartSwitch(EventMixin):
 
 
         else:
-            old_port, old_mac = self.arpTables[switch_id][ip_addr]
+            entry = self.arpTables[switch_id][ip_addr]
+            old_port = entry.port
+            old_mac = entry.mac
             # Update switch_port/MAC info
             self.delete_ip_flow_matching_rules(
               dest_ip=ip_addr,
