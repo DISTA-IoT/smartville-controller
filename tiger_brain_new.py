@@ -1952,9 +1952,9 @@ class TigerBrain():
                 # Save the models using the main thread (prevents file corruption)
                 if self.save_models_flag:
                     self.check_progress(
-                        curr_cs_acc=async_results['Mean EVAL CS ACC'],
-                        curr_ad_acc=async_results['Mean EVAL AD ACC'],
-                        curr_kr_acc=async_results['Mean EVAL KR PREC']
+                        curr_cs_acc=async_results['{INFERENCE}/Mean EVAL CS ACC'],
+                        curr_ad_acc=async_results['{INFERENCE}/Mean EVAL AD ACC'],
+                        curr_kr_acc=async_results['{INFERENCE}/Mean EVAL KR PREC']
                     )
             
 
@@ -2153,9 +2153,9 @@ class TigerBrain():
             # 5. Package results for the main thread queue
             # Note: We do NOT call wb_run.log() or check_progress() here. The main thread will do it!
             results_to_log = {
-                'Mean EVAL AD ACC': mean_eval_ad_acc,
-                'Mean EVAL CS ACC': mean_eval_cs_acc,
-                'Mean EVAL KR PREC': mean_eval_kr_ari,
+                '{INFERENCE}/Mean EVAL AD ACC': mean_eval_ad_acc,
+                '{INFERENCE}/Mean EVAL CS ACC': mean_eval_cs_acc,
+                '{INFERENCE}/Mean EVAL KR PREC': mean_eval_kr_ari,
                 **plots_dict  # Unpack the Plotly figures into the dict
             }
 
@@ -2184,7 +2184,7 @@ class TigerBrain():
                 phase=phase,
                 norm=False,
                 classes=self.encoder.get_labels())
-            if cs_conf_mat: log_dict[f'{phase}/{CLOSED_SET} Confusion Matrix']=cs_conf_mat
+            if cs_conf_mat: log_dict[f'{phase}Plots/{CLOSED_SET} Confusion Matrix']=cs_conf_mat
             
             os_conf_mat = self.plot_confusion_matrix(
                 mod=ANOMALY_DETECTION,
@@ -2192,14 +2192,14 @@ class TigerBrain():
                 phase=phase,
                 norm=False,
                 classes=['Known', 'ZdA'])
-            if os_conf_mat: log_dict[f'{phase}/{ANOMALY_DETECTION} Confusion Matrix']=os_conf_mat
+            if os_conf_mat: log_dict[f'{phase}Plots/{ANOMALY_DETECTION} Confusion Matrix']=os_conf_mat
             
             fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
-            if fig_gt: log_dict[f"{phase}/Ground-truth clusters"] = fig_gt
-            if fig_pred: log_dict[f"{phase}/Predicted clusters"] = fig_pred
+            if fig_gt: log_dict[f"{phase}Plots/Ground-truth clusters"] = fig_gt
+            if fig_pred: log_dict[f"{phase}Plots/Predicted clusters"] = fig_pred
 
             fig_scores = self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
-            if fig_scores: log_dict[f"{phase}/PCA of ass. scores"] = fig_scores
+            if fig_scores: log_dict[f"{phase}Plots/PCA of ass. scores"] = fig_scores
         
 
         self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
