@@ -1499,12 +1499,13 @@ class TigerBrain():
 
                     # this fella could be toogling because of a new class arriving... 
                     if self.batch_processing_allowed:
-                        
                         if self.epistemic_agency:
                             with self.profile("online_inference_total"):
                                 self.online_inference(batch)
                 
-                    
+                    # RE-CHECK — online_inference may have triggered perform_epistemic_action
+                    # which calls add_replay_buffer → batch_processing_allowed = False
+                    if self.batch_processing_allowed:
                         with self.profile("experience_learning_total"):
                             self.experience_learning()
 

@@ -298,17 +298,17 @@ class DAIF_Agent:
         
 
         if self.wbl: 
-            self.wbl.log({'value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
-            self.wbl.log({'epistemic_gain': perceptive_epistemic_gains.mean().item()}, step=step)
-            self.wbl.log({'active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
-            self.wbl.log({'actor_loss': actor_loss.item()}, step=step)
-            self.wbl.log({'perceptive_loss': perceptive_loss.item()}, step=step)
-            self.wbl.log({'perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'actor_entropy': policy_entropy.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'actor_performance': policy_consistency.mean().item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'vfe': vfe.item()}, step=step)
+            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
+            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step) 
+            self.wbl.log({'active_inference/epistemic_gain': perceptive_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({'active_inference/actor_loss': actor_loss.item()}, step=step)
+            self.wbl.log({'active_inference/perceptive_loss': perceptive_loss.item()}, step=step)
+            self.wbl.log({'active_inference/perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'active_inference/perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'active_inference/actor_entropy': policy_entropy.item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'active_inference/actor_performance': policy_consistency.mean().item()}, step=step) # maximise this (it is positive)
+            self.wbl.log({'active_inference/vfe': vfe.item()}, step=step)
 
 
 class DAIP_Agent:
@@ -452,9 +452,9 @@ class DAIP_Agent:
         self.policynet_optimizer.step()
         self.reset_sequential_memory()
 
-        if self.wbl: self.wbl.log({'actor_loss': vfe.item()}, step=step)
-        if self.wbl: self.wbl.log({'actor_entropy': expected_policy_entropy.item()}, step=step) # maximise this (it is positive)
-        if self.wbl: self.wbl.log({'actor_performance': energies.mean().item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'active_inference/actor_loss': vfe.item()}, step=step)
+        if self.wbl: self.wbl.log({'active_inference/actor_entropy': expected_policy_entropy.item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'active_inference/actor_performance': energies.mean().item()}, step=step) # maximise this (it is positive)
 
 
     def replay(self, step):
@@ -564,8 +564,8 @@ class DAIP_Agent:
                         dim=1
                     ).mean()
                     transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                    if self.wbl: self.wbl.log({'state_reconstruction_loss': reconstruction_loss.item()}, step=step)
-                    if self.wbl: self.wbl.log({'state kl_div': kl_div.item()}, step=step)
+                    if self.wbl: self.wbl.log({'active_inference/state_reconstruction_loss': reconstruction_loss.item()}, step=step)
+                    if self.wbl: self.wbl.log({'active_inference/state kl_div': kl_div.item()}, step=step)
                 else:
                     transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
             else:
@@ -577,12 +577,12 @@ class DAIP_Agent:
             self.transitionnet_optimizer.step()
 
             if self.wbl: 
-                self.wbl.log({'transition_loss': transition_loss.item()}, step=step)
-                self.wbl.log({'epistemic_gain': epistemic_gains.mean().item()}, step=step)
+                self.wbl.log({'active_inference/transition_loss': transition_loss.item()}, step=step)
+                self.wbl.log({'active_inference/epistemic_gain': epistemic_gains.mean().item()}, step=step)
 
         if self.wbl: 
-            self.wbl.log({'value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
+            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
+            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step) 
        
 
 class DAIA_Agent:
@@ -706,15 +706,15 @@ class DAIA_Agent:
         perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
 
         vfe = - perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
-        if self.wbl: self.wbl.log({'perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
-        if self.wbl: self.wbl.log({'perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'active_inference/perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
+        if self.wbl: self.wbl.log({'active_inference/perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
 
         self.transitionnet_optimizer.zero_grad()
         vfe.backward()
         self.transitionnet_optimizer.step()
         self.reset_sequential_memory()
 
-        if self.wbl: self.wbl.log({'perceptive_loss': vfe.item()}, step=step)
+        if self.wbl: self.wbl.log({'active_inference/perceptive_loss': vfe.item()}, step=step)
 
 
     def replay(self, step):
@@ -825,10 +825,10 @@ class DAIA_Agent:
         self.policynet_optimizer.step()
         
         if self.wbl: 
-            self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
-            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step) 
-            self.wbl.log({'value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({'active_inference/policy_loss': policy_loss.item()}, step=step)
+            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step) 
+            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
+            self.wbl.log({'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
 
 class DAISA_Agent:
     def __init__(self, args):
@@ -984,10 +984,10 @@ class DAISA_Agent:
         self.policynet_optimizer.step()
 
         if self.wbl: 
-            self.wbl.log({'policy_loss': policy_loss.item()}, step=step)
-            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step)
-            self.wbl.log({'value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'active_epistemic_gain': surrogate_active_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({'active_inference/policy_loss': policy_loss.item()}, step=step)
+            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step)
+            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
+            self.wbl.log({'active_inference/active_epistemic_gain': surrogate_active_epistemic_gains.mean().item()}, step=step)
 
 
 class ValueLearningAgent:
@@ -1102,8 +1102,8 @@ class ValueLearningAgent:
 
         # Log
         if self.wbl: 
-            self.wbl.log({'value_loss': loss.item()}, step=step)
-            self.wbl.log({'pragmatic_gain': rewards.mean().item()}, step=step)
+            self.wbl.log({'active_inference/value_loss': loss.item()}, step=step)
+            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step)
             
         # Epsilon decay
         if self.epsilon > self.epsilon_min:
