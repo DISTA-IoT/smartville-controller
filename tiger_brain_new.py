@@ -2090,7 +2090,7 @@ class TigerBrain():
                 phase=phase,
                 norm=False,
                 classes=self.encoder.get_labels())
-            if cs_conf_mat: log_dict[f'{phase} {CLOSED_SET} Confusion Matrix']
+            if cs_conf_mat: log_dict[f'{phase}/{CLOSED_SET} Confusion Matrix']=cs_conf_mat
             
             os_conf_mat = self.plot_confusion_matrix(
                 mod=ANOMALY_DETECTION,
@@ -2098,7 +2098,7 @@ class TigerBrain():
                 phase=phase,
                 norm=False,
                 classes=['Known', 'ZdA'])
-            if os_conf_mat: log_dict[f'{phase} {ANOMALY_DETECTION} Confusion Matrix']
+            if os_conf_mat: log_dict[f'{phase}/{ANOMALY_DETECTION} Confusion Matrix']=os_conf_mat
             
             fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
             if fig_gt: log_dict[f"{phase}/Ground-truth clusters"] = fig_gt
