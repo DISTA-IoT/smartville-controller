@@ -306,7 +306,7 @@ def get_metrics_tensor(metrics_dict, ip, health_args ):
 
 class TigerBrain():
 
-    def __init__(self, kwargs):
+    def __init__(self, kwargs, wb_tracker=None):
         
         args = AttrDict(kwargs)
         
@@ -321,10 +321,9 @@ class TigerBrain():
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
         self.h_dim = int(args.intrusion_detection.h_dim)
         self.multi_class = args.intrusion_detection.multi_class
-        self.step_counter = 0
         self.wbt = args.wandb.wb_tracking
+        self.wb_tracker = wb_tracker
         self.wb_run = None
-        self.wb_tracker = None
         self.kernel_regression = args.intrusion_detection.kernel_regression
         self.logger_instance = kwargs['logger']
         self.device= args.intrusion_detection.device
@@ -349,10 +348,8 @@ class TigerBrain():
         self.ips_containers = args.ips_containers
         self.traffic_dict = args.traffic_dict
         self.episode_count = -1
-
         self.env = NewTigerEnvironment(args)
         if self.wbt:
-            self.wb_tracker = WandBTracker(kwargs)
             self.wb_run = self.wb_tracker.wb_run
 
         args.intrusion_detection.wbl = self.wb_run
@@ -377,7 +374,7 @@ class TigerBrain():
             torch.cuda.synchronize()
             
         elapsed_ms = (time.perf_counter() - start) * 1000
-        key = f"time_ms/{name}"
+        key = f"ml_profiling_millis/{name}"
         
         # Initialize the list if it doesn't exist, then append the new time
         if key not in self.profiling_stats:
@@ -392,8 +389,8 @@ class TigerBrain():
                 if t.is_alive():
                     t.join(timeout=2.0)
 
-        if self.wb_run is not None:
-            self.wb_tracker.shutdown()
+        
+        self.wb_tracker.shutdown()
             
 
     def init_intelligence(self):
@@ -983,7 +980,7 @@ class TigerBrain():
               
         # advance the game steps:
         self.env.steps_done += 1
-        self.step_counter += 1
+        self.wb_tracker.step_counter += 1
 
         # Computing the rewads for known traffic: 
         known_samples_costs = sample_rewards[~predicted_online_zda_mask]
@@ -1017,7 +1014,7 @@ class TigerBrain():
             new_state[-1] = self.env.current_budget 
             # notice we do not edit the available CTI flag cuz it is not possible to buy CTI in this step
             # an episode ends if the budget ends... 
-            end_signal = torch.tensor([self.env.has_episode_ended(self.step_counter)], dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
             # store the experience tuple:          
             self.mitigation_agent.remember(
                 state_vec.detach(),
@@ -1025,7 +1022,7 @@ class TigerBrain():
                 torch.Tensor([classification_reward]),
                 new_state,
                 end_signal,
-                self.step_counter
+                self.wb_tracker.step_counter
             )
             
 
@@ -1034,16 +1031,16 @@ class TigerBrain():
         self.env.episode_budgets.append(self.env.current_budget)
 
         # reporting
-        if self.wbt and self.step_counter % self.report_step_freq == 0:
+        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
             self.wb_run.log({
-                AGENT+'_'+'reward': classification_reward,
-                AGENT+'_'+'budget': self.env.current_budget,
-                'classification_reward': classification_reward,
-                'correct_classification_rewards': correct_classif_rewards.sum().item(),
-                'bad_classification_cost': bad_classif_costs.sum().item(),
-                'known traffic action': action_signal.item(),
-                'no_confidence_penalty': no_confidence_penalty
-            },step=self.step_counter)
+                AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
+                AGENT+'/'+'classification_reward': classification_reward,
+                AGENT+'/'+'budget': self.env.current_budget,
+                AGENT+'/'+'correct_classification_rewards': correct_classif_rewards.sum().item(),
+                AGENT+'/'+'bad_classification_cost': bad_classif_costs.sum().item(),
+                AGENT+'/'+'known traffic action': action_signal.item(),
+                AGENT+'/'+'no_confidence_penalty': no_confidence_penalty
+            },step=self.wb_tracker.step_counter)
     
 
     def collective_anomaly_detection(
@@ -1182,10 +1179,10 @@ class TigerBrain():
 
             # advance the game steps:
             self.env.steps_done += 1
-            self.step_counter += 1
+            self.wb_tracker.step_counter += 1
 
             # ask again if the budget is over: 
-            end_signal = torch.tensor([self.env.has_episode_ended(self.step_counter)], dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
 
             self.mitigation_agent.remember(
                     state_vec.detach(),
@@ -1193,7 +1190,7 @@ class TigerBrain():
                     current_reward,
                     next_state,
                     end_signal,
-                    self.step_counter
+                    self.wb_tracker.step_counter
             )
 
             # for keeping track of episode-stats:
@@ -1201,16 +1198,16 @@ class TigerBrain():
             self.env.episode_budgets.append(self.env.current_budget)
 
             # reporting
-            if self.wbt and self.step_counter % self.report_step_freq == 0:
+            if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
                 self.wb_run.log({
-                    AGENT+'_'+'reward': current_reward.item(),
-                    AGENT+'_'+'budget': self.env.current_budget,
-                    'clustering_reward': current_reward.item(),
-                    'Epistemic Actions taken': int(epistemic_action),
-                    'epistemic_costs': (current_reward if epistemic_action else 0),
-                    'rewards_per_accepted_clusters': (current_reward if accepted_cluster else 0),
-                    'rewards_per_blocked_clusters': (current_reward if not accepted_cluster else 0),
-                },step=self.step_counter)
+                    AGENT+'/'+'generic_reward': current_reward.item(),
+                    AGENT+'/'+'clustering_reward': current_reward.item(),
+                    AGENT+'/'+'budget': self.env.current_budget,
+                    AGENT+'/'+'Epistemic Actions taken': int(epistemic_action),
+                    AGENT+'/'+'epistemic_costs': (current_reward if epistemic_action else 0),
+                    AGENT+'/'+'rewards_per_accepted_clusters': (current_reward if accepted_cluster else 0),
+                    AGENT+'/'+'rewards_per_blocked_clusters': (current_reward if not accepted_cluster else 0),
+                },step=self.wb_tracker.step_counter)
 
             
 
@@ -1331,25 +1328,25 @@ class TigerBrain():
 
         # train!
         with self.profile("onl_inf_ER"):
-            self.mitigation_agent.replay(self.step_counter)
+            self.mitigation_agent.replay(self.wb_tracker.step_counter)
 
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
-        if self.wbt and self.step_counter % self.report_step_freq == 0:
-            self.wb_run.log({'real_num_of_anomalies': online_batch.zda_labels.sum().item(),
-                          'num_predicted_knowns': number_of_predicted_known_samples.item(),
-                          'num_predicted_unknowns': num_of_predicted_anomalies.item(),
-                          'known_classif_confidente': self.cs_classif_confidence.item(),
-                          'zda_classif_confidence': self.zda_confidence.item(),
+        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
+            self.wb_run.log({'online_inference/real_num_of_anomalies': online_batch.zda_labels.sum().item(),
+                          'online_inference/num_predicted_knowns': number_of_predicted_known_samples.item(),
+                          'online_inference/num_predicted_unknowns': num_of_predicted_anomalies.item(),
+                          'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
+                          'online_inference/zda_classif_confidence': self.zda_confidence.item(),
                           }, 
-                          step=self.step_counter)
+                          step=self.wb_tracker.step_counter)
             
         # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
 
         # eventually reset the environment. 
-        if self.env.has_episode_ended(self.step_counter): 
+        if self.env.has_episode_ended(self.wb_tracker.step_counter): 
             if self.wbt:
                 metrics_to_log = {
                         'episode_count': self.episode_count,
@@ -1389,13 +1386,13 @@ class TigerBrain():
             query_mask=query_mask)
 
         # report progress
-        if self.wbt and self.step_counter % self.report_step_freq == 0:
+        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
             self.wb_run.log(
                 {
-                    mode+'_'+CS_ACC: acc.item(),
-                    mode+'_'+CS_LOSS: cs_loss.item()
+                    mode+'/'+CS_ACC: acc.item(),
+                    mode+'/'+CS_LOSS: cs_loss.item()
                 }, 
-                step=self.step_counter)
+                step=self.wb_tracker.step_counter)
 
         return cs_loss, acc
 
@@ -1510,7 +1507,7 @@ class TigerBrain():
                             self.experience_learning()
 
                     if not self.epistemic_agency:
-                        self.step_counter += 1
+                        self.wb_tracker.step_counter += 1
 
 
 
@@ -1693,14 +1690,14 @@ class TigerBrain():
         cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
 
         
-        if self.wbt and self.step_counter % self.report_step_freq == 0:
+        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
             self.wb_run.log(
                 {
-                    mode+'_'+OS_ACC: cummulative_os_acc.item(),
-                    mode+'_'+OS_LOSS: os_loss.item(),
-                    mode+'_'+ANOMALY_BALANCE: zda_balance
+                    mode+'/'+OS_ACC: cummulative_os_acc.item(),
+                    mode+'/'+OS_LOSS: os_loss.item(),
+                    mode+'/'+ANOMALY_BALANCE: zda_balance
                 }, 
-                step=self.step_counter)
+                step=self.wb_tracker.step_counter)
          
         self.logger_instance.debug(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
         self.logger_instance.debug(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
@@ -1733,14 +1730,14 @@ class TigerBrain():
                 decimal_sematic_kernel,
                 np_dec_pred_kernel)
 
-            if self.wbt and self.step_counter % self.report_step_freq == 0:
+            if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
                 self.wb_run.log(
                     {
-                        mode+'_'+KR_ARI: kr_ari,
-                        mode+'_'+KR_NMI: kr_nmi,
-                        mode+'_'+KR_LOSS: kernel_loss.item()
+                        mode+'/'+KR_ARI: kr_ari,
+                        mode+'/'+KR_NMI: kr_nmi,
+                        mode+'/'+KR_LOSS: kernel_loss.item()
                     }, 
-                    step=self.step_counter)
+                    step=self.wb_tracker.step_counter)
             
             
             self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
@@ -1854,7 +1851,7 @@ class TigerBrain():
         self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
         
 
-        if self.step_counter % (self.report_step_freq * 5 )== 0:
+        if self.wb_tracker.step_counter % (self.report_step_freq * 5 )== 0:
             with self.profile("EL_report"):
                 plots_dict = self.report(
                     preds=logits[:,known_class_h_mask],  
@@ -1864,7 +1861,7 @@ class TigerBrain():
                     query_mask=query_mask,
                     phase=TRAINING)
                 if self.wbt:
-                    self.wb_run.log(plots_dict, step=self.step_counter)
+                    self.wb_run.log(plots_dict, step=self.wb_tracker.step_counter)
                 
             
             # Update the target value network in the mitigation agent! 
@@ -1878,7 +1875,7 @@ class TigerBrain():
             while not self.eval_queue.empty():
                 async_results = self.eval_queue.get()
                 if self.wbt:
-                    self.wb_run.log(async_results, step=self.step_counter)
+                    self.wb_run.log(async_results, step=self.wb_tracker.step_counter)
 
                 # Save the models using the main thread (prevents file corruption)
                 if self.save_models_flag:
@@ -2101,11 +2098,11 @@ class TigerBrain():
             if os_conf_mat: log_dict[f'{phase} {ANOMALY_DETECTION} Confusion Matrix']
             
             fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
-            if fig_gt: log_dict[f"{phase} Ground-truth clusters"] = fig_gt
-            if fig_pred: log_dict[f"{phase} Predicted clusters"] = fig_pred
+            if fig_gt: log_dict[f"{phase}/Ground-truth clusters"] = fig_gt
+            if fig_pred: log_dict[f"{phase}/Predicted clusters"] = fig_pred
 
             fig_scores = self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
-            if fig_scores: log_dict[f"{phase} PCA of ass. scores"] = fig_scores
+            if fig_scores: log_dict[f"{phase}/PCA of ass. scores"] = fig_scores
         
 
         self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')

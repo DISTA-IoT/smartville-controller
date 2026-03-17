@@ -24,6 +24,7 @@ from smartController.flowlogger_new import FlowLogger
 from smartController.tiger_brain_new import TigerBrain
 from smartController.metricslogger import MetricsLogger
 from smartController.smart_switch import SmartSwitch
+from smartController.wandb_tracker import WandBTracker
 
 import subprocess
 from fastapi import FastAPI
@@ -280,7 +281,7 @@ def launch(**kwargs):
     @app.post("/initialize")
     async def initialize(kwargs: dict):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
-        global flow_logger, metrics_logger, controller_brain, smart_switch
+        global flow_logger, metrics_logger, controller_brain, smart_switch, wb_tracker
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
 
         try:
@@ -304,6 +305,14 @@ def launch(**kwargs):
           shutdown_process()
           return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
         
+        
+        try:
+          wb_tracker = WandBTracker(args)
+        except Exception as e:
+          logger.error(f"Error initialising wandb tracker: {e}")
+          return {"status_code": 500, "msg": f"Error initialising wandb tracker: {e}"}
+
+
         try:
           flow_logger = FlowLogger(**args)
         except Exception as e:
@@ -322,7 +331,7 @@ def launch(**kwargs):
 
         try:
           # The controllerBrain holds the ML functionalities.
-          controller_brain = TigerBrain(args)
+          controller_brain = TigerBrain(args, wb_tracker = wb_tracker)
         except Exception as e:
           logger.error(f"Error creating controller brain: {e}")
           shutdown_process()
