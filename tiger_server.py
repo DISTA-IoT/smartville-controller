@@ -305,7 +305,7 @@ def launch(**kwargs):
           shutdown_process()
           return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
         
-        
+        wb_tracker = None
         try:
           wb_tracker = WandBTracker(args)
         except Exception as e:
@@ -322,7 +322,7 @@ def launch(**kwargs):
 
         try:
           if args['health_monitoring']:
-              metrics_logger = MetricsLogger(args)
+              metrics_logger = MetricsLogger(args, wb_tracker=wb_tracker)
           else:
              logger.info("Metrics logger is not enabled")
         except Exception as e:

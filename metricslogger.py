@@ -40,7 +40,8 @@ class MetricsLogger:
 
     def __init__(
             self, 
-            kwargs):
+            kwargs,
+            wb_tracker=None):
         self.kwargs = kwargs
         self.kafka_endpoint = kwargs['monitor_ip']+":"+str(kwargs['kafka']['port'])
         self.topics = None
@@ -60,11 +61,13 @@ class MetricsLogger:
         self.consumer_thread_manager = None
         self.prometheus_httpd = None
         self.prometheus_server_thread = None
+        self.wb_tracker = wb_tracker
 
 
     def init(self):
 
-        if self.init_kafka_connection():     
+        if self.init_kafka_connection():    
+            """ 
             self.init_prometheus_server()
             try:
                 self.dash_generator = DashGenerator(self.grafana_connection, self.logger, self.max_conn_retries)
@@ -78,7 +81,7 @@ class MetricsLogger:
             except Exception as e:
                 self.logger.error(f"Error during graph generation: {e}")
                 raise RuntimeError(f"Error during graph generation: {e}")
-            
+            """
             self.consumer_thread_manager = threading.Thread(
                 target=self.start_consuming, 
                 args=())
@@ -165,6 +168,7 @@ class MetricsLogger:
         self.INBOUND_metric = None
         self.OUTBOUND_metric = None
         
+        
         if CPU in self.kwargs['health']['probe_metrics']:
             self.CPU_metric = Gauge(CPU, CPU, ['label_name'],  registry=registry)
 
@@ -180,6 +184,7 @@ class MetricsLogger:
         if outbound_MBps in self.kwargs['health']['probe_metrics']:
             self.OUTBOUND_metric = Gauge(outbound_MBps, outbound_MBps, ['label_name'],  registry=registry)
         
+
         # prometheus_connection will permit the graph generator 
         # to organize graphs...  
         self.prometheus_connection = PrometheusConnect(self.kwargs['grafana']['datasource_url'])
@@ -228,7 +233,7 @@ class MetricsLogger:
             # Per ciascun topic nuovo, viene avviato un thread dedicato alla lettura delle metriche
             for topic_name in to_add_topic_list:
 
-                self.graph_generator.generate_all_graphs(topic_name)
+                # self.graph_generator.generate_all_graphs(topic_name)
 
                 self.metrics_dict[topic_name] = {}
                 for metric in self.metrics_to_monitor:
@@ -246,15 +251,18 @@ class MetricsLogger:
                     self.INBOUND_metric,
                     self.OUTBOUND_metric,
                     self.metrics_dict,
+                    self.wb_tracker,
                     self.kwargs)
 
                 self.consumer_threads.append(thread)
                 thread.start()
                 self.logger.info(f"Consumer Thread for topic {topic_name} commencing")
 
+            """
             if (self.sortcount>=12):     # Ogni minuto (5 secs * 12)
                 self.logger.info(f"Organizing dashboard priorities...")
                 self.graph_generator.sort_all_graphs()
                 self.sortcount = 0
 
             self.sortcount +=1
+            """

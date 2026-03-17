@@ -55,6 +55,7 @@ class ConsumerThread(threading.Thread):
             inbound_metric,
             outbound_metric,
             controller_metrics_dict,
+            wb_tracker,
             kwargs
             ):
         
@@ -73,10 +74,12 @@ class ConsumerThread(threading.Thread):
         self.controller_metrics_dict = controller_metrics_dict
         self.kwargs = kwargs
         self.logger = kwargs['logger']
+        self.wb_tracker = wb_tracker
+
 
     # Definizione metodi di aggiornamento delle metriche nelle rispettive variabili
     def update_cpu_metric(self, value, label_value):
-        self.cpu_metric.labels(label_name=label_value).set(value)
+        # self.cpu_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
@@ -84,28 +87,28 @@ class ConsumerThread(threading.Thread):
 
 
     def update_ram_metric(self, value, label_value):
-        self.ram_metric.labels(label_name=label_value).set(value)
+        # self.ram_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
             self.controller_metrics_dict[self.topic_name][RAM].append(value)
 
     def update_rtt_metric(self, value, label_value):
-        self.rtt_metric.labels(label_name=label_value).set(value)
+        # self.rtt_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
             self.controller_metrics_dict[self.topic_name][external_http_rtt].append(value)
 
     def update_incoming_traffic_metric(self, value, label_value):
-        self.inbound_metric.labels(label_name=label_value).set(value)
+        # self.inbound_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
             self.controller_metrics_dict[self.topic_name][inbound_MBps].append(value)
 
     def update_outcoming_traffic_metric(self, value, label_value):
-        self.outbound_metric.labels(label_name=label_value).set(value)
+        # self.outbound_metric.labels(label_name=label_value).set(value)
         with self.lock:
             if value == b'nan' or math.isnan(value):
                 value = -1.0
@@ -145,11 +148,13 @@ class ConsumerThread(threading.Thread):
     def process_message(self, message):
 
         self.received_messages += 1
+        self.wb_metrics_dict = {}
 
         if CPU in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+CPU in message.keys():
                 self.logger.debug(f'CPU probe received from {self.topic_name}: {message[self.topic_name+"_"+CPU]}')
                 self.update_cpu_metric(float(message[self.topic_name+"_"+CPU]), self.topic_name)
+                self.wb_metrics_dict[f"node_{CPU}/{self.topic_name}_{CPU}"] = float(message[self.topic_name+"_"+CPU])
             else:
                 self.logger.warning(f'Configuration says {CPU} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -160,6 +165,7 @@ class ConsumerThread(threading.Thread):
             if self.topic_name+"_"+RAM in message.keys():
                 self.logger.debug(f'RAM probe received from {self.topic_name}: {message[self.topic_name+"_"+RAM]}')
                 self.update_ram_metric(float(message[self.topic_name+"_"+RAM]), self.topic_name)
+                self.wb_metrics_dict[f"node_{RAM}/{self.topic_name}_{RAM}"] = float(message[self.topic_name+"_"+RAM])
             else:
                 self.logger.warning(f'Configuration says {RAM} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -170,6 +176,7 @@ class ConsumerThread(threading.Thread):
             if self.topic_name+"_"+external_http_rtt in message.keys():
                 self.logger.debug(f'{external_http_rtt} probe received from {self.topic_name}: {message[self.topic_name+"_"+external_http_rtt]}')
                 self.update_rtt_metric(float(message[self.topic_name+"_"+external_http_rtt]), self.topic_name)
+                self.wb_metrics_dict[f"node_{external_http_rtt}/{self.topic_name}_{external_http_rtt}"] = float(message[self.topic_name+"_"+external_http_rtt])
             else:
                 self.logger.warning(f'Configuration says {external_http_rtt} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -179,7 +186,9 @@ class ConsumerThread(threading.Thread):
         if icmp_min_rtt_ms in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+icmp_min_rtt_ms in message.keys():
                 self.logger.debug(f'{icmp_min_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_min_rtt_ms]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_min_rtt_ms]), self.topic_name, icmp_min_rtt_ms)
+                probe = float(message[self.topic_name+"_"+icmp_min_rtt_ms])
+                self.update_generic_metric(probe, self.topic_name, icmp_min_rtt_ms)
+                self.wb_metrics_dict[f"node_{icmp_min_rtt_ms}/{self.topic_name}_{icmp_min_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {icmp_min_rtt_ms} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -189,7 +198,9 @@ class ConsumerThread(threading.Thread):
         if icmp_max_rtt_ms in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+icmp_max_rtt_ms in message.keys():
                 self.logger.debug(f'{icmp_max_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_max_rtt_ms]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_max_rtt_ms]), self.topic_name, icmp_max_rtt_ms)
+                probe = float(message[self.topic_name+"_"+icmp_max_rtt_ms])
+                self.update_generic_metric(probe, self.topic_name, icmp_max_rtt_ms)
+                self.wb_metrics_dict[f"node_{icmp_max_rtt_ms}/{self.topic_name}_{icmp_max_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {icmp_max_rtt_ms} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -199,7 +210,9 @@ class ConsumerThread(threading.Thread):
         if icmp_avg_rtt_ms in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+icmp_avg_rtt_ms in message.keys():
                 self.logger.debug(f'{icmp_avg_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_avg_rtt_ms]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_avg_rtt_ms]), self.topic_name, icmp_avg_rtt_ms)
+                probe = float(message[self.topic_name+"_"+icmp_avg_rtt_ms])
+                self.update_generic_metric(probe, self.topic_name, icmp_avg_rtt_ms)
+                self.wb_metrics_dict[f"node_{icmp_avg_rtt_ms}/{self.topic_name}_{icmp_avg_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {icmp_avg_rtt_ms} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -209,7 +222,9 @@ class ConsumerThread(threading.Thread):
         if icmp_loss_percent in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+icmp_loss_percent in message.keys():
                 self.logger.debug(f'{icmp_loss_percent} probe received from {self.topic_name}: {message[self.topic_name+"_"+icmp_loss_percent]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+icmp_loss_percent]), self.topic_name, icmp_loss_percent)
+                probe = float(message[self.topic_name+"_"+icmp_loss_percent])
+                self.update_generic_metric(probe, self.topic_name, icmp_loss_percent)
+                self.wb_metrics_dict[f"node_{icmp_loss_percent}/{self.topic_name}_{icmp_loss_percent}"] = probe
             else:
                 self.logger.warning(f'Configuration says {icmp_loss_percent} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -219,16 +234,21 @@ class ConsumerThread(threading.Thread):
         if http_avg_rtt_ms in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+http_avg_rtt_ms in message.keys():
                 self.logger.debug(f'{http_avg_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_avg_rtt_ms]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+http_avg_rtt_ms]), self.topic_name, http_avg_rtt_ms)
+                probe = float(message[self.topic_name+"_"+http_avg_rtt_ms])
+                self.update_generic_metric(probe, self.topic_name, http_avg_rtt_ms)
+                self.wb_metrics_dict[f"node_{http_avg_rtt_ms}/{self.topic_name}_{http_avg_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {http_avg_rtt_ms} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
                 
+
         if http_max_rtt_ms in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+http_max_rtt_ms in message.keys():
                 self.logger.debug(f'{http_max_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_max_rtt_ms]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+http_max_rtt_ms]), self.topic_name, http_max_rtt_ms)
+                probe = float(message[self.topic_name+"_"+http_max_rtt_ms])
+                self.update_generic_metric(probe, self.topic_name, http_max_rtt_ms)
+                self.wb_metrics_dict[f"node_{http_max_rtt_ms}/{self.topic_name}_{http_max_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {http_max_rtt_ms} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -238,7 +258,9 @@ class ConsumerThread(threading.Thread):
         if http_min_rtt_ms in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+http_min_rtt_ms in message.keys():
                 self.logger.debug(f'{http_min_rtt_ms} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_min_rtt_ms]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+http_min_rtt_ms]), self.topic_name, http_min_rtt_ms)
+                probe = float(message[self.topic_name+"_"+http_min_rtt_ms])
+                self.update_generic_metric(probe, self.topic_name, http_min_rtt_ms)
+                self.wb_metrics_dict[f"node_{http_min_rtt_ms}/{self.topic_name}_{http_min_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {http_min_rtt_ms} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -248,7 +270,9 @@ class ConsumerThread(threading.Thread):
         if inbound_MBps in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+inbound_MBps in message.keys():
                 self.logger.debug(f'{inbound_MBps} probe received from {self.topic_name}: {message[self.topic_name+"_"+inbound_MBps]}')
-                self.update_incoming_traffic_metric(float(message[self.topic_name+"_"+inbound_MBps]), self.topic_name)
+                probe = float(message[self.topic_name+"_"+inbound_MBps])
+                self.update_incoming_traffic_metric(probe, self.topic_name)
+                self.wb_metrics_dict[f"node_{inbound_MBps}/{self.topic_name}_{inbound_MBps}"] = probe
             else:
                 self.logger.warning(f'Configuration says {inbound_MBps} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -258,7 +282,9 @@ class ConsumerThread(threading.Thread):
         if inbound_packets_per_second in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+inbound_packets_per_second in message.keys():
                 self.logger.debug(f'{inbound_packets_per_second} probe received from {self.topic_name}: {message[self.topic_name+"_"+inbound_packets_per_second]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+inbound_packets_per_second]), self.topic_name, inbound_packets_per_second)
+                probe = float(message[self.topic_name+"_"+inbound_packets_per_second])
+                self.update_generic_metric(probe, self.topic_name, inbound_packets_per_second)
+                self.wb_metrics_dict[f"node_{inbound_packets_per_second}/{self.topic_name}_{inbound_packets_per_second}"] = probe
             else:
                 self.logger.warning(f'Configuration says {inbound_packets_per_second} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -268,7 +294,9 @@ class ConsumerThread(threading.Thread):
         if outbound_packets_per_second in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+outbound_packets_per_second in message.keys():
                 self.logger.debug(f'{outbound_packets_per_second} probe received from {self.topic_name}: {message[self.topic_name+"_"+outbound_packets_per_second]}')
-                self.update_generic_metric(float(message[self.topic_name+"_"+outbound_packets_per_second]), self.topic_name, outbound_packets_per_second)
+                probe = float(message[self.topic_name+"_"+outbound_packets_per_second])
+                self.update_generic_metric(probe, self.topic_name, outbound_packets_per_second)
+                self.wb_metrics_dict[f"node_{outbound_packets_per_second}/{self.topic_name}_{outbound_packets_per_second}"] = probe
             else:
                 self.logger.warning(f'Configuration says {outbound_packets_per_second} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
@@ -278,11 +306,17 @@ class ConsumerThread(threading.Thread):
         if outbound_MBps in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+outbound_MBps in message.keys():
                 self.logger.debug(f'{outbound_MBps} probe received from {self.topic_name}: {message[self.topic_name+"_"+outbound_MBps]}')
-                self.update_outcoming_traffic_metric(float(message[self.topic_name+"_"+outbound_MBps]), self.topic_name)
+                probe = float(message[self.topic_name+"_"+outbound_MBps])
+                self.update_outcoming_traffic_metric(probe, self.topic_name)
+                self.wb_metrics_dict[f"node_{outbound_MBps}/{self.topic_name}_{outbound_MBps}"] = probe
             else:
                 self.logger.warning(f'Configuration says {outbound_MBps} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
+
+
+        if self.wb_tracker is not None:
+            self.wb_tracker.wb_run.log(self.wb_metrics_dict, step=self.wb_tracker.step_counter)
 
 
     def run(self):
