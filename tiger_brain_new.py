@@ -1513,6 +1513,75 @@ class TigerBrain():
                         self.wb_tracker.step_counter += 1
 
 
+    def _sample_from_frozen_buffers(
+        self,
+        frozen_buffers: dict,
+        frozen_int_to_label: dict,
+        frozen_knowledge: dict,
+        samples_per_class: int,
+    ):
+        """
+        Like sample_from_replay_buffers(mode=INFERENCE) but operates on
+        frozen metadata snapshots so the async eval thread is safe.
+        """
+        balanced_flow_batch = None
+        balanced_packet_batch = None
+        balanced_node_feat_batch = None
+        balanced_labels = None
+        balanced_zda_labels = None
+        balanced_test_zda_labels = None
+        init = True
+
+        for class_idx, replay_buff in frozen_buffers.items():
+
+            # Use the frozen encoder, not self.encoder
+            class_nl_label = frozen_int_to_label.get(class_idx)
+            if class_nl_label is None:
+                continue  # class was added after snapshot, skip cleanly
+
+            test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
+
+            if class_nl_label in frozen_knowledge.get('G2s', set()):
+                test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
+
+            try:
+                flow_batch, packet_batch, node_feat_batch, batch_labels = \
+                    replay_buff.sample(samples_per_class)
+            except Exception:
+                self.logger_instance.warning('Frozen buffer sample failed. Skipping batch.')
+                return None
+
+            if init:
+                balanced_flow_batch      = flow_batch
+                balanced_labels          = batch_labels
+                balanced_zda_labels      = zda_batch_labels
+                balanced_test_zda_labels = test_zda_batch_labels
+                if packet_batch is not None:    balanced_packet_batch    = packet_batch
+                if node_feat_batch is not None: balanced_node_feat_batch = node_feat_batch
+            else:
+                balanced_flow_batch      = torch.vstack([balanced_flow_batch, flow_batch])
+                balanced_labels          = torch.vstack([balanced_labels, batch_labels])
+                balanced_zda_labels      = torch.vstack([balanced_zda_labels, zda_batch_labels])
+                balanced_test_zda_labels = torch.vstack([balanced_test_zda_labels, test_zda_batch_labels])
+                if packet_batch is not None:
+                    balanced_packet_batch = torch.vstack([balanced_packet_batch, packet_batch])
+                if node_feat_batch is not None:
+                    balanced_node_feat_batch = torch.vstack([balanced_node_feat_batch, node_feat_batch])
+
+            init = False
+
+        if init:
+            self.logger_instance.warning('Frozen buffers had nothing to sample. Skipping.')
+            return None
+
+        return Batch(
+            flow_features=balanced_flow_batch,
+            packet_features=balanced_packet_batch,
+            node_features=balanced_node_feat_batch,
+            class_labels=balanced_labels,
+            zda_labels=balanced_zda_labels,
+            test_zda_labels=balanced_test_zda_labels,
+        )
 
     def sample_from_replay_buffers(self, samples_per_class, mode):
         balanced_packet_batch = None
@@ -1945,16 +2014,36 @@ class TigerBrain():
         The background worker that runs completely lock-free.
         """
         with self.profile("EL_online_eval"):
+
+            # --- Snapshot lightweight state before doing anything else ---
+            # Shallow-copy the buffers dict: just copies references, not the actual data.
+            # This freezes WHICH buffers we'll iterate over, preventing RuntimeError
+            # if a new class arrives and adds a key mid-iteration.
+            frozen_buffers = dict(self.replay_buffers)
+
+            # Snapshot encoder internals so label <-> int mapping is consistent
+            # throughout the whole eval (new classes may arrive mid-eval otherwise).
+            frozen_label_to_int = dict(self.encoder._label_to_int)
+            frozen_int_to_label = dict(self.encoder._int_to_label)
+
+            # Snapshot current_knowledge so epistemic actions mid-eval don't
+            # change what we consider G1/G2 halfway through.
+            frozen_knowledge = {
+                k: set(v) for k, v in self.env.current_knowledge.items()
+            }
+
+            # known_classes_count is already passed in as a parameter (snapshot at call site),
+            # so confusion matrices are sized correctly for THIS eval round.
+            # ---------------------------------------------------------------
+
             # 1. Instantiate completely independent model clones
             classifier_clone = copy.deepcopy(self.classifier)
             classifier_clone.eval()
 
+            decoder_clone = None
             if self.multi_class:
                 decoder_clone = copy.deepcopy(self.confidence_decoder)
                 decoder_clone.eval()
-            else:
-                decoder_clone = None
-
 
             mean_eval_ad_acc = 0.0
             mean_eval_cs_acc = 0.0
@@ -1973,10 +2062,15 @@ class TigerBrain():
                 for _ in range(self.online_eval_rounds):
                     
                     # Sample batch safely
-                    eval_batch = self.sample_from_replay_buffers(
-                        samples_per_class=self.batch_size,
-                        mode=INFERENCE
-                    )
+                    eval_batch = self._sample_from_frozen_buffers(
+                            frozen_buffers=frozen_buffers,
+                            frozen_int_to_label=frozen_int_to_label,
+                            frozen_knowledge=frozen_knowledge,
+                            samples_per_class=self.batch_size,
+                        )
+
+                    if eval_batch is None:
+                        continue
                     
                     query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
 
