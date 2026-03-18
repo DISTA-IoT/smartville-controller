@@ -389,7 +389,6 @@ class TigerBrain():
                 if t.is_alive():
                     t.join(timeout=2.0)
 
-        
         self.wb_tracker.shutdown()
             
 
@@ -653,6 +652,7 @@ class TigerBrain():
             self,
             classifier,
             batch,
+            known_classes_count,
             query_mask):
         """
         Forward inference pass on neural modules.
@@ -673,14 +673,14 @@ class TigerBrain():
                         batch.packet_features, 
                         batch.node_features,
                         batch.class_labels, 
-                        self.current_known_classes_count,
+                        known_classes_count,
                         query_mask)
                 else:
                     logits, hiddens, predicted_kernel = classifier(
                         batch.flow_features, 
                         batch.packet_features, 
                         batch.class_labels, 
-                        self.current_known_classes_count,
+                        known_classes_count,
                         query_mask)
             else:
                 if self.use_node_feats:
@@ -688,13 +688,13 @@ class TigerBrain():
                         batch.flow_features, 
                         batch.node_features, 
                         batch.class_labels, 
-                        self.current_known_classes_count,
+                        known_classes_count,
                         query_mask)
                 else:
                     logits, hiddens, predicted_kernel = classifier(
                         batch.flow_features, 
                         batch.class_labels, 
-                        self.current_known_classes_count,
+                        known_classes_count,
                         query_mask)
 
 
@@ -1245,6 +1245,7 @@ class TigerBrain():
             logits, hidden_vectors, predicted_kernel = self.infer(
                 self.classifier,
                 merged_batch,
+                self.current_known_classes_count,
                 query_mask=merged_query_mask)           
         
         # one hot labels for the predictions
@@ -1846,6 +1847,7 @@ class TigerBrain():
             logits, hidden_vectors, predicted_kernel = self.infer(
                 classifier=self.classifier,
                 batch=training_batch,
+                known_classes_count=self.current_known_classes_count,
                 query_mask=query_mask)
         
         with self.profile("EL_preproc"):
@@ -2015,22 +2017,24 @@ class TigerBrain():
         """
         with self.profile("EL_online_eval"):
 
-            # --- Snapshot lightweight state before doing anything else ---
-            # Shallow-copy the buffers dict: just copies references, not the actual data.
-            # This freezes WHICH buffers we'll iterate over, preventing RuntimeError
-            # if a new class arrives and adds a key mid-iteration.
-            frozen_buffers = dict(self.replay_buffers)
+            with self._epistemic_lock:
+                # --- Snapshot lightweight state before doing anything else ---
+                # Shallow-copy the buffers dict: just copies references, not the actual data.
+                # This freezes WHICH buffers we'll iterate over, preventing RuntimeError
+                # if a new class arrives and adds a key mid-iteration.
+                frozen_buffers = dict(self.replay_buffers)
 
-            # Snapshot encoder internals so label <-> int mapping is consistent
-            # throughout the whole eval (new classes may arrive mid-eval otherwise).
-            frozen_label_to_int = dict(self.encoder._label_to_int)
-            frozen_int_to_label = dict(self.encoder._int_to_label)
+                # Snapshot encoder internals so label <-> int mapping is consistent
+                # throughout the whole eval (new classes may arrive mid-eval otherwise).
+                frozen_int_to_label = dict(self.encoder._int_to_label)
 
-            # Snapshot current_knowledge so epistemic actions mid-eval don't
-            # change what we consider G1/G2 halfway through.
-            frozen_knowledge = {
-                k: set(v) for k, v in self.env.current_knowledge.items()
-            }
+                # Snapshot current_knowledge so epistemic actions mid-eval don't
+                # change what we consider G1/G2 halfway through.
+                frozen_knowledge = {
+                    k: set(v) for k, v in self.env.current_knowledge.items()
+                }
+
+                frozen_known_classes_count = self.current_known_classes_count
 
             # known_classes_count is already passed in as a parameter (snapshot at call site),
             # so confusion matrices are sized correctly for THIS eval round.
@@ -2079,6 +2083,7 @@ class TigerBrain():
                     logits, hidden_vectors, predicted_kernel = self.infer(
                         classifier_clone,
                         eval_batch,
+                        frozen_known_classes_count,
                         query_mask=query_mask)
 
                     one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
