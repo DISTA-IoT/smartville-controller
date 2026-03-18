@@ -85,6 +85,8 @@ controller_brain = None
 stop_tiger_threads = True
 flowstats_req_thread = None
 inference_thread = None
+flowstats_listener = None
+packet_resampling_listener = None
 
 tiger_lock = Lock()
 
@@ -208,17 +210,68 @@ def add_ip_to_no_proxy_env_var(monitor_ip):
   logger.info(f"Fixed no_proxy to {no_proxy}")
     
 
+def _remove_flowstats_listeners():
+  """
+  Remove any previously registered FlowStatsReceived listeners.
+
+  This must be called both on /stop and at the top of /initialize.
+  If skipped, every re-initialization stacks a new listener on top of
+  the surviving old one, so buffers keep being populated by callbacks
+  from the previous experiment even when traffic is idle.
+  """
+  global flowstats_listener, packet_resampling_listener
+
+  if flowstats_listener is not None:
+    try:
+      removed = core.openflow.removeListener(flowstats_listener)
+      if removed: logger.info("Removed flowstats listener")
+      else: logger.warning("Could not remove flowstats listener")
+    except Exception as e:
+      logger.error(f"Could not remove flowstats listener: {e}")
+    flowstats_listener = None
+
+  if packet_resampling_listener is not None:
+    try:
+      removed = core.openflow.removeListener(packet_resampling_listener)
+      if removed: logger.info("Removed packet resampling listener")
+      else: logger.warning("Could not remove packet resampling listener")
+    except Exception as e:
+      logger.error(f"Could not remove packet resampling listener: {e}")
+    packet_resampling_listener = None
+
 
 def shutdown_process():
   global stop_tiger_threads, inference_thread, flowstats_req_thread, metrics_logger, controller_brain
+  global flow_logger, smart_switch
 
   logger.info("Shutdown command received")
   
   stop_tiger_threads = True
+
   if inference_thread is not None:
-    inference_thread.join()
+    inference_thread.join(timeout=5)
+    inference_thread = None
   if flowstats_req_thread is not None:
-    flowstats_req_thread.join()
+    flowstats_req_thread.join(timeout=5)
+    flowstats_req_thread = None
+
+  # detach FlowStats listeners so no stale callbacks fire after stop.
+  _remove_flowstats_listeners()
+
+  # clear all flow/packet buffers accumulated during the experiment.
+  # Without this, leftover circular-buffer data from the last experiment
+  # bleeds into the next one.
+  if flow_logger is not None:
+    flow_logger.reset()
+
+  # Pause the SmartSwitch PacketIn handler.
+  # POX does not support unregistering components, so the _handle_openflow_
+  # PacketIn listener stays alive forever.  Setting paused=True makes it
+  # return immediately, stopping cache_unprocessed_packets() calls and
+  # preventing any further buffer growth between experiments.
+  if smart_switch is not None:
+    smart_switch.paused = True
+    logger.info("SmartSwitch paused")
 
   if metrics_logger is not None:
     metrics_logger.shutdown()
@@ -284,6 +337,7 @@ def launch(**kwargs):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
         global flow_logger, metrics_logger, controller_brain, smart_switch, wb_tracker
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
+        global flowstats_listener, packet_resampling_listener
 
         try:
           logger.setLevel(kwargs.get("smart_controller_log_level").upper())
@@ -352,12 +406,17 @@ def launch(**kwargs):
               )
             core.register("smart_switch", smart_switch) 
             core.listen_to_dependencies(smart_switch)
-          
+            
           else:
-            logger.info("SmartSwitch already registered")
+            logger.info("SmartSwitch already registered — re-initialising")
             smart_switch = core.components["smart_switch"]
-            smart_switch.flow_logger = flow_logger # we need to update the flow logger instance attached to the SmartSwitch
+            smart_switch.flow_logger = flow_logger # update the flow logger instance
             smart_switch.initialize()
+
+            # un-pause the switch so PacketIn events
+            # are processed again for the new experiment.
+            smart_switch.paused = False
+            logger.info("SmartSwitch un-paused for new experiment")
 
         except Exception as e:
             logger.error(f"Error creating SmartSwitch: {e}")
@@ -377,7 +436,11 @@ def launch(**kwargs):
         FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
         
         if FLOWSTATS_FREQ_SECS > 0:
-          core.openflow.addListenerByName(
+
+          # remove any surviving listeners from a previous experiment before adding fresh ones.
+          _remove_flowstats_listeners()
+
+          flowstats_listener = core.openflow.addListenerByName(
             "FlowStatsReceived", 
             lambda event: flow_logger._handle_flowstats_received(
               event, 
@@ -387,7 +450,7 @@ def launch(**kwargs):
           
           if args['intrusion_detection']['resample_packets']:
               logger.info("Enabling packet resampling")
-              core.openflow.addListenerByName(
+              packet_resampling_listener = core.openflow.addListenerByName(
                 "FlowStatsReceived", 
                 lambda event: smart_switch.send_sampling_rules_to_all(
                   event))
