@@ -59,6 +59,6 @@ tzdata==2025.2
 tzlocal==5.3.1
 urllib3==2.5.0
 uvicorn==0.35.0
-wandb==0.21.3
+wandb==0.25.1
 wandb-workspaces==0.1.18
 zipp==3.23.0
