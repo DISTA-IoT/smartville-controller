@@ -50,6 +50,11 @@ class FlowLogger(object):
       self.use_packet_feats = args.intrusion_detection.use_packet_feats
 
 
+    def reset(self):
+       self.flows_dict = {}
+       self.packet_buffers = {}
+
+
     def extract_flow_feature_tensor(self, flow):
        return torch.Tensor(
           [flow['byte_count'], 
