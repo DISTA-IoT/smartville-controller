@@ -214,7 +214,7 @@ class WandBTracker():
                         "controller_metrics/network_MBps_recv": (recv_delta / self.monitor_interval_secs) / (1024 * 1024),
                         "controller_metrics/network_packets_sent_rate_pps": psent_delta / self.monitor_interval_secs,
                         "controller_metrics/network_packets_recv_rate_pps": precv_delta / self.monitor_interval_secs,
-                    })
+                    }, step=self.step_counter)
                 except Exception as e:
                     self.logger.warning(f"CPU monitor error (non-fatal): {e}")
 
