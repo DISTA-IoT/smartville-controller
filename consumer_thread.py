@@ -343,7 +343,10 @@ class ConsumerThread(threading.Thread):
 
                 poll_temptative = 0
                 message_received = False
-                while not message_received and self.kwargs['health']['max_failed_polls'] > poll_temptative:
+                while not message_received \
+                    and self.kwargs['health']['max_failed_polls'] > poll_temptative \
+                    and not self.exit_signal.is_set():
+                    
                     poll_temptative += 1
                     try:
                         # well wait a message max for poll_timeout_seconds secs...

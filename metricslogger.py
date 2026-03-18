@@ -189,8 +189,12 @@ class MetricsLogger:
     def shutdown(self):
         self.active = False
         
+        # Signal all threads to stop first (non-blocking)
         for consumer_thread in self.consumer_threads:
             consumer_thread.stop()
+
+        # Now join them all — they're all winding down in parallel
+        for consumer_thread in self.consumer_threads:
             consumer_thread.join()
         
         if self.consumer_thread_manager:
