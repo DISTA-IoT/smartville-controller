@@ -43,6 +43,7 @@ from pox.lib.addresses import EthAddr
 import time
 from smartController.entry import Entry
 from collections import defaultdict
+from pox.openflow.of_json import flow_stats_to_list
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
@@ -332,19 +333,32 @@ class SmartSwitch(EventMixin):
         
   def send_sampling_rules_to_all(self, event):
     
-    for stat_obj in event.stats:
-      sampling_actions = stat_obj.actions + [of.ofp_action_output(port=of.OFPP_CONTROLLER)]
-      sample_msg = of.ofp_flow_mod(
-          command=of.OFPFC_ADD,
-          idle_timeout=self.flow_idle_timeout,
-          hard_timeout=1,   # expires after 1 second
-          priority=200,     # <-- higher priority
-          actions=sampling_actions,
-          match=stat_obj.match
-      )
-      event.connection.send(sample_msg.pack())
+    counter = 0
+    flow_list = flow_stats_to_list(event.stats)
+    tracked_senders = [tracked_flow_signature.split("_")[0] for tracked_flow_signature in self.flow_logger.flows_dict]
+    tracked_receivers = [tracked_flow_signature.split("_")[1] for tracked_flow_signature in self.flow_logger.flows_dict]
+    
+    for stat_obj, flow in zip( event.stats, flow_list ):
 
-    self.logger.debug(f"Sent {len(event.stats)} sampling rules to switch {event.dpid}")
+      sender_ip_addr = flow['match']['nw_src'].split('/')[0]
+      sender_idx = tracked_senders.index(sender_ip_addr) if sender_ip_addr in tracked_senders else None
+
+      if sender_idx is not None:
+        dest_ip_addr = flow['match']['nw_dst'].split('/')[0]
+        if dest_ip_addr == tracked_receivers[sender_idx]:
+          counter += 1
+          sampling_actions = stat_obj.actions + [of.ofp_action_output(port=of.OFPP_CONTROLLER)]
+          sample_msg = of.ofp_flow_mod(
+              command=of.OFPFC_ADD,
+              idle_timeout=self.flow_idle_timeout,
+              hard_timeout=1,   # expires after 1 second
+              priority=200,     # <-- higher priority
+              actions=sampling_actions,
+              match=stat_obj.match
+          )
+          event.connection.send(sample_msg.pack())
+
+    self.logger.debug(f"Sent {counter} sampling rules to switch {event.dpid}")
      
 
   def build_and_send_ARP_request(
