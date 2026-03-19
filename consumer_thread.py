@@ -34,6 +34,7 @@ icmp_loss_percent = 'icmp_loss_percent'
 http_min_rtt_ms = 'http_min_rtt_ms'
 http_max_rtt_ms = 'http_max_rtt_ms'
 http_avg_rtt_ms = 'http_avg_rtt_ms'
+http_loss_percent = 'http_loss_percent'
 inbound_MBps = 'inbound_MBps'
 inbound_packets_per_second = 'inbound_packets_per_second'
 outbound_MBps = 'outbound_MBps'
@@ -251,6 +252,18 @@ class ConsumerThread(threading.Thread):
                 self.wb_metrics_dict[f"node_{http_max_rtt_ms}/{self.topic_name}_{http_max_rtt_ms}"] = probe
             else:
                 self.logger.warning(f'Configuration says {http_max_rtt_ms} is among the metrics to collect. \n' +\
+                                    f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
+                                    'The corresponding feature vecs will be -1s')
+                
+
+        if http_loss_percent in self.kwargs['health']['probe_metrics']:
+            if self.topic_name+"_"+http_loss_percent in message.keys():
+                self.logger.debug(f'{http_loss_percent} probe received from {self.topic_name}: {message[self.topic_name+"_"+http_loss_percent]}')
+                probe = float(message[self.topic_name+"_"+http_loss_percent])
+                self.update_generic_metric(probe, self.topic_name, http_loss_percent)
+                self.wb_metrics_dict[f"node_{http_loss_percent}/{self.topic_name}_{http_loss_percent}"] = probe
+            else:
+                self.logger.warning(f'Configuration says {http_loss_percent} is among the metrics to collect. \n' +\
                                     f'However, a message without such metric was NOT received in topic {self.topic_name}! \n' +\
                                     'The corresponding feature vecs will be -1s')
                 
