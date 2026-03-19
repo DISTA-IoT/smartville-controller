@@ -476,11 +476,12 @@ class SmartSwitch(EventMixin):
                 packet.next.srcip,
                 packet.next.dstip)
       
-      # Save packet for inference purposes...
-      self.flow_logger.cache_unprocessed_packets(
-          src_ip=packet.next.srcip,
-          dst_ip=packet.next.dstip,
-          packet=packet)
+      if not self.paused:
+        # Save packet for inference purposes...
+        self.flow_logger.cache_unprocessed_packets(
+            src_ip=packet.next.srcip,
+            dst_ip=packet.next.dstip,
+            packet=packet)
       
       # Send any waiting packets for that ip
       self._send_unprocessed_flows(
@@ -596,11 +597,6 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_openflow_PacketIn(self, event):
-
-    # POX does not support unregistering components, so this handler
-    # stays hooked for the lifetime of the process.
-    if self.paused:
-      return
     
     self.logger.debug('handling openflow packet_in_event')
     self.openflow_packets_received += 1

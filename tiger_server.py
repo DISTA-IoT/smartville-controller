@@ -258,11 +258,6 @@ def shutdown_process():
   # detach FlowStats listeners so no stale callbacks fire after stop.
   _remove_flowstats_listeners()
 
-  # clear all flow/packet buffers accumulated during the experiment.
-  # Without this, leftover circular-buffer data from the last experiment
-  # bleeds into the next one.
-  if flow_logger is not None:
-    flow_logger.reset()
 
   # Pause the SmartSwitch PacketIn handler.
   # POX does not support unregistering components, so the _handle_openflow_
@@ -271,7 +266,7 @@ def shutdown_process():
   # preventing any further buffer growth between experiments.
   if smart_switch is not None:
     smart_switch.paused = True
-    logger.info("SmartSwitch paused")
+    logger.info("SmartSwitch paused Flowlogging...")
 
   if metrics_logger is not None:
     metrics_logger.shutdown()
@@ -416,7 +411,7 @@ def launch(**kwargs):
             # un-pause the switch so PacketIn events
             # are processed again for the new experiment.
             smart_switch.paused = False
-            logger.info("SmartSwitch un-paused for new experiment")
+            logger.info("SmartSwitch un-paused flowlogging for new experiment")
 
         except Exception as e:
             logger.error(f"Error creating SmartSwitch: {e}")
