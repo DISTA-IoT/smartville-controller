@@ -139,18 +139,20 @@ class WandBTracker():
 
         if self.wb_run is not None:
             self.wb_run.finish()
-        this_dir = os.path.dirname(os.path.abspath(__file__))
-        if not os.path.exists(this_dir+'/wandb'):
-            self.logger.warning(f"wandb folder doesn't exist at {this_dir+'/wandb'}")
-            return
-        run_dirs = [f.path for f in os.scandir(this_dir+'/wandb') if f.is_dir() and 'run-' in f.path]
-        run_dir = run_dirs[-1] # Get actual path
-        self.logger.info(f"Now syncing the run {run_dir} please wait...")
-        result = subprocess.run(["wandb", "sync", run_dir], capture_output=True, text=True)
-        if result.returncode != 0:
-            self.logger.error(f"Sync failed: {result.stderr}")  # Debug without crashing
-        else:
-            self.logger.info("Run synced!!!...")
+
+        if not self.wb_run.disabled:
+            this_dir = os.path.dirname(os.path.abspath(__file__))
+            if not os.path.exists(this_dir+'/wandb'):
+                self.logger.warning(f"wandb folder doesn't exist at {this_dir+'/wandb'}")
+                return
+            run_dirs = [f.path for f in os.scandir(this_dir+'/wandb') if f.is_dir() and 'run-' in f.path]
+            run_dir = run_dirs[-1] # Get actual path
+            self.logger.info(f"Now syncing the run {run_dir} please wait...")
+            result = subprocess.run(["wandb", "sync", run_dir], capture_output=True, text=True)
+            if result.returncode != 0:
+                self.logger.error(f"Sync failed: {result.stderr}")  # Debug without crashing
+            else:
+                self.logger.info("Run synced!!!...")
     
 
     def start_resource_monitor(self):
