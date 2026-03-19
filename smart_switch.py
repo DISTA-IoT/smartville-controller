@@ -171,6 +171,7 @@ class SmartSwitch(EventMixin):
     for fr in to_delete_frs:
       self.forwardingRules[flow_metadata[0]].remove(fr)
 
+
   def _send_unprocessed_flows(self, switch_id, port, dest_mac_addr, dest_ip_addr):
     """
     Unprocessed flows are those we didn't know
@@ -290,7 +291,8 @@ class SmartSwitch(EventMixin):
                             buffer_id=packet_id,
                             actions=actions,
                             priority=100,   # <-- lower priority
-                            match=match)
+                            match=match,
+                            flags=of.OFPFF_SEND_FLOW_REM)
       
       # if self.add_flow_rule_message_to_buffer(msg, switch_id):
       connection.send(msg.pack())
@@ -300,6 +302,34 @@ class SmartSwitch(EventMixin):
                 f" source: {match.nw_src} dest: {match.nw_dst} outgoing port: {outgoing_port}")
 
 
+  def _handle_openflow_FlowRemoved(self, event):
+    """
+    The switch notifies us whenever a flow rule expires (idle or hard timeout).
+    We must remove it from our local forwardingRules cache, otherwise
+    add_ip_to_ip_flow_matching_rule will refuse to reinstall it and traffic dies.
+    """
+    switch_id = event.connection.dpid
+    match = event.ofp.match
+
+    if match.nw_src is None or match.nw_dst is None:
+        return
+
+    to_remove = [
+        fr for fr in self.forwardingRules[switch_id]
+        if str(fr.source_ip_addr) == str(match.nw_src)
+        and str(fr.dest_ip_addr) == str(match.nw_dst)
+    ]
+
+    for fr in to_remove:
+        self.forwardingRules[switch_id].remove(fr)
+
+    if to_remove:
+        self.logger.debug(
+            f"Flow rule expired on switch {switch_id}: "
+            f"{match.nw_src} -> {match.nw_dst}, removed from cache"
+        )
+
+        
   def send_sampling_rules_to_all(self, event):
     
     for stat_obj in event.stats:
@@ -316,6 +346,7 @@ class SmartSwitch(EventMixin):
 
     self.logger.debug(f"Sent {len(event.stats)} sampling rules to switch {event.dpid}")
      
+
   def build_and_send_ARP_request(
         self, 
         switch_id, 
