@@ -17,25 +17,27 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 from pox.core import core
 from pox.openflow.of_json import flow_stats_to_list
-from smartController.flow import Flow, CircularBuffer
+from smartController.flow import Flow
 from smartController.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
 from pox.lib.packet.ipv4 import ipv4
-from pprint import pprint
 
 class FlowLogger(object):
     
 
     def __init__(
       self,
-      **kwargs):
+      wb_tracker=None,
+      **kwargs,
+      ):
 
       """
       TODO: flows_dict should be one for each switch... or, equivalently, we should use one 
       switch_logger per switch.
       """
       args = AttrDict(kwargs)
+      self.wb_tracker = wb_tracker
       self.flows_dict = {}
       self.packet_buffers = {}
       self.logger_instance = core.getLogger()
@@ -55,7 +57,19 @@ class FlowLogger(object):
        self.packet_buffers = {}
 
 
-    def extract_flow_feature_tensor(self, flow):
+    def extract_flow_feature_tensor(self, flow, sender_ip_addr):
+       
+      if self.wb_tracker is not None:
+       self.wb_tracker.wb_run.log(
+          {
+            f'flows/{sender_ip_addr}/byte_count': flow['byte_count'],
+            f'flows/{sender_ip_addr}/duration_nsec': flow['duration_nsec'],
+            f'flows/{sender_ip_addr}/duration_sec': flow['duration_sec'],
+            f'flows/{sender_ip_addr}/packet_count': flow['packet_count']
+          },
+          step=self.wb_tracker.step_counter
+       )
+
        return torch.Tensor(
           [flow['byte_count'], 
             flow['duration_nsec'] / 10e9,
@@ -179,7 +193,7 @@ class FlowLogger(object):
          flow.zda = flow.test_zda or flow_info['pattern'] in current_knowledge['G1s'] # these change
          
          # flow feature extraction ( packet feature circular buffer is updated asychonously...)
-         curr_flow_stats_vec = self.extract_flow_feature_tensor(flow=of_flowstats_obj)
+         curr_flow_stats_vec = self.extract_flow_feature_tensor(flow=of_flowstats_obj, sender_ip_addr=sender_ip_addr)
          # update the flow feature circular buffer
          flow.flow_feat_circular_buffer.add(curr_flow_stats_vec)
 

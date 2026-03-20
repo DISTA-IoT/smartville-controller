@@ -357,7 +357,7 @@ def launch(**kwargs):
 
 
         try:
-          flow_logger = FlowLogger(**args)
+          flow_logger = FlowLogger(wb_tracker=wb_tracker, **args)
         except Exception as e:
           logger.error(f"Error initialising flow logger: {e}")
           shutdown_process()
