@@ -180,14 +180,14 @@ def get_switching_args():
 
 
 def smart_check():
-  global args
+  global args, wb_tracker
 
   logger.info("Starting SmartSwitch inference loop")
-  inference_count = 0
+  check_count = 0
   
   while not stop_tiger_threads:
 
-    inference_count += 1
+    check_count += 1
 
     with tiger_lock:
       
@@ -195,10 +195,17 @@ def smart_check():
         flows=list(flow_logger.flows_dict.values()),
         node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
       
-
-      if inference_count % 100 == 0:
+      
+      if check_count % 100 == 0:
+        packet_counts_dict = {}
         for key in flow_logger.flows_dict.keys():
-              logger.info(f"Packets seen for {key}: {flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add}")
+          curr_packetcount = flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add
+          packet_counts_dict[f'packetcounts/{key}'] = curr_packetcount
+          logger.info(f"Packets seen for {key}: {curr_packetcount}")
+        wb_tracker.wb_run.log(packet_counts_dict, step=wb_tracker.step_counter)
+
+          
+
 
 
 def add_ip_to_no_proxy_env_var(monitor_ip):
