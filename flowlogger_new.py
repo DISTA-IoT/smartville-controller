@@ -157,11 +157,9 @@ class FlowLogger(object):
          return
       
       hostname = ips_containers[sender_ip_addr]
-      if hostname not in traffic_dict.keys():
-         self.logger_instance.error(f"Traffic from unknown host: {hostname}. Not labelling this flow.")
-         return
-      
-      if traffic_dict[hostname]['dest_ip'] == dest_ip_addr and traffic_dict[hostname]['src_ip'] == sender_ip_addr:
+      if hostname in traffic_dict.keys() and \
+         traffic_dict[hostname]['dest_ip'] == dest_ip_addr \
+         and traffic_dict[hostname]['src_ip'] == sender_ip_addr:
 
          # This is a flow that we are interested in
          flow_id = sender_ip_addr + "_" + dest_ip_addr + "_" + str(of_flowstats_obj['actions'][1]['port'])
