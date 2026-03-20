@@ -1351,14 +1351,15 @@ class TigerBrain():
         # eventually reset the environment. 
         if self.env.has_episode_ended(self.wb_tracker.step_counter): 
             if self.wbt:
-                metrics_to_log = {
+                self.wb_run.log({
                         'episode_count': self.episode_count,
                         'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
                         'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
                         'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
                         'epistemic_actions_per_episode': self.env.epistemic_actions,
                         'steps_per_episode': self.env.steps_done
-                    }
+                    }, 
+                    step=self.wb_tracker.step_counter)
 
             self.reset_environment()
             

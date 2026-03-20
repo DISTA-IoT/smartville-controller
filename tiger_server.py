@@ -165,20 +165,6 @@ def _handle_ConnectionUp (event):
           echo_thread.start()
      
 
-def get_switching_args():
-
-  switching_args = {
-    'flow_idle_timeout' : os.getenv('flow_idle_timeout'),
-    'arp_timeout' : os.getenv('arp_timeout'),
-    'max_buffered_packets' : os.getenv('max_buffered_packets'),
-    'max_buffering_secs' : os.getenv('max_buffering_secs'),
-    'arp_req_exp_secs' : os.getenv('arp_req_exp_secs'),
-    'logger' :logger
-    }
-
-  return switching_args
-
-
 def smart_check():
   global args, wb_tracker
 
@@ -397,14 +383,11 @@ def launch(**kwargs):
         
         try:
           if not core.hasComponent("smart_switch"):
-
-            switch_args = get_switching_args()
-            switch_args.update(args)
           
             # Registering Switch component:
             smart_switch = SmartSwitch(
               flow_logger=flow_logger,
-              **switch_args
+              **args
               )
             core.register("smart_switch", smart_switch) 
             core.listen_to_dependencies(smart_switch)

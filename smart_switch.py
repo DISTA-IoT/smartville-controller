@@ -85,14 +85,15 @@ class SmartSwitch(EventMixin):
         **kwargs
         ):
 
-    self.flow_idle_timeout = int(kwargs.get('flow_idle_timeout'))
-    self.arp_timeout = int(kwargs.get('arp_timeout'))
-    self.max_buffered_packets = int(kwargs.get('max_buffered_packets'))
-    self.max_buffering_secs = int(kwargs.get('max_buffering_secs'))
-    self.arp_req_exp_secs = int(kwargs.get('arp_req_exp_secs'))
+    self.flow_idle_timeout = int(kwargs['switching_args'].get('flow_idle_timeout'))
+    self.arp_timeout = int(kwargs['switching_args'].get('arp_timeout'))
+    self.max_buffered_packets = int(kwargs['switching_args'].get('max_buffered_packets'))
+    self.max_buffering_secs = int(kwargs['switching_args'].get('max_buffering_secs'))
+    self.arp_req_exp_secs = int(kwargs['switching_args'].get('arp_req_exp_secs'))
     self.logger = core.getLogger()
     self.logger.name = "SmartSwitch"
     self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
+    self.logger.info(f"SmartSwitch started with args: {kwargs['switching_args']}")
     self.flow_logger = flow_logger
     #  paused flag lets tiger_server gate all PacketIn processing
     # without needing to unregister this component from POX (which is
