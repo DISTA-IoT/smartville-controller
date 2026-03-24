@@ -316,7 +316,7 @@ class TigerBrain():
         self.kwargs = kwargs
         self.intrusion_detection_kwargs = kwargs['intrusion_detection']
         self.use_packet_feats = args.use_packet_feats
-        self.use_node_feats = args.health_monitoring
+        self.use_node_feats = args.node_features
         self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
         self.hidden_size = int(args.neural_modules.hidden_size)
