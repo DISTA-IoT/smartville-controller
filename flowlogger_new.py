@@ -49,7 +49,7 @@ class FlowLogger(object):
       self.anomyn_ports = args.intrusion_detection.anonymize_transport_ports
       self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
       self.flows_per_sample = int(args.intrusion_detection.flows_per_sample)
-      self.use_packet_feats = args.intrusion_detection.use_packet_feats
+      self.use_packet_feats = args.use_packet_feats
 
 
     def reset(self):

@@ -321,28 +321,22 @@ def launch(**kwargs):
 
 
     @app.post("/initialize")
-    async def initialize(kwargs: dict):
+    async def initialize(init_controller_args: dict):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
         global flow_logger, metrics_logger, controller_brain, smart_switch, wb_tracker
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
         global flowstats_listener, packet_resampling_listener
 
         try:
-          logger.setLevel(kwargs.get("smart_controller_log_level").upper())
+          logger.setLevel(init_controller_args.get("smart_controller_log_level").upper())
           logger.info(f"Initialisation command received")
 
-          pprint(kwargs)
+          add_ip_to_no_proxy_env_var(init_controller_args.get("monitor_ip"))
 
-          add_ip_to_no_proxy_env_var(kwargs.get("monitor_ip"))
-
-          args = kwargs
+          args = init_controller_args
           args['logger'] = logger
           
-          intrusion_detection_args = kwargs.get("intrusion_detection", {})
-          intrusion_detection_args['rewards'] = kwargs.get("rewards", {})
-          intrusion_detection_args['knowledge'] = kwargs.get("knowledge", {})
-          intrusion_detection_args['logger'] = logger
-          intrusion_detection_args['models'] = kwargs.get("models", {})
+          
         except Exception as e:
           logger.error(f"Error parsing initialisation command: {e}")
           shutdown_process()
@@ -418,7 +412,7 @@ def launch(**kwargs):
           return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"}
 
 
-        FLOWSTATS_FREQ_SECS = float(intrusion_detection_args["flowstats_freq_secs"])
+        FLOWSTATS_FREQ_SECS = float(args['intrusion_detection']["flowstats_freq_secs"])
         
         if FLOWSTATS_FREQ_SECS > 0:
 
@@ -433,7 +427,7 @@ def launch(**kwargs):
               controller_brain.traffic_dict,
               controller_brain.ips_containers))
           
-          if args['intrusion_detection']['resample_packets']:
+          if args['resample_packets']:
               logger.info("Enabling packet resampling")
               packet_resampling_listener = core.openflow.addListenerByName(
                 "FlowStatsReceived", 

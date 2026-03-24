@@ -315,18 +315,18 @@ class TigerBrain():
         self.eval = args.intrusion_detection.eval
         self.kwargs = kwargs
         self.intrusion_detection_kwargs = kwargs['intrusion_detection']
-        self.use_packet_feats = args.intrusion_detection.use_packet_feats
+        self.use_packet_feats = args.use_packet_feats
         self.use_node_feats = args.health_monitoring
         self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
-        self.h_dim = int(args.intrusion_detection.h_dim)
+        self.hidden_size = int(args.neural_modules.hidden_size)
         self.multi_class = args.intrusion_detection.multi_class
         self.wbt = args.wandb.wb_tracking
         self.wb_tracker = wb_tracker
         self.wb_run = None
         self.kernel_regression = args.intrusion_detection.kernel_regression
         self.logger_instance = kwargs['logger']
-        self.device= args.intrusion_detection.device
+        self.device= args.device
         self.seed =int(args.intrusion_detection.seed)
         random.seed(self.seed)
         self.k_shot = int(args.intrusion_detection.k_shot)
@@ -416,11 +416,11 @@ class TigerBrain():
 
     def init_agents(self, args):
         
-        self.state_space_dim = args.intrusion_detection.h_dim
+        self.state_space_dim = self.hidden_size
         if self.use_node_feats:
-            self.state_space_dim += args.intrusion_detection.h_dim
+            self.state_space_dim += self.hidden_size
         if self.use_packet_feats:
-            self.state_space_dim += args.intrusion_detection.h_dim
+            self.state_space_dim += self.hidden_size
 
         # The state space will be composed of          
         # 0. centroid of collective anomaly (an all-zeros centroid for known traffic)
@@ -502,7 +502,7 @@ class TigerBrain():
             namespace = {}
             
             # Execute the source code
-            exec(self.intrusion_detection_kwargs['models'], namespace)
+            exec(self.kwargs['models'], namespace)
             
             # Extract only the classes that are nn.Module subclasses
             model_classes = {}
@@ -612,18 +612,18 @@ class TigerBrain():
 
         if self.use_packet_feats:
             if self.use_node_feats:
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_node_classifier_pretrained_h{self.h_dim}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_node_confidence_decoder_pretrained_h{self.h_dim}'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_node_classifier_pretrained_h{self.hidden_size}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_node_confidence_decoder_pretrained_h{self.hidden_size}'
             else:
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_classifier_pretrained_h{self.h_dim}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_confidence_decoder_pretrained_h{self.h_dim}'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_classifier_pretrained_h{self.hidden_size}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_confidence_decoder_pretrained_h{self.hidden_size}'
         else:
             if self.use_node_feats:
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_node_classifier_pretrained_h{self.h_dim}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_node_confidence_decoder_pretrained_h{self.h_dim}'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_node_classifier_pretrained_h{self.hidden_size}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_node_confidence_decoder_pretrained_h{self.hidden_size}'
             else:    
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_classifier_pretrained_h{self.h_dim}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_confidence_decoder_pretrained_h{self.h_dim}'
+                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_classifier_pretrained_h{self.hidden_size}'
+                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_confidence_decoder_pretrained_h{self.hidden_size}'
 
         if self.load_pretrained_inference_module:
             # Check if the file exists

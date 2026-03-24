@@ -23,11 +23,11 @@ import torch.nn.functional as F
 class PolicyNet(nn.Module):
     def __init__(self, kwargs):
         super(PolicyNet, self).__init__()
-        self.fc1 = nn.Linear(kwargs['state_size'] - 6, 2 * kwargs['state_size'])
-        self.fc1_prime = nn.Linear(6, kwargs['h_dim'])
-        self.fc2 = nn.Linear(2 * kwargs['state_size'], kwargs['h_dim'] // 5)
-        self.fc2_prime = nn.Linear(kwargs['h_dim'], 4 * (kwargs['h_dim'] // 5))
-        self.fc3 = nn.Linear(kwargs['h_dim'], kwargs['action_size'])
+        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
+        self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
+        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc3 = nn.Linear(int(kwargs['hidden_size']), int(kwargs['action_size']))
 
     def forward(self, x):
         if len(x.shape)<2:
@@ -50,11 +50,11 @@ class NEFENet(nn.Module):
         Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
         """
         super(NEFENet, self).__init__()
-        self.fc1 = nn.Linear(kwargs['state_size'] - 6, 2 * kwargs['state_size'])
-        self.fc1_prime = nn.Linear(6, kwargs['h_dim'])
-        self.fc2 = nn.Linear(2 * kwargs['state_size'], kwargs['h_dim'] // 5)
-        self.fc2_prime = nn.Linear(kwargs['h_dim'], 4 * (kwargs['h_dim'] // 5))
-        self.fc3 = nn.Linear(kwargs['h_dim'], kwargs['action_size'])
+        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
+        self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
+        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc3 = nn.Linear(int(kwargs['hidden_size']), int(kwargs['action_size']))
 
     def forward(self, x):
         if len(x.shape)<2:
@@ -73,11 +73,11 @@ class NEFENet(nn.Module):
 class DQN(nn.Module):
     def __init__(self, kwargs):
         super(DQN, self).__init__()
-        self.fc1 = nn.Linear(kwargs['state_size'] - 6, 2 * kwargs['state_size'])
-        self.fc1_prime = nn.Linear(6, kwargs['h_dim'])
-        self.fc2 = nn.Linear(2 * kwargs['state_size'], kwargs['h_dim'] // 5)
-        self.fc2_prime = nn.Linear(kwargs['h_dim'], 4 * (kwargs['h_dim'] // 5))
-        self.fc3 = nn.Linear(5 * (kwargs['h_dim'] // 5), kwargs['action_size'])
+        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
+        self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
+        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
+        self.fc3 = nn.Linear(5 * (int(int(kwargs['hidden_size'])) // 5), int(int(kwargs['action_size'])))
 
 
     def forward(self, x):
@@ -232,7 +232,7 @@ class MultiClassFlowClassifier(nn.Module):
             self.use_encoder = True
             rnn_input_dim = hidden_size
             self.encoder = MLP(input_size, hidden_size, dropout_prob)
-        self.rnn = RecurrentModel(rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.rnn = RecurrentModel(rnn_input_dim, hidden_size, dropout_prob, int(kwargs['recurrent_layers']), device=self.device)
         kernel_regressor_class = DistKernelRegressor if kwargs['kr_type'] == 'dist' else DotProdKernelRegressor            
         self.kernel_regressor = kernel_regressor_class(
             {'device': self.device,
@@ -269,9 +269,9 @@ class TwoStreamMulticlassFlowClassifier(nn.Module):
             self.flow_encoder = MLP(flow_input_size, hidden_size, dropout_prob)
             self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
 
-        self.flow_rnn = RecurrentModel(flow_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.flow_rnn = RecurrentModel(flow_rnn_input_dim, hidden_size, dropout_prob, int(kwargs['recurrent_layers']), device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
-        self.second_stream_rnn = RecurrentModel(second_stream_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.second_stream_rnn = RecurrentModel(second_stream_rnn_input_dim, hidden_size, dropout_prob, int(kwargs['recurrent_layers']), device=self.device)
         kernel_regressor_class = DistKernelRegressor if kwargs['kr_type'] == 'dist' else DotProdKernelRegressor 
         self.kernel_regressor = kernel_regressor_class(
             {'device': self.device,
@@ -319,11 +319,11 @@ class ThreeStreamMulticlassFlowClassifier(nn.Module):
             self.second_stream_encoder = MLP(second_stream_input_size, hidden_size, dropout_prob)
             self.third_stream_encoder = MLP(third_stream_input_size, hidden_size, dropout_prob)
 
-        self.flow_rnn = RecurrentModel(flow_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.flow_rnn = RecurrentModel(flow_rnn_input_dim, hidden_size, dropout_prob, int(kwargs['recurrent_layers']), device=self.device)
         self.second_stream_normalizer = nn.BatchNorm1d(second_stream_input_size)
-        self.second_stream_rnn = RecurrentModel(second_stream_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.second_stream_rnn = RecurrentModel(second_stream_rnn_input_dim, hidden_size, dropout_prob, int(kwargs['recurrent_layers']), device=self.device)
         self.third_stream_normalizer = nn.BatchNorm1d(third_stream_input_size)
-        self.third_stream_rnn = RecurrentModel(third_stream_rnn_input_dim, hidden_size, dropout_prob, kwargs['recurrent_layers'], device=self.device)
+        self.third_stream_rnn = RecurrentModel(third_stream_rnn_input_dim, hidden_size, dropout_prob, int(kwargs['recurrent_layers']), device=self.device)
         kernel_regressor_class = DistKernelRegressor if kwargs['kr_type'] == 'dist' else DotProdKernelRegressor 
         self.kernel_regressor = kernel_regressor_class(
             {'device': self.device,
@@ -410,11 +410,11 @@ class TransitionNet(nn.Module):
             kwargs):
         super(TransitionNet, self).__init__()
 
-        self.transition_input_size = kwargs['proprioceptive_state_size'] + kwargs['action_size']
+        self.transition_input_size = int(kwargs['proprioceptive_state_size']) + int(kwargs['action_size'])
         self.recurrent_layers = int(kwargs['recurrent_layers'])
         self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
-        self.fc1 = nn.Linear(self.transition_input_size, kwargs['h_dim'])
-        self.fc2 = nn.Linear(kwargs['h_dim'], kwargs['proprioceptive_state_size'])
+        self.fc1 = nn.Linear(self.transition_input_size, int(kwargs['hidden_size']))
+        self.fc2 = nn.Linear(int(int(kwargs['hidden_size'])), int(kwargs['proprioceptive_state_size']))
 
     def forward(self, x):
         
@@ -438,21 +438,21 @@ class NewTransitionNet(nn.Module):
             kwargs):
         super(NewTransitionNet, self).__init__()
         
-        self.action_size = kwargs['action_size']
-        self.proprioceptive_state_size = kwargs['proprioceptive_state_size']
-        self.state_size = kwargs['state_size']
+        self.action_size = int(kwargs['action_size'])
+        self.proprioceptive_state_size = int(kwargs['proprioceptive_state_size'])
+        self.state_size = int(kwargs['state_size'])
 
-        self.transition_input_size = kwargs['state_size'] + kwargs['action_size']
+        self.transition_input_size = int(kwargs['state_size']) + int(kwargs['action_size'])
         self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
 
 
-        self.action_stream_fc1 = nn.Linear(self.action_size, kwargs['h_dim']//4)
-        self.action_stream_fc2 = nn.Linear(kwargs['h_dim']//4, kwargs['h_dim']//8)
+        self.action_stream_fc1 = nn.Linear(self.action_size, int(kwargs['hidden_size'])//4)
+        self.action_stream_fc2 = nn.Linear(int(kwargs['hidden_size'])//4, int(kwargs['hidden_size'])//8)
 
-        self.exteroceptive_state_stream_fc1 = nn.Linear(kwargs['state_size'] - self.proprioceptive_state_size, kwargs['h_dim']// 4)
-        self.exteroceptive_state_stream_fc2 = nn.Linear(kwargs['h_dim'] // 4, kwargs['h_dim']// 8)
+        self.exteroceptive_state_stream_fc1 = nn.Linear(int(kwargs['state_size']) - self.proprioceptive_state_size, int(kwargs['hidden_size'])// 4)
+        self.exteroceptive_state_stream_fc2 = nn.Linear(int(kwargs['hidden_size']) // 4, int(kwargs['hidden_size'])// 8)
 
-        self.final_fc_1 = nn.Linear(kwargs['h_dim'] // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
+        self.final_fc_1 = nn.Linear(int(kwargs['hidden_size']) // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
         self.final_fc_2 = nn.Linear(self.proprioceptive_state_size, self.proprioceptive_state_size)
 
     def forward(self, x):
@@ -486,24 +486,24 @@ class VariationalTransitionNet(nn.Module):
     def __init__(self, kwargs):
         super().__init__()
         
-        self.action_size = kwargs['action_size']
-        self.proprioceptive_state_size = kwargs['proprioceptive_state_size']
-        self.state_size = kwargs['state_size']
+        self.action_size = int(kwargs['action_size'])
+        self.proprioceptive_state_size = int(kwargs['proprioceptive_state_size'])
+        self.state_size = int(kwargs['state_size'])
 
-        self.transition_input_size = kwargs['state_size'] + kwargs['action_size']
+        self.transition_input_size = int(kwargs['state_size']) + int(kwargs['action_size'])
         self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
 
 
-        self.action_stream_fc1 = nn.Linear(self.action_size, kwargs['h_dim']//4)
-        self.action_stream_fc2 = nn.Linear(kwargs['h_dim']//4, kwargs['h_dim']//8)
+        self.action_stream_fc1 = nn.Linear(self.action_size, int(kwargs['hidden_size'])//4)
+        self.action_stream_fc2 = nn.Linear(int(kwargs['hidden_size'])//4, int(kwargs['hidden_size'])//8)
 
-        self.exteroceptive_state_stream_fc1 = nn.Linear(kwargs['state_size'] - self.proprioceptive_state_size, kwargs['h_dim']// 4)
-        self.exteroceptive_state_stream_fc2 = nn.Linear(kwargs['h_dim'] // 4, kwargs['h_dim']// 8)
+        self.exteroceptive_state_stream_fc1 = nn.Linear(int(kwargs['state_size']) - self.proprioceptive_state_size, int(kwargs['hidden_size'])// 4)
+        self.exteroceptive_state_stream_fc2 = nn.Linear(int(kwargs['hidden_size']) // 4, int(kwargs['hidden_size'])// 8)
 
-        self.final_fc_mean_1 = nn.Linear(kwargs['h_dim'] // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
+        self.final_fc_mean_1 = nn.Linear(int(kwargs['hidden_size']) // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
         self.final_fc_mean_2 = nn.Linear(self.proprioceptive_state_size, self.proprioceptive_state_size)
 
-        self.final_fc_logvar_1 = nn.Linear(kwargs['h_dim'] // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
+        self.final_fc_logvar_1 = nn.Linear(int(kwargs['hidden_size']) // 4 + self.proprioceptive_state_size, self.proprioceptive_state_size)
         self.final_fc_logvar_2 = nn.Linear(self.proprioceptive_state_size, self.proprioceptive_state_size)
 
 
@@ -544,12 +544,12 @@ class VariationalTransitionNet(nn.Module):
 class SimmilarityNet(nn.Module):
     def __init__(
             self,
-            h_dim):
+            hidden_size):
         super(SimmilarityNet, self).__init__()
 
         self.act = nn.LeakyReLU(0.2)
-        self.fc1 = nn.Linear(h_dim, h_dim // 2)
-        self.fc2 = nn.Linear(h_dim // 2, 1)
+        self.fc1 = nn.Linear(hidden_size, hidden_size // 2)
+        self.fc2 = nn.Linear(hidden_size // 2, 1)
 
     def forward(self, x1, x2):
         input_to_symm = torch.abs(x1 - x2)
@@ -591,7 +591,7 @@ class DistKernelRegressor(nn.Module):
         self.device = kwargs['device']
         self.w = nn.Parameter(torch.tensor(1.0))
         self.b = nn.Parameter(torch.tensor(-0.5))
-        self.similarity_network = SimmilarityNet(h_dim=kwargs['in_features'])
+        self.similarity_network = SimmilarityNet(hidden_size=int(kwargs['in_features']))
 
     def forward(
             self,

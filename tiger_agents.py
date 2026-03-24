@@ -12,9 +12,11 @@ class DAIF_Agent:
     def __init__(self, args):
         
         kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        kwargs['use_packet_feats'] = args.use_packet_feats
 
         self.wbl = kwargs['wbl']
-        self.action_size = kwargs['action_size']
+        self.action_size = int(kwargs['action_size'])
         self.neg_efe_net = NEFENet(kwargs)
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
@@ -25,8 +27,8 @@ class DAIF_Agent:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
-        state_size = kwargs['state_size']
-        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        state_size = int(kwargs['state_size'])
+        hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
         
@@ -46,11 +48,11 @@ class DAIF_Agent:
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
         self.greedy_update = kwargs['greedy_update']
-        self.memory_size = kwargs['agent_memory_size']
+        self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
-        self.replay_batch_size = kwargs['replay_batch_size']
+        self.replay_batch_size = int(kwargs['replay_batch_size'])
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
@@ -315,9 +317,11 @@ class DAIP_Agent:
     def __init__(self, args):
         
         kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        kwargs['use_packet_feats'] = args.use_packet_feats
 
         self.wbl = kwargs['wbl']
-        self.action_size = kwargs['action_size']
+        self.action_size = int(kwargs['action_size'])
         self.neg_efe_net = NEFENet(kwargs)
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
@@ -328,8 +332,8 @@ class DAIP_Agent:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
-        state_size = kwargs['state_size']
-        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        state_size = int(kwargs['state_size'])
+        hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
         
@@ -349,11 +353,11 @@ class DAIP_Agent:
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
         self.greedy_update = kwargs['greedy_update']
-        self.memory_size = kwargs['agent_memory_size']
+        self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
-        self.replay_batch_size = kwargs['replay_batch_size']
+        self.replay_batch_size = int(kwargs['replay_batch_size'])
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.state_loss_fn = nn.MSELoss(reduction='mean')
@@ -589,9 +593,11 @@ class DAIA_Agent:
     def __init__(self, args):
         
         kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        kwargs['use_packet_feats'] = args.use_packet_feats
 
         self.wbl = kwargs['wbl']
-        self.action_size = kwargs['action_size']
+        self.action_size = int(kwargs['action_size'])
         self.neg_efe_net = NEFENet(kwargs)
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
@@ -602,8 +608,8 @@ class DAIA_Agent:
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
 
-        state_size = kwargs['state_size']
-        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        state_size = int(kwargs['state_size'])
+        hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
@@ -621,11 +627,11 @@ class DAIA_Agent:
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
         self.greedy_update = kwargs['greedy_update']
-        self.memory_size = kwargs['agent_memory_size']
+        self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
-        self.replay_batch_size = kwargs['replay_batch_size']
+        self.replay_batch_size = int(kwargs['replay_batch_size'])
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.use_critic_to_act = kwargs['use_critic_to_act']
@@ -834,17 +840,19 @@ class DAISA_Agent:
     def __init__(self, args):
         
         kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        kwargs['use_packet_feats'] = args.use_packet_feats
 
         self.wbl = kwargs['wbl']
-        self.action_size = kwargs['action_size']
+        self.action_size = int(kwargs['action_size'])
         self.neg_efe_net = NEFENet(kwargs)
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
 
-        state_size = kwargs['state_size']
-        hidden_state_size = kwargs['h_dim'] + (int(kwargs['use_packet_feats']) * kwargs['h_dim']) + (int(kwargs['node_features']) * kwargs['h_dim'])
+        state_size = int(kwargs['state_size'])
+        hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
@@ -853,11 +861,11 @@ class DAISA_Agent:
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
         self.greedy_update = kwargs['greedy_update']
-        self.memory_size = kwargs['agent_memory_size']
+        self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = deque(maxlen=self.memory_size)
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
-        self.replay_batch_size = kwargs['replay_batch_size']
+        self.replay_batch_size = int(kwargs['replay_batch_size'])
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.use_critic_to_act = kwargs['use_critic_to_act']
 
@@ -995,11 +1003,13 @@ class ValueLearningAgent:
     def __init__(self, args):
 
         kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        kwargs['use_packet_feats'] = args.use_packet_feats
         
         self.wbl = kwargs['wbl']
-        self.state_size = kwargs['state_size']
-        self.action_size = kwargs['action_size']
-        self.memory = deque(maxlen=kwargs['agent_memory_size'])
+        self.state_size = int(kwargs['state_size'])
+        self.action_size = int(kwargs['action_size'])
+        self.memory = deque(maxlen=int(kwargs['agent_memory_size']))
         self.gamma = float(kwargs['agent_discount_rate'])  # discount rate
         self.boltzmann_sampling = kwargs['boltzmann_sampling']
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
@@ -1009,7 +1019,7 @@ class ValueLearningAgent:
         self.target_model = DQN(kwargs)
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
-        self.replay_batch_size = kwargs['replay_batch_size']
+        self.replay_batch_size = int(kwargs['replay_batch_size'])
         self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
