@@ -391,6 +391,7 @@ def launch(**kwargs):
             logger.info("SmartSwitch already registered — re-initialising")
             smart_switch = core.components["smart_switch"]
             smart_switch.flow_logger = flow_logger # update the flow logger instance
+            smart_switch.wb_tracker = wb_tracker # update the wb tracker instance
             smart_switch.initialize()
 
             # un-pause the switch so PacketIn events
