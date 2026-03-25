@@ -381,6 +381,7 @@ def launch(**kwargs):
             # Registering Switch component:
             smart_switch = SmartSwitch(
               flow_logger=flow_logger,
+              wb_tracker=wb_tracker,
               **args
               )
             core.register("smart_switch", smart_switch) 

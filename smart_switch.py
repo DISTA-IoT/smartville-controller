@@ -82,6 +82,7 @@ class SmartSwitch(EventMixin):
   def __init__ (
         self,
         flow_logger,
+        wb_tracker,
         **kwargs
         ):
 
@@ -99,6 +100,8 @@ class SmartSwitch(EventMixin):
     # without needing to unregister this component from POX (which is
     # not supported).
     self.paused = False
+    self.wb_tracker = wb_tracker
+    self.flow_expires = defaultdict(int)
     self.initialize()
 
 
@@ -132,6 +135,7 @@ class SmartSwitch(EventMixin):
     
     self.openflow_packets_received = 0
     self.forwardingRules = defaultdict(list)
+    self.dropped_packets = 0
     self.logger.info(f"SmartSwitch initialized!!")
 
 
@@ -160,6 +164,7 @@ class SmartSwitch(EventMixin):
             po = of.ofp_packet_out(buffer_id=packet_id, in_port = in_port)
             core.openflow.sendToDPID(switch_id, po)
             self.logger.info(f"Expired packet {packet_id} for {flow_metadata}")
+            self.dropped_packets += 1
 
     # Remove empty flow entries from the unprocessed_flows dictionary
     # Remove also the forwarding rules
@@ -172,6 +177,15 @@ class SmartSwitch(EventMixin):
 
     for fr in to_delete_frs:
       self.forwardingRules[flow_metadata[0]].remove(fr)
+
+    self.wb_tracker.wb_run.log({"switch_stats/dropped_packets": self.dropped_packets}, step=self.wb_tracker.step_counter)
+
+    if len(self.flow_expires.keys()) > 0:
+      flow_exp_report_dict = {}
+      for (src, dst), counter in self.flow_expires.items():
+        flow_exp_report_dict[f"switch_stats/expired_flows_{src}_{dst}"] = counter
+      self.wb_tracker.wb_run.log(flow_exp_report_dict, step=self.wb_tracker.step_counter)
+      
 
 
   def _send_unprocessed_flows(self, switch_id, port, dest_mac_addr, dest_ip_addr):
@@ -330,6 +344,7 @@ class SmartSwitch(EventMixin):
             f"Flow rule expired on switch {switch_id}: "
             f"{match.nw_src} -> {match.nw_dst}, removed from cache"
         )
+        self.flow_expires[(match.nw_src, match.nw_dst)] += 1
 
         
   def send_sampling_rules_to_all(self, event):
