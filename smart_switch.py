@@ -102,6 +102,7 @@ class SmartSwitch(EventMixin):
     self.paused = False
     self.wb_tracker = wb_tracker
     self.flow_expires = defaultdict(int)
+    self.flow_creates = defaultdict(int)
     self.initialize()
 
 
@@ -185,6 +186,12 @@ class SmartSwitch(EventMixin):
       for (src, dst), counter in self.flow_expires.items():
         flow_exp_report_dict[f"switch_stats/expired_flows_{src}_{dst}"] = counter
       self.wb_tracker.wb_run.log(flow_exp_report_dict, step=self.wb_tracker.step_counter)
+
+    if len(self.flow_creates.keys()) > 0:
+      flow_create_report_dict = {}
+      for (src, dst), counter in self.flow_creates.items():
+        flow_create_report_dict[f"switch_stats/created_flows_{src}_{dst}"] = counter
+      self.wb_tracker.wb_run.log(flow_create_report_dict, step=self.wb_tracker.step_counter)
       
 
 
@@ -313,6 +320,7 @@ class SmartSwitch(EventMixin):
       # if self.add_flow_rule_message_to_buffer(msg, switch_id):
       connection.send(msg.pack())
       self.forwardingRules[switch_id].append(forwarding_rule)
+      self.flow_creates[(source_ip_addr, dest_ip_addr)] += 1
 
       self.logger.debug(f"Added new forwarding flow rule to: {switch_id}"+\
                 f" source: {match.nw_src} dest: {match.nw_dst} outgoing port: {outgoing_port}")
@@ -320,7 +328,7 @@ class SmartSwitch(EventMixin):
 
   def _handle_openflow_FlowRemoved(self, event):
     """
-    The switch notifies us whenever a flow rule expires (idle or hard timeout).
+    The switch notifies us whenever a flow rule expires (idle only, hard timeouts are not flagging this handler).
     We must remove it from our local forwardingRules cache, otherwise
     add_ip_to_ip_flow_matching_rule will refuse to reinstall it and traffic dies.
     """
@@ -344,7 +352,7 @@ class SmartSwitch(EventMixin):
             f"Flow rule expired on switch {switch_id}: "
             f"{match.nw_src} -> {match.nw_dst}, removed from cache"
         )
-        self.flow_expires[(match.nw_src, match.nw_dst)] += 1
+        self.flow_expires[(match.nw_src, match.nw_dst)] += len(to_remove)
 
         
   def send_sampling_rules_to_all(self, event):
