@@ -114,15 +114,6 @@ def periodically_requests_stats(period):
         elapsed += 0.1
 
 
-
-def pprint(obj):
-    for key, value in obj.items():
-        if isinstance(value, dict):
-            pprint(value)
-        else:
-          logger.debug(f"{key}: {value}")
-
-
 def run_server():
   global app
   # Start the FastAPI server
@@ -158,12 +149,13 @@ def _handle_ConnectionUp (event):
         app_thread = threading.Thread(target=run_server, daemon=True)
         app_thread.start()
 
-        # Start the parallel echo microservice (runs on 192.168.1.1:7778)
+        """
+        # Start the parallel echo microservice (runs on internal net)
         if echo_thread is None or not echo_thread.is_alive():
           logger.info("Parallel Echo microservice is starting...")
           echo_thread = threading.Thread(target=run_echo_server, daemon=True)
           echo_thread.start()
-     
+        """
 
 def smart_check():
   global args, wb_tracker
@@ -276,7 +268,7 @@ def launch(**kwargs):
     global flow_logger, metrics_logger, controller_brain, FLOWSTATS_FREQ_SECS, args
     
     app = FastAPI(title="SmartSwitch API", description="API for ML experiments")
-    echo_app = FastAPI(title="SmartSwitch Echo API", description="API for internal overhead tracking")
+    # echo_app = FastAPI(title="SmartSwitch Echo API", description="API for internal overhead tracking")
 
     @app.get("/")
     async def root():
