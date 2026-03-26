@@ -62,10 +62,10 @@ class FlowLogger(object):
       if self.wb_tracker is not None:
        self.wb_tracker.wb_run.log(
           {
-            f'flows/{sender_ip_addr}/byte_count': flow['byte_count'],
-            f'flows/{sender_ip_addr}/duration_nsec': flow['duration_nsec'],
-            f'flows/{sender_ip_addr}/duration_sec': flow['duration_sec'],
-            f'flows/{sender_ip_addr}/packet_count': flow['packet_count']
+            f'flowfeats_byte_count/{sender_ip_addr}': flow['byte_count'],
+            f'flowfeats_duration_nsec/{sender_ip_addr}': flow['duration_nsec'],
+            f'flowfeats_duration_sec/{sender_ip_addr}': flow['duration_sec'],
+            f'flowfeats_packet_count/{sender_ip_addr}': flow['packet_count']
           },
           step=self.wb_tracker.step_counter
        )

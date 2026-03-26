@@ -1955,9 +1955,9 @@ class TigerBrain():
                 # Save the models using the main thread (prevents file corruption)
                 if self.save_models_flag:
                     self.check_progress(
-                        curr_cs_acc=async_results['{INFERENCE}/Mean EVAL CS ACC'],
-                        curr_ad_acc=async_results['{INFERENCE}/Mean EVAL AD ACC'],
-                        curr_kr_acc=async_results['{INFERENCE}/Mean EVAL KR PREC']
+                        curr_cs_acc=async_results[f'{INFERENCE}/Mean EVAL CS ACC'],
+                        curr_ad_acc=async_results[f'{INFERENCE}/Mean EVAL AD ACC'],
+                        curr_kr_acc=async_results[f'{INFERENCE}/Mean EVAL KR PREC']
                     )
             
 
