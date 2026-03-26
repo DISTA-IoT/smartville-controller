@@ -302,15 +302,15 @@ def launch(**kwargs):
       cleanup()
       os._exit(0)  # Force exit
 
-
+    """
     @echo_app.get("/echo")
     def echo_target():
-        """
-        Application-layer echo.
-        Simulates a lightweight microservice response.
-        """
+        
+        # Application-layer echo.
+        # Simulates a lightweight microservice response.
+        
         return {"status": "ok", "timestamp": time.time()}
-
+    """
 
     @app.post("/initialize")
     async def initialize(init_controller_args: dict):
