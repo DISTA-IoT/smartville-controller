@@ -85,6 +85,19 @@ class SmartSwitch(EventMixin):
         wb_tracker,
         **kwargs
         ):
+    
+    self.initialize(
+      flow_logger,
+      wb_tracker,
+        **kwargs)
+
+
+  def initialize(
+        self, 
+        flow_logger,
+        wb_tracker,
+        **kwargs):
+
 
     self.flow_idle_timeout = int(kwargs['switching_args'].get('flow_idle_timeout'))
     self.arp_timeout = int(kwargs['switching_args'].get('arp_timeout'))
@@ -96,26 +109,20 @@ class SmartSwitch(EventMixin):
     self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
     self.logger.info(f"SmartSwitch started with args: {kwargs['switching_args']}")
     self.flow_logger = flow_logger
-    #  paused flag lets tiger_server gate all PacketIn processing
-    # without needing to unregister this component from POX (which is
-    # not supported).
-    self.paused = False
     self.wb_tracker = wb_tracker
-    self.flow_expires = defaultdict(int)
-    self.flow_creates = defaultdict(int)
-    self.initialize()
-
-
-  def initialize(self):
 
     # cancel the existing expiry timer before creating a new one.
     if hasattr(self, '_expire_timer') and self._expire_timer is not None:
       self._expire_timer.cancel()
       self._expire_timer = None
 
-    # Reset paused so a re-initialized switch is live from the start.
-    # (tiger_server also sets this explicitly, but belt-and-suspenders.)
+    # Weights and Biases:
+    self.flow_expires = defaultdict(int)
+    self.flow_creates = defaultdict(int)
+
+    # A paused switch wont cache unprocessed packets.
     self.paused = False
+
     # We use this to prevent ARP flooding
     # Key: (switch_id, ARPed_IP) Values: ARP request expire time
     self.recently_sent_ARPs = {}

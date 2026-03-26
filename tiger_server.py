@@ -390,14 +390,12 @@ def launch(**kwargs):
           else:
             logger.info("SmartSwitch already registered — re-initialising")
             smart_switch = core.components["smart_switch"]
-            smart_switch.flow_logger = flow_logger # update the flow logger instance
-            smart_switch.wb_tracker = wb_tracker # update the wb tracker instance
-            smart_switch.initialize()
-
-            # un-pause the switch so PacketIn events
-            # are processed again for the new experiment.
-            smart_switch.paused = False
-            logger.info("SmartSwitch un-paused flowlogging for new experiment")
+            smart_switch.initialize(
+              flow_logger=flow_logger,
+              wb_tracker=wb_tracker,
+              **args
+            )
+            logger.info("SmartSwitch re-initialised!")
 
         except Exception as e:
             logger.error(f"Error creating SmartSwitch: {e}")
