@@ -94,7 +94,7 @@ class WandBTracker():
         self._prev_packets_sent = 0
         self._prev_packets_recv = 0
 
-        self.monitor_interval_secs = args.wandb.resource_monitor_interval_secs
+        self.monitor_interval_secs = int(args.wandb.resource_monitor_interval_secs)
         self.start_resource_monitor()
 
         
