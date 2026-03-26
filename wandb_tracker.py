@@ -82,6 +82,7 @@ class WandBTracker():
             config=kwargs,
             mode=("online" if args.wandb.wb_tracking else "disabled"),
             )
+        self.wb_run_finished = False
         # Resource monitor (holistic CPU for the reviewers)
         self._monitor_thread = None
         self._stop_event = threading.Event()
@@ -139,6 +140,7 @@ class WandBTracker():
 
         if self.wb_run is not None:
             self.wb_run.finish()
+            self.wb_run_finished = True
 
         if not self.wb_run.disabled:
             this_dir = os.path.dirname(os.path.abspath(__file__))

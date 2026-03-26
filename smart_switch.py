@@ -179,19 +179,20 @@ class SmartSwitch(EventMixin):
     for fr in to_delete_frs:
       self.forwardingRules[flow_metadata[0]].remove(fr)
 
-    self.wb_tracker.wb_run.log({"switch_stats_dropped_packets/": self.dropped_packets}, step=self.wb_tracker.step_counter)
+    if not self.wb_tracker.wb_run_finished:
+      self.wb_tracker.wb_run.log({"switch_stats_dropped_packets/": self.dropped_packets}, step=self.wb_tracker.step_counter)
 
-    if len(self.flow_expires.keys()) > 0:
-      flow_exp_report_dict = {}
-      for (src, dst), counter in self.flow_expires.items():
-        flow_exp_report_dict[f"switch_stats_expired_flows/{src}_{dst}"] = counter
-      self.wb_tracker.wb_run.log(flow_exp_report_dict, step=self.wb_tracker.step_counter)
+      if len(self.flow_expires.keys()) > 0:
+        flow_exp_report_dict = {}
+        for (src, dst), counter in self.flow_expires.items():
+          flow_exp_report_dict[f"switch_stats_expired_flows/{src}_{dst}"] = counter
+        self.wb_tracker.wb_run.log(flow_exp_report_dict, step=self.wb_tracker.step_counter)
 
-    if len(self.flow_creates.keys()) > 0:
-      flow_create_report_dict = {}
-      for (src, dst), counter in self.flow_creates.items():
-        flow_create_report_dict[f"switch_stats_created_flows/{src}_{dst}"] = counter
-      self.wb_tracker.wb_run.log(flow_create_report_dict, step=self.wb_tracker.step_counter)
+      if len(self.flow_creates.keys()) > 0:
+        flow_create_report_dict = {}
+        for (src, dst), counter in self.flow_creates.items():
+          flow_create_report_dict[f"switch_stats_created_flows/{src}_{dst}"] = counter
+        self.wb_tracker.wb_run.log(flow_create_report_dict, step=self.wb_tracker.step_counter)
       
 
 
