@@ -2159,9 +2159,9 @@ class TigerBrain():
             # 5. Package results for the main thread queue
             # Note: We do NOT call wb_run.log() or check_progress() here. The main thread will do it!
             results_to_log = {
-                '{INFERENCE}/Mean EVAL AD ACC': mean_eval_ad_acc,
-                '{INFERENCE}/Mean EVAL CS ACC': mean_eval_cs_acc,
-                '{INFERENCE}/Mean EVAL KR PREC': mean_eval_kr_ari,
+                f'{INFERENCE}/Mean EVAL AD ACC': mean_eval_ad_acc,
+                f'{INFERENCE}/Mean EVAL CS ACC': mean_eval_cs_acc,
+                f'{INFERENCE}/Mean EVAL KR PREC': mean_eval_kr_ari,
                 **plots_dict  # Unpack the Plotly figures into the dict
             }
 
