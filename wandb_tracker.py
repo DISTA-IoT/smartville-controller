@@ -142,6 +142,7 @@ class WandBTracker():
             self.wb_run.finish()
             self.wb_run_finished = True
 
+        """
         if not self.wb_run.disabled:
             this_dir = os.path.dirname(os.path.abspath(__file__))
             if not os.path.exists(this_dir+'/wandb'):
@@ -155,7 +156,7 @@ class WandBTracker():
                 self.logger.error(f"Sync failed: {result.stderr}")  # Debug without crashing
             else:
                 self.logger.info("Run synced!!!...")
-    
+        """
 
     def start_resource_monitor(self):
         """
