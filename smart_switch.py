@@ -98,16 +98,19 @@ class SmartSwitch(EventMixin):
         wb_tracker,
         **kwargs):
 
-
+    self.resample_packets = bool(kwargs['resample_packets'])
     self.flow_idle_timeout = int(kwargs['switching_args'].get('flow_idle_timeout'))
     self.arp_timeout = int(kwargs['switching_args'].get('arp_timeout'))
     self.max_buffered_packets = int(kwargs['switching_args'].get('max_buffered_packets'))
     self.max_buffering_secs = int(kwargs['switching_args'].get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs['switching_args'].get('arp_req_exp_secs'))
+    self.normal_flow_hardtimeout = int(kwargs['switching_args'].get('normal_flow_hard_timeout'))
+    self.sampling_flow_hardtimeout = int(kwargs['switching_args'].get('sampling_flow_hard_timeout'))
     self.logger = core.getLogger()
     self.logger.name = "SmartSwitch"
     self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
     self.logger.info(f"SmartSwitch started with args: {kwargs['switching_args']}")
+    self.logger.info(f"SmartSwitch resampling packets: {self.resample_packets}")
     self.flow_logger = flow_logger
     self.wb_tracker = wb_tracker
 
@@ -310,6 +313,23 @@ class SmartSwitch(EventMixin):
 
       actions = [of.ofp_action_dl_addr.set_dst(dest_mac_addr),
                 of.ofp_action_output(port = outgoing_port)]
+      hard_timeout = of.OFP_FLOW_PERMANENT
+
+
+      #### packet sampling stuff
+      if self.resample_packets:
+        hard_timeout = self.normal_flow_hardtimeout
+
+        # verify if this flow is one of those we track in the flowlogger's flow dict:
+        flow_id = str(source_ip_addr) + "_" + str(dest_ip_addr) + "_" + str(outgoing_port)
+        if flow_id in self.flow_logger.flows_dict.keys():
+          flow = self.flow_logger.flows_dict[flow_id]
+          flow.toogle_sampling()
+          if flow.sampling:
+              actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
+              hard_timeout = self.sampling_flow_hardtimeout
+      #####
+
 
       match = of.ofp_match(
         dl_type = type, 
@@ -318,7 +338,7 @@ class SmartSwitch(EventMixin):
 
       msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
                             idle_timeout=self.flow_idle_timeout,
-                            hard_timeout=of.OFP_FLOW_PERMANENT,
+                            hard_timeout=hard_timeout,  
                             buffer_id=packet_id,
                             actions=actions,
                             priority=100,   # <-- lower priority
@@ -336,7 +356,7 @@ class SmartSwitch(EventMixin):
 
   def _handle_openflow_FlowRemoved(self, event):
     """
-    The switch notifies us whenever a flow rule expires (idle only, hard timeouts are not flagging this handler).
+    The switch notifies us whenever a flow rule expires.
     We must remove it from our local forwardingRules cache, otherwise
     add_ip_to_ip_flow_matching_rule will refuse to reinstall it and traffic dies.
     """
@@ -361,37 +381,7 @@ class SmartSwitch(EventMixin):
             f"{match.nw_src} -> {match.nw_dst}, removed from cache"
         )
         self.flow_expires[(match.nw_src, match.nw_dst)] += len(to_remove)
-
-        
-  def send_sampling_rules_to_all(self, event):
     
-    counter = 0
-    flow_list = flow_stats_to_list(event.stats)
-    tracked_senders = [tracked_flow_signature.split("_")[0] for tracked_flow_signature in self.flow_logger.flows_dict]
-    tracked_receivers = [tracked_flow_signature.split("_")[1] for tracked_flow_signature in self.flow_logger.flows_dict]
-    
-    for stat_obj, flow in zip( event.stats, flow_list ):
-
-      sender_ip_addr = flow['match']['nw_src'].split('/')[0]
-      sender_idx = tracked_senders.index(sender_ip_addr) if sender_ip_addr in tracked_senders else None
-
-      if sender_idx is not None:
-        dest_ip_addr = flow['match']['nw_dst'].split('/')[0]
-        if dest_ip_addr == tracked_receivers[sender_idx]:
-          counter += 1
-          sampling_actions = stat_obj.actions + [of.ofp_action_output(port=of.OFPP_CONTROLLER)]
-          sample_msg = of.ofp_flow_mod(
-              command=of.OFPFC_ADD,
-              idle_timeout=self.flow_idle_timeout,
-              hard_timeout=1,   # expires after 1 second
-              priority=200,     # <-- higher priority
-              actions=sampling_actions,
-              match=stat_obj.match
-          )
-          event.connection.send(sample_msg.pack())
-
-    self.logger.debug(f"Sent {counter} sampling rules to switch {event.dpid}")
-     
 
   def build_and_send_ARP_request(
         self, 

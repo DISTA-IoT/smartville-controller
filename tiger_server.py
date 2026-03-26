@@ -86,7 +86,6 @@ stop_tiger_threads = True
 flowstats_req_thread = None
 inference_thread = None
 flowstats_listener = None
-packet_resampling_listener = None
 
 tiger_lock = Lock()
 
@@ -204,7 +203,7 @@ def _remove_flowstats_listeners():
   the surviving old one, so buffers keep being populated by callbacks
   from the previous experiment even when traffic is idle.
   """
-  global flowstats_listener, packet_resampling_listener
+  global flowstats_listener
 
   if flowstats_listener is not None:
     try:
@@ -214,15 +213,6 @@ def _remove_flowstats_listeners():
     except Exception as e:
       logger.error(f"Could not remove flowstats listener: {e}")
     flowstats_listener = None
-
-  if packet_resampling_listener is not None:
-    try:
-      removed = core.openflow.removeListener(packet_resampling_listener)
-      if removed: logger.info("Removed packet resampling listener")
-      else: logger.warning("Could not remove packet resampling listener")
-    except Exception as e:
-      logger.error(f"Could not remove packet resampling listener: {e}")
-    packet_resampling_listener = None
 
 
 def shutdown_process():
@@ -317,7 +307,7 @@ def launch(**kwargs):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
         global flow_logger, metrics_logger, controller_brain, smart_switch, wb_tracker
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
-        global flowstats_listener, packet_resampling_listener
+        global flowstats_listener
 
         try:
           logger.setLevel(init_controller_args.get("smart_controller_log_level").upper())
@@ -418,13 +408,6 @@ def launch(**kwargs):
               controller_brain.env.current_knowledge,
               controller_brain.traffic_dict,
               controller_brain.ips_containers))
-          
-          if args['resample_packets']:
-              logger.info("Enabling packet resampling")
-              packet_resampling_listener = core.openflow.addListenerByName(
-                "FlowStatsReceived", 
-                lambda event: smart_switch.send_sampling_rules_to_all(
-                  event))
           
           flowstats_req_thread = threading.Thread(
             target=periodically_requests_stats,

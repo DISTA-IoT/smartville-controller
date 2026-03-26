@@ -99,6 +99,7 @@ class Flow():
         self.element_class = BENIGN
         self.zda = False
         self.test_zda = False
+        self.sampling = False
 
 
     def get_flow_features(self):
@@ -106,3 +107,6 @@ class Flow():
     
     def get_packet_features(self):
         return self.packet_feat_circular_buffer.buffer[-self.packets_per_sample:]
+
+    def toogle_sampling(self):
+        self.sampling = not self.sampling
