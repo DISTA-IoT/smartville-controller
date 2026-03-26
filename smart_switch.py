@@ -179,18 +179,18 @@ class SmartSwitch(EventMixin):
     for fr in to_delete_frs:
       self.forwardingRules[flow_metadata[0]].remove(fr)
 
-    self.wb_tracker.wb_run.log({"switch_stats/dropped_packets": self.dropped_packets}, step=self.wb_tracker.step_counter)
+    self.wb_tracker.wb_run.log({"switch_stats_dropped_packets/": self.dropped_packets}, step=self.wb_tracker.step_counter)
 
     if len(self.flow_expires.keys()) > 0:
       flow_exp_report_dict = {}
       for (src, dst), counter in self.flow_expires.items():
-        flow_exp_report_dict[f"switch_stats/expired_flows_{src}_{dst}"] = counter
+        flow_exp_report_dict[f"switch_stats_expired_flows/{src}_{dst}"] = counter
       self.wb_tracker.wb_run.log(flow_exp_report_dict, step=self.wb_tracker.step_counter)
 
     if len(self.flow_creates.keys()) > 0:
       flow_create_report_dict = {}
       for (src, dst), counter in self.flow_creates.items():
-        flow_create_report_dict[f"switch_stats/created_flows_{src}_{dst}"] = counter
+        flow_create_report_dict[f"switch_stats_created_flows/{src}_{dst}"] = counter
       self.wb_tracker.wb_run.log(flow_create_report_dict, step=self.wb_tracker.step_counter)
       
 
@@ -430,6 +430,7 @@ class SmartSwitch(EventMixin):
     packet_metadata_list.append(packet_metadata)
     while len(packet_metadata_list) > self.max_buffered_packets: 
        del packet_metadata_list[0]
+       self.dropped_packets += 1
 
 
   def handle_unknown_ip_packet(self, switch_id, incomming_port, packet_in_event):
@@ -528,11 +529,13 @@ class SmartSwitch(EventMixin):
          dest_mac_addr=packet.src,
          dest_ip_addr=packet.next.srcip)
 
+      # Update the arp table (Learns the SOURCE ip → (port, mac))
       self.learn_or_update_arp_table(ip_addr=packet.next.srcip,
                                      mac_addr=packet.src,
                                      port=incomming_port, 
                                      connection=packet_in_event.connection)
 
+      # Then tries to find the DESTINATION (another thing, we may not have learned it yet)
       self.try_creating_flow_rule(switch_id, 
                                     incomming_port, 
                                     packet_in_event)
