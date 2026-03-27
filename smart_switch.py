@@ -43,7 +43,7 @@ from pox.lib.addresses import EthAddr
 import time
 from smartController.entry import Entry
 from collections import defaultdict
-from pox.openflow.of_json import flow_stats_to_list
+from threading import Thread
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
@@ -99,6 +99,7 @@ class SmartSwitch(EventMixin):
         **kwargs):
 
     self.resample_packets = bool(kwargs['resample_packets'])
+    self.sampling_rate_seconds = int(kwargs['sampling_rate_seconds'])
     self.flow_idle_timeout = int(kwargs['switching_args'].get('flow_idle_timeout'))
     self.arp_timeout = int(kwargs['switching_args'].get('arp_timeout'))
     self.max_buffered_packets = int(kwargs['switching_args'].get('max_buffered_packets'))
@@ -113,6 +114,11 @@ class SmartSwitch(EventMixin):
     self.logger.info(f"SmartSwitch resampling packets: {self.resample_packets}")
     self.flow_logger = flow_logger
     self.wb_tracker = wb_tracker
+    self.can_install_permanent_rule = defaultdict(bool)
+    self.sampling_rule_messages = {}
+    self.sampling_action = of.ofp_action_output(
+              port = of.OFPP_CONTROLLER,
+              max_len=self.flow_logger.packet_feat_dim)
 
     # cancel the existing expiry timer before creating a new one.
     if hasattr(self, '_expire_timer') and self._expire_timer is not None:
@@ -145,6 +151,9 @@ class SmartSwitch(EventMixin):
     self.openflow_packets_received = 0
     self.forwardingRules = defaultdict(list)
     self.dropped_packets = 0
+    self.connection = None
+    self.sampling_rules_thread = Thread(target=self.periodically_send_sampling_rules, daemon=True)
+    self.sampling_rules_thread.start()
     self.logger.info(f"SmartSwitch initialized!!")
 
 
@@ -292,6 +301,22 @@ class SmartSwitch(EventMixin):
               f"for (ip:{ip_addr} port:{port} mac:{mac_addr})")
 
 
+  def periodically_send_sampling_rules(self):
+    while not self.paused:
+      time.sleep(self.sampling_rate_seconds)
+      self.send_sampling_rules()
+      
+  
+  def send_sampling_rules(self):
+    if self.connection is None:
+      self.logger.warning("No connection to send sampling rules on")
+      return
+    copied_sampling_rules = self.sampling_rule_messages.copy()
+    for flow_id, sampling_msg in copied_sampling_rules.items():
+        self.connection.send(sampling_msg)
+        self.logger.debug(f"Sent sampling rule for flow {flow_id}")
+       
+
   def add_ip_to_ip_flow_matching_rule(self, 
                                  switch_id,
                                  source_ip_addr, 
@@ -309,40 +334,43 @@ class SmartSwitch(EventMixin):
         outgoing_port=outgoing_port,
         dl_type=type)
       
+      flow_id = str(source_ip_addr) + "_" + str(dest_ip_addr) + "_" + str(outgoing_port)
+
       if forwarding_rule in self.forwardingRules[switch_id]:
         return
 
       actions = [of.ofp_action_dl_addr.set_dst(dest_mac_addr),
                 of.ofp_action_output(port = outgoing_port)]
-      hard_timeout = of.OFP_FLOW_PERMANENT
-
-
-      #### packet sampling stuff
-      if self.resample_packets:
-        hard_timeout = self.normal_flow_hardtimeout
-
-        # verify if this flow is one of those we track in the flowlogger's flow dict:
-        flow_id = str(source_ip_addr) + "_" + str(dest_ip_addr) + "_" + str(outgoing_port)
-        if flow_id in self.flow_logger.flows_dict.keys():
-          flow = self.flow_logger.flows_dict[flow_id]
-          flow.toogle_sampling()
-          if flow.sampling:
-              actions.append(of.ofp_action_output(port = of.OFPP_CONTROLLER))
-              hard_timeout = self.sampling_flow_hardtimeout
-      #####
-
-
+      
       match = of.ofp_match(
         dl_type = type, 
         nw_src = source_ip_addr,
         nw_dst = dest_ip_addr)
+
+      hard_timeout = 10 # give the flow logger some packets to recognise which flows are going to be sampled
+      if self.can_install_permanent_rule[flow_id]:
+        hard_timeout = of.OFP_FLOW_PERMANENT
+      
+      #### packet sampling stuff
+      if self.resample_packets and \
+        flow_id in self.flow_logger.flows_dict.keys() and \
+          flow_id not in self.sampling_rule_messages.keys():
+            
+            sampling_flow_msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
+                              idle_timeout=self.flow_idle_timeout,
+                              hard_timeout=self.sampling_flow_hardtimeout,  
+                              actions=actions + [self.sampling_action],
+                              priority=200,
+                              match=match)
+            self.sampling_rule_messages[flow_id] = sampling_flow_msg
+      #####
 
       msg = of.ofp_flow_mod(command=of.OFPFC_ADD,
                             idle_timeout=self.flow_idle_timeout,
                             hard_timeout=hard_timeout,  
                             buffer_id=packet_id,
                             actions=actions,
-                            priority=100,   # <-- lower priority
+                            priority=100,
                             match=match,
                             flags=of.OFPFF_SEND_FLOW_REM)
       
@@ -350,6 +378,11 @@ class SmartSwitch(EventMixin):
       connection.send(msg.pack())
       self.forwardingRules[switch_id].append(forwarding_rule)
       self.flow_creates[(source_ip_addr, dest_ip_addr)] += 1
+
+      # next time we need to install a flow-rule, 
+      # we can install a permanent one, 
+      # cuz the flow will already be seen by the flowlogger.
+      self.can_install_permanent_rule[flow_id] = True
 
       self.logger.debug(f"Added new forwarding flow rule to: {switch_id}"+\
                 f" source: {match.nw_src} dest: {match.nw_dst} outgoing port: {outgoing_port}")
@@ -513,13 +546,7 @@ class SmartSwitch(EventMixin):
                 incomming_port,
                 packet.next.srcip,
                 packet.next.dstip)
-      
-      if not self.paused:
-        # Save packet for inference purposes...
-        self.flow_logger.cache_unprocessed_packets(
-            src_ip=packet.next.srcip,
-            dst_ip=packet.next.dstip,
-            packet=packet)
+
       
       # Send any waiting packets for that ip
       self._send_unprocessed_flows(
@@ -637,8 +664,7 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_openflow_PacketIn(self, event):
-    
-    self.logger.debug('handling openflow packet_in_event')
+    self.connection = event.connection
     self.openflow_packets_received += 1
     switch_id = event.connection.dpid
     incomming_port = event.port
@@ -653,6 +679,18 @@ class SmartSwitch(EventMixin):
       self.logger.warning(f"switch {switch_id}, port {incomming_port}: ignoring unparsed packet")
       return
   
+    # ── NEW ──────────────────────────────────────────────────────────────────
+    # Packet was explicitly forwarded here by a sampling flow rule (OFPR_ACTION).
+    # Only cache it for ML feature extraction; do NOT touch routing/ARP/buffers.
+    if event.ofp.reason == of.OFPR_ACTION:
+        if isinstance(packet.next, ipv4):
+            self.flow_logger.cache_unprocessed_packets(
+                src_ip=packet.next.srcip,
+                dst_ip=packet.next.dstip,
+                packet=packet)
+        return
+    # ─────────────────────────────────────────────────────────────────────────
+
     if switch_id not in self.arpTables:
       # New switch -- create an empty table
       self.logger.info(f"New switch detected - creating empty flow table with id {switch_id}")
