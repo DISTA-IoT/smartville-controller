@@ -99,7 +99,7 @@ class SmartSwitch(EventMixin):
         **kwargs):
 
     self.resample_packets = bool(kwargs['resample_packets'])
-    self.sampling_rate_seconds = int(kwargs['sampling_rate_seconds'])
+    self.sampling_rate_seconds = int(kwargs['switching_args'].get('sampling_rate_seconds'))
     self.flow_idle_timeout = int(kwargs['switching_args'].get('flow_idle_timeout'))
     self.arp_timeout = int(kwargs['switching_args'].get('arp_timeout'))
     self.max_buffered_packets = int(kwargs['switching_args'].get('max_buffered_packets'))
