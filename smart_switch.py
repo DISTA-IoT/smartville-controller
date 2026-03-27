@@ -140,8 +140,6 @@ class SmartSwitch(EventMixin):
     # (Entries are pairs of switch output ports and MAC addresses)
     self.arpTables = {}
 
-    # This timer handles expiring stuff 
-    # Doesnt seems having to do with time to live stuff
     self._expire_timer = Timer(5, self._handle_expiration, recurring=True)
     
     self.openflow_packets_received = 0
