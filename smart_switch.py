@@ -190,7 +190,10 @@ class SmartSwitch(EventMixin):
       self.forwardingRules[flow_metadata[0]].remove(fr)
 
     if not self.wb_tracker.wb_run_finished:
-      self.wb_tracker.wb_run.log({"switch_stats_dropped_packets/": self.dropped_packets}, step=self.wb_tracker.step_counter)
+      self.wb_tracker.wb_run.log({
+         "main_switch_stats/dropped_packets": self.dropped_packets,
+         "main_switch_stats/openflow_packets_received": self.openflow_packets_received
+          }, step=self.wb_tracker.step_counter)
 
       if len(self.flow_expires.keys()) > 0:
         flow_exp_report_dict = {}
