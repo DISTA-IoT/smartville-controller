@@ -105,7 +105,6 @@ class SmartSwitch(EventMixin):
     self.max_buffered_packets = int(kwargs['switching_args'].get('max_buffered_packets'))
     self.max_buffering_secs = int(kwargs['switching_args'].get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs['switching_args'].get('arp_req_exp_secs'))
-    self.normal_flow_hardtimeout = int(kwargs['switching_args'].get('normal_flow_hard_timeout'))
     self.sampling_flow_hardtimeout = int(kwargs['switching_args'].get('sampling_flow_hard_timeout'))
     self.logger = core.getLogger()
     self.logger.name = "SmartSwitch"
