@@ -1002,7 +1002,7 @@ class TigerBrain():
             # total classification reward:  
             classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
         else:
-            no_confidence_penalty = -self.intrusion_detection_kwargs['no_confidence_penalty']
+            no_confidence_penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
             classification_reward = no_confidence_penalty
 
         # update the current budget 
@@ -1142,7 +1142,7 @@ class TigerBrain():
                 if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
                     current_reward += cost_of_accepting
                 elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-                    current_reward += self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * cost_of_accepting
+                    current_reward += float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) * cost_of_accepting
                 
             else:   # block the cluster
                 # blocked benign traffic implies to pay a cost:
@@ -1150,7 +1150,7 @@ class TigerBrain():
                 if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
                     current_reward -=  cost_of_blocking
                 elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-                    current_reward -= self.intrusion_detection_kwargs['hard_bad_classif_cost_factor'] * cost_of_blocking
+                    current_reward -= float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) * cost_of_blocking
             
             if epistemic_action:
                 # cti action

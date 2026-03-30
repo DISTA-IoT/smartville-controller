@@ -11,13 +11,13 @@ class NewTigerEnvironment:
         """Initialize the attributes of the Car class."""
         self.init_budget = float(kwargs.intrusion_detection.tiger_init_budget)
         self.flow_rewards_dict = copy.deepcopy(kwargs.rewards)
-        self.min_budget = kwargs.intrusion_detection.min_budget
-        self.max_budget = kwargs.intrusion_detection.max_budget 
+        self.min_budget = float(kwargs.intrusion_detection.min_budget)
+        self.max_budget = float(kwargs.intrusion_detection.max_budget)
         self.current_budget = self.init_budget
         self.traffic_dict = copy.deepcopy(kwargs.traffic_dict)
         self.init_knowledge = copy.deepcopy(kwargs.knowledge)
         self.logger = kwargs.logger
-        self.max_episode_steps = kwargs.intrusion_detection.max_episode_steps
+        self.max_episode_steps = int(kwargs.intrusion_detection.max_episode_steps)
         self.cti_price_factor = float(kwargs.intrusion_detection.cti_price_factor)
         self.cti_prices = self.get_cti_prices()
         self.useless_epistemic_penalty = int(kwargs.intrusion_detection.useless_epistemic_penalty)
