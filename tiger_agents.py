@@ -21,7 +21,7 @@ class DAIF_Agent:
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
-        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
+        self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
@@ -326,7 +326,7 @@ class DAIP_Agent:
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
-        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
+        self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
@@ -602,7 +602,7 @@ class DAIA_Agent:
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
-        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
+        self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
         
         self.transitionnet = None
         self.transitionnet_optimizer = None
@@ -849,7 +849,7 @@ class DAISA_Agent:
         self.target_neg_efe_net = NEFENet(kwargs)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
-        self.epistemic_regularisation_factor = kwargs['epistemic_regularisation_factor']
+        self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
 
         state_size = int(kwargs['state_size'])
         hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
