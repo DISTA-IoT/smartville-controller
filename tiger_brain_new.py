@@ -306,15 +306,13 @@ class DynamicLabelEncoder:
         return add_replay_buffer_signal
 
 
-def get_metrics_tensor(metrics_dict, ip, health_args ):
-            metrics_to_monitor = health_args['probe_metrics']
-            time_window_len = health_args['node_features_time_window']
-            if ip in metrics_dict.keys():
-                return torch.Tensor([
-                        metrics_dict[ip][metric] for metric in metrics_to_monitor]).T 
-            else:
-                return -1 * torch.ones(
-                    size=(time_window_len,len(metrics_to_monitor)))
+def get_metrics_tensor(metrics_dict, ip, health_args):
+    metrics_to_monitor = health_args['probe_metrics']
+    if metrics_dict is not None and ip in metrics_dict:
+        return torch.tensor([metrics_dict[ip][metric] for metric in metrics_to_monitor], dtype=torch.float32).T
+    else:
+        time_window_len = health_args['node_features_time_window']
+        return torch.full((time_window_len, len(metrics_to_monitor)), -1.0, dtype=torch.float32)
             
 
 class TigerBrain():
@@ -325,6 +323,7 @@ class TigerBrain():
         
         self._lock = threading.Lock()
         self._epistemic_lock = threading.Lock()
+        self._model_lock = threading.Lock()
         self.eval = args.intrusion_detection.eval
         self.kwargs = kwargs
         self.intrusion_detection_kwargs = kwargs['intrusion_detection']
@@ -371,19 +370,23 @@ class TigerBrain():
         self.epistemic_agency = args.intrusion_detection.epistemic_agency
         self.save_models_flag = args.intrusion_detection.save_models
         self.profiling_stats = {}  # Dict to hold lists of timings
+        self._rewards_lookup = None
+        self._g1_codes_tensor = None
+        self._g2_codes_tensor = None
 
 
     @contextmanager
     def profile(self, name):
         """Elegant context manager for timing code blocks. Appends to lists for mean calculation."""
-        if torch.cuda.is_available():
+        use_cuda = torch.cuda.is_available()
+        if use_cuda:
             torch.cuda.synchronize()
             
         start = time.perf_counter()
         
         yield  # The wrapped code runs here
         
-        if torch.cuda.is_available():
+        if use_cuda:
             torch.cuda.synchronize()
             
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -827,16 +830,22 @@ class TigerBrain():
         class_codes = batch.class_labels.squeeze(-1)
         if mode == TRAINING:
             g1_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G1s'])
+            if self._g1_codes_tensor is None or self._g1_codes_tensor.shape[0] != len(g1_codes):
+                 self._g1_codes_tensor = torch.tensor(g1_codes, device=class_codes.device, dtype=class_codes.dtype)
+
             zda_labels = torch.isin(
                 class_codes,
-                torch.tensor(g1_codes, device=class_codes.device, dtype=class_codes.dtype)
+                self._g1_codes_tensor
             ).unsqueeze(-1).to(torch.float32)
             test_zda_labels = torch.zeros_like(zda_labels)
         elif mode == INFERENCE:
             g2_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G2s'])
+            if self._g2_codes_tensor is None or self._g2_codes_tensor.shape[0] != len(g2_codes):
+                 self._g2_codes_tensor = torch.tensor(g2_codes, device=class_codes.device, dtype=class_codes.dtype)
+
             zda_labels = torch.isin(
                 class_codes,
-                torch.tensor(g2_codes, device=class_codes.device, dtype=class_codes.dtype)
+                self._g2_codes_tensor
             ).unsqueeze(-1).to(torch.float32)
             test_zda_labels = zda_labels
 
@@ -847,11 +856,13 @@ class TigerBrain():
         """
         Resolve per-sample rewards without rebuilding intermediate tensors multiple times.
         """
-        rewards_lookup = {
-            class_idx: self.env.flow_rewards_dict[class_name]
-            for class_name, class_idx in self.encoder.get_mapping().items()
-        }
-        rewards = [rewards_lookup[label.item()] for label in encoded_labels]
+        if self._rewards_lookup is None or len(self._rewards_lookup) != len(self.encoder.get_mapping()):
+            self._rewards_lookup = {
+                class_idx: self.env.flow_rewards_dict[class_name]
+                for class_name, class_idx in self.encoder.get_mapping().items()
+            }
+
+        rewards = [self._rewards_lookup[label.item()] for label in encoded_labels]
         return torch.tensor(rewards, dtype=torch.float32)
 
 
@@ -1277,26 +1288,30 @@ class TigerBrain():
             return
         
         merged_batch, merged_query_mask, accuracy_mask = online_batch_tuple
-        with self.profile("onl_inf_forward_pass"):
-            # prototypical classification and kernel regression
-            logits, hidden_vectors, predicted_kernel = self.infer(
-                self.classifier,
-                merged_batch,
-                self.current_known_classes_count,
-                query_mask=merged_query_mask)           
         
-        # one hot labels for the predictions
-        one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
+        with torch.no_grad():
+            with self.profile("onl_inf_forward_pass"):
+                # prototypical classification and kernel regression
+                with self._model_lock:
+                    logits, hidden_vectors, predicted_kernel = self.infer(
+                        self.classifier,
+                        merged_batch,
+                        self.current_known_classes_count,
+                        query_mask=merged_query_mask)
 
-        with self.profile("onl_inf_AD"):
-            # (Individual) Anomaly detection:    
-            zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
-                batch=merged_batch,
-                logits=logits,
-                one_hot_labels=one_hot_labels,
-                query_mask=merged_query_mask,
-                accuracy_mask=accuracy_mask
-                )
+            # one hot labels for the predictions
+            one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
+
+            with self.profile("onl_inf_AD"):
+                # (Individual) Anomaly detection:
+                with self._model_lock:
+                    zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
+                        batch=merged_batch,
+                        logits=logits,
+                        one_hot_labels=one_hot_labels,
+                        query_mask=merged_query_mask,
+                        accuracy_mask=accuracy_mask
+                        )
         
         # We needed the aux samples to perform inference in the prototypical way, but
         # actually, we only care about online anomalies:
@@ -1339,33 +1354,42 @@ class TigerBrain():
                     )
             
 
-        # Anomaly clustering is going to be done only if there are predicted anomalies.
-        if num_of_predicted_anomalies > 0:
+            # Anomaly clustering is going to be done only if there are predicted anomalies.
+            if num_of_predicted_anomalies > 0:
 
-            with self.profile("onl_inf_CAD"):
-                predicted_clusters_oh, centroids, missing_clusters = self.collective_anomaly_detection( 
-                    merged_batch,
-                    predicted_kernel, 
-                    one_hot_labels, 
-                    predicted_online_zda_mask, 
-                    num_of_online_samples,
-                    hidden_vectors
-                )
-            
-            with self.profile("onl_inf_act_unknown"):
-                self.act_on_unknown_clusters(
-                    predicted_clusters_oh, 
-                    centroids, 
-                    missing_clusters, 
-                    num_of_predicted_anomalies, 
-                    number_of_predicted_known_samples, 
-                    predicted_online_zda_mask,
-                    sample_rewards
+                with self.profile("onl_inf_CAD"):
+                    predicted_clusters_oh, centroids, missing_clusters = self.collective_anomaly_detection(
+                        merged_batch,
+                        predicted_kernel,
+                        one_hot_labels,
+                        predicted_online_zda_mask,
+                        num_of_online_samples,
+                        hidden_vectors
                     )
+
+                with self.profile("onl_inf_act_unknown"):
+                    self.act_on_unknown_clusters(
+                        predicted_clusters_oh,
+                        centroids,
+                        missing_clusters,
+                        num_of_predicted_anomalies,
+                        number_of_predicted_known_samples,
+                        predicted_online_zda_mask,
+                        sample_rewards
+                        )
 
         # train!
         with self.profile("onl_inf_ER"):
-            self.mitigation_agent.replay(self.wb_tracker.step_counter)
+            # CRITICAL OPTIMIZATION: Move mitigation agent replay to a background thread
+            if not hasattr(self, '_mitigation_replay_thread') or not self._mitigation_replay_thread.is_alive():
+                self._mitigation_replay_thread = threading.Thread(
+                    target=self.mitigation_agent.replay,
+                    args=(self.wb_tracker.step_counter,),
+                    daemon=True
+                )
+                self._mitigation_replay_thread.start()
+            else:
+                self.logger_instance.debug("Mitigation agent replay thread still running, skipping this cycle.")
 
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
@@ -1494,15 +1518,17 @@ class TigerBrain():
             curr_budget):
 
         # get state vectors
-        state_vec = torch.hstack(
-           [centroid, 
-            torch.Tensor([num_of_anomalies]).unsqueeze(-1),
-            self.zda_confidence.detach().unsqueeze(-1),
-            torch.Tensor([number_of_known_samples_in_batch]).unsqueeze(-1),
-            self.cs_classif_confidence.detach().unsqueeze(-1),
-            torch.Tensor([self.env.epistemic_actions_available]).unsqueeze(-1),
-            torch.Tensor([curr_budget]).unsqueeze(-1)]
-            ).squeeze(0)
+        state_vec = torch.cat(
+           [centroid.squeeze(0),
+            torch.tensor([
+                float(num_of_anomalies),
+                self.zda_confidence.item(),
+                float(number_of_known_samples_in_batch),
+                self.cs_classif_confidence.item(),
+                float(self.env.epistemic_actions_available),
+                float(curr_budget)
+            ], device=centroid.device, dtype=centroid.dtype)]
+        )
 
         return state_vec
     
@@ -1542,8 +1568,16 @@ class TigerBrain():
                     # RE-CHECK — online_inference may have triggered perform_epistemic_action
                     # which calls add_replay_buffer → batch_processing_allowed = False
                     if self.batch_processing_allowed:
-                        with self.profile("experience_learning_total"):
-                            self.experience_learning()
+                        # CRITICAL OPTIMIZATION: Move experience learning to a background thread
+                        # to keep the inference loop fast and responsive.
+                        if not hasattr(self, '_learning_thread') or not self._learning_thread.is_alive():
+                            self._learning_thread = threading.Thread(
+                                target=self.experience_learning,
+                                daemon=True
+                            )
+                            self._learning_thread.start()
+                        else:
+                            self.logger_instance.debug("Experience learning thread still running, skipping this cycle.")
 
                     if not self.epistemic_agency:
                         self.wb_tracker.step_counter += 1
@@ -1620,12 +1654,14 @@ class TigerBrain():
         )
 
     def sample_from_replay_buffers(self, samples_per_class, mode):
-        balanced_packet_batch = None
-        balanced_node_feat_batch = None
-
-        init = True
+        all_flow_batches = []
+        all_packet_batches = []
+        all_node_feat_batches = []
+        all_labels = []
+        all_zda_labels = []
+        all_test_zda_labels = []
   
-        classes_decimal_tensor = torch.Tensor(list(self.replay_buffers.keys())).to(torch.long)
+        classes_decimal_tensor = torch.tensor(list(self.replay_buffers.keys()), device=self.device).to(torch.long)
         nl_labels = self.encoder.inverse_transform(classes_decimal_tensor)
         
         for replay_buff, class_nl_label  in zip(self.replay_buffers.values(), nl_labels):
@@ -1658,47 +1694,28 @@ class TigerBrain():
                             batch_labels = replay_buff.sample(samples_per_class)
             except:
                 self.logger_instance.warning('Buffer sync failed. Skipping this batch.')
-                return None
+                continue
 
-            if init:
-                balanced_flow_batch = flow_batch
-                balanced_labels = batch_labels
-                balanced_zda_labels = zda_batch_labels
-                balanced_test_zda_labels = test_zda_batch_labels
-                if packet_batch is not None:
-                    balanced_packet_batch = packet_batch
-                if node_feat_batch is not None:
-                    balanced_node_feat_batch = node_feat_batch
+            all_flow_batches.append(flow_batch)
+            all_labels.append(batch_labels)
+            all_zda_labels.append(zda_batch_labels)
+            all_test_zda_labels.append(test_zda_batch_labels)
+            if packet_batch is not None:
+                all_packet_batches.append(packet_batch)
+            if node_feat_batch is not None:
+                all_node_feat_batches.append(node_feat_batch)
 
-            else: 
-                balanced_flow_batch = torch.vstack(
-                    [balanced_flow_batch, flow_batch])
-                balanced_labels = torch.vstack(
-                    [balanced_labels, batch_labels])
-                balanced_zda_labels = torch.vstack(
-                    [balanced_zda_labels, zda_batch_labels])
-                balanced_test_zda_labels = torch.vstack(
-                    [balanced_test_zda_labels, test_zda_batch_labels])
-                if packet_batch is not None:
-                    balanced_packet_batch = torch.vstack(
-                        [balanced_packet_batch, packet_batch])
-                if node_feat_batch is not None:
-                    balanced_node_feat_batch = torch.vstack(
-                       [balanced_node_feat_batch, node_feat_batch])
-
-            init = False
-
-        if init == True:
+        if not all_flow_batches:
             self.logger_instance.warning('Only G2s for now. Skipping this batch.')
             return None
 
         return Batch(
-            flow_features=balanced_flow_batch, 
-            packet_features=balanced_packet_batch, 
-            node_features=balanced_node_feat_batch,
-            class_labels=balanced_labels,
-            zda_labels=balanced_zda_labels,
-            test_zda_labels=balanced_test_zda_labels)
+            flow_features=torch.cat(all_flow_batches, dim=0),
+            packet_features=(torch.cat(all_packet_batches, dim=0) if all_packet_batches else None),
+            node_features=(torch.cat(all_node_feat_batches, dim=0) if all_node_feat_batches else None),
+            class_labels=torch.cat(all_labels, dim=0),
+            zda_labels=torch.cat(all_zda_labels, dim=0),
+            test_zda_labels=torch.cat(all_test_zda_labels, dim=0))
 
 
     def get_canonical_query_mask(self, whole_batch_size):
@@ -1869,21 +1886,26 @@ class TigerBrain():
         Other methods may use the neural networks, but just for inference. 
         """
 
-        training_batch = self.sample_from_replay_buffers(
-                samples_per_class=self.batch_size,
-                mode=TRAINING)
+        with self._lock:
+            training_batch = self.sample_from_replay_buffers(
+                    samples_per_class=self.batch_size,
+                    mode=TRAINING)
         
+        if training_batch is None:
+            return
+
         # get zda labels for the online batch
         training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
         
         query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
         with self.profile("EL_forward_pass"):
-            logits, hidden_vectors, predicted_kernel = self.infer(
-                classifier=self.classifier,
-                batch=training_batch,
-                known_classes_count=self.current_known_classes_count,
-                query_mask=query_mask)
+            with self._model_lock:
+                logits, hidden_vectors, predicted_kernel = self.infer(
+                    classifier=self.classifier,
+                    batch=training_batch,
+                    known_classes_count=self.current_known_classes_count,
+                    query_mask=query_mask)
         
         with self.profile("EL_preproc"):
             one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
@@ -1896,7 +1918,8 @@ class TigerBrain():
             try:
                 with self.profile("EL_conf_dec"):
                     # separate between candidate known traffic and unknown traffic.
-                    zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+                    with self._model_lock:
+                        zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
             except:
                 self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
                 self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
@@ -1948,10 +1971,11 @@ class TigerBrain():
         with self.profile("EL_backprop"):
             # Only during training we learn from feedback errors.  
             # backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
-            # update weights
-            self.optimizer.step()
+            with self._model_lock:
+                self.optimizer.zero_grad()
+                loss.backward()
+                # update weights
+                self.optimizer.step()
 
         
          
@@ -2052,7 +2076,7 @@ class TigerBrain():
         """
         with self.profile("EL_online_eval"):
 
-            with self._epistemic_lock:
+            with self._lock:
                 # --- Snapshot lightweight state before doing anything else ---
                 # Shallow-copy the buffers dict: just copies references, not the actual data.
                 # This freezes WHICH buffers we'll iterate over, preventing RuntimeError
@@ -2065,24 +2089,21 @@ class TigerBrain():
 
                 # Snapshot current_knowledge so epistemic actions mid-eval don't
                 # change what we consider G1/G2 halfway through.
-                frozen_knowledge = {
-                    k: set(v) for k, v in self.env.current_knowledge.items()
-                }
-
-                frozen_known_classes_count = self.current_known_classes_count
-
-            # known_classes_count is already passed in as a parameter (snapshot at call site),
-            # so confusion matrices are sized correctly for THIS eval round.
-            # ---------------------------------------------------------------
+                with self._epistemic_lock:
+                    frozen_knowledge = {
+                        k: set(v) for k, v in self.env.current_knowledge.items()
+                    }
+                    frozen_known_classes_count = self.current_known_classes_count
 
             # 1. Instantiate completely independent model clones
-            classifier_clone = copy.deepcopy(self.classifier)
-            classifier_clone.eval()
+            with self._model_lock:
+                classifier_clone = copy.deepcopy(self.classifier)
+                classifier_clone.eval()
 
-            decoder_clone = None
-            if self.multi_class:
-                decoder_clone = copy.deepcopy(self.confidence_decoder)
-                decoder_clone.eval()
+                decoder_clone = None
+                if self.multi_class:
+                    decoder_clone = copy.deepcopy(self.confidence_decoder)
+                    decoder_clone.eval()
 
             mean_eval_ad_acc = 0.0
             mean_eval_cs_acc = 0.0
@@ -2303,17 +2324,19 @@ class TigerBrain():
 
 
     def save_cs_model(self, postfix='single'):
-        torch.save(
-            self.classifier.state_dict(), 
-            self.classifier_path+postfix+'.pt')
+        with self._model_lock:
+            torch.save(
+                self.classifier.state_dict(),
+                self.classifier_path+postfix+'.pt')
          
         self.logger_instance.info(f'\033[95mNew {postfix} flow classifier model version saved to {self.classifier_path}{postfix}.pt\033[0m')
 
 
     def save_ad_model(self, postfix='single'):
-        torch.save(
-            self.confidence_decoder.state_dict(), 
-            self.confidence_decoder_path+postfix+'.pt')
+        with self._model_lock:
+            torch.save(
+                self.confidence_decoder.state_dict(),
+                self.confidence_decoder_path+postfix+'.pt')
          
         self.logger_instance.info(f'\033[95mNew {postfix} confidence decoder model version saved to {self.confidence_decoder_path}{postfix}.pt\033[0m')
 
@@ -2354,22 +2377,19 @@ class TigerBrain():
         
         Returns a Batch object containing the corresponding features and labels.
         """
-        packet_input_batch = ([] if self.use_packet_feats else None)
-        node_feat_input_batch = ([] if self.use_node_feats else None)
-        flow_input_batch = []
+        flow_input_batch = torch.stack([flow.get_flow_features() for flow in flows])
 
-        for flow in flows:
-            flow_input_batch.append(flow.get_flow_features().unsqueeze(0))
-            if self.use_packet_feats:
-                packet_input_batch.append(flow.get_packet_features().unsqueeze(0))
-            if self.use_node_feats:
-                node_feat_input_batch.append(get_metrics_tensor(node_feats, flow.dest_ip, self.kwargs['health']).unsqueeze(0))
-                    
-        flow_input_batch = torch.vstack(flow_input_batch)
+        packet_input_batch = None
         if self.use_packet_feats:
-            packet_input_batch = torch.vstack(packet_input_batch)
+            packet_input_batch = torch.stack([flow.get_packet_features() for flow in flows])
+
+        node_feat_input_batch = None
         if self.use_node_feats:
-            node_feat_input_batch = torch.vstack(node_feat_input_batch)
+            health_args = self.kwargs['health']
+            node_feat_input_batch = torch.stack([
+                get_metrics_tensor(node_feats, flow.dest_ip, health_args)
+                for flow in flows
+            ])
          
         batch_labels = self.get_labels(flows)
         

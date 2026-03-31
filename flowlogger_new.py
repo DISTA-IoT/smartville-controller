@@ -22,6 +22,7 @@ from smartController.attr_dict import AttrDict
 import torch
 import torch.nn.functional as F
 from pox.lib.packet.ipv4 import ipv4
+from collections import defaultdict
 
 class FlowLogger(object):
     
@@ -39,6 +40,7 @@ class FlowLogger(object):
       args = AttrDict(kwargs)
       self.wb_tracker = wb_tracker
       self.flows_dict = {}
+      self.ip_pair_to_flows = defaultdict(list)
       self.packet_buffers = {}
       self.logger_instance = core.getLogger()
       self.logger_instance.name = "FlowLogger"
@@ -54,6 +56,7 @@ class FlowLogger(object):
 
     def reset(self):
        self.flows_dict = {}
+       self.ip_pair_to_flows = defaultdict(list)
        self.packet_buffers = {}
 
 
@@ -77,31 +80,29 @@ class FlowLogger(object):
             flow['packet_count']]).to(torch.float32)
 
 
-    def get_anonymized_copy(self, original_packet):
-      # Create a new instance of the IPv4 packet
-      new_ipv4_packet = ipv4(raw=original_packet.raw)
-      new_ipv4_packet.srcip = '0.0.0.0'
-      new_ipv4_packet.dstip = '0.0.0.0'
-      if self.anomyn_ports:
-         new_ipv4_packet.next.srcport = 0  # Set source port to 0
-         new_ipv4_packet.next.dstport = 0  # Set destination port to 0
-      return new_ipv4_packet
-
-
     def build_packet_tensor(self, packet):
-        
-        packet_copy = self.get_anonymized_copy(packet)
-        # Old anonymization techniche: (only IP masking was verified, port masking corresponds to last two byte sequences and need verification)
-        # packet_copy.raw = packet.raw[:12] + b'\x00\x00\x00\x00'  + b'\x00\x00\x00\x00' + b'\x00\x00' + b'\x00\x00' + packet.raw[24:]
-        
-        # These prints show that anonymization is working:
-        # print(f" old srcip: {packet.srcip} old dstip: {packet.dstip} old srcport: {packet.next.srcport} old destport: {packet.next.dstport}")
-        # print(f" new srcip: {packet_copy.srcip} new dstip: {packet_copy.dstip} new srcport: {packet_copy.next.srcport} new destport: {packet_copy.next.dstport}")
-
+        # packet is an ipv4 object
         # Extract the first self.packet_feat_dim bytes of the packet
-        packet_data = packet_copy.raw[:self.packet_feat_dim]
-        # Convert packet data to a tensor
-        payload_data_tensor = torch.tensor([int(x) for x in packet_data], dtype=torch.float32)
+        raw = bytearray(packet.raw[:self.packet_feat_dim])
+        
+        # Anonymize IP (bytes 12-19 in standard IPv4 header)
+        if len(raw) >= 20:
+            raw[12:20] = b'\x00\x00\x00\x00\x00\x00\x00\x00'
+        elif len(raw) > 12:
+            raw[12:] = b'\x00' * (len(raw) - 12)
+        
+        if self.anomyn_ports:
+            # ihl is the lower 4 bits of the first byte, in 32-bit words
+            ihl = (packet.raw[0] & 0x0f) * 4
+            # Source port is at bytes ihl to ihl+1, Dest port at ihl+2 to ihl+3
+            if len(raw) >= ihl + 4:
+                raw[ihl:ihl+4] = b'\x00\x00\x00\x00'
+            elif len(raw) > ihl:
+                raw[ihl:] = b'\x00' * (len(raw) - ihl)
+
+        # Convert packet data to a tensor efficiently
+        payload_data_tensor = torch.frombuffer(raw, dtype=torch.uint8).to(torch.float32)
+
         # Pad the array if it's less than self.packet_feat_dim bytes
         if payload_data_tensor.shape[0] < self.packet_feat_dim:
             payload_data_tensor = F.pad(payload_data_tensor, 
@@ -121,21 +122,17 @@ class FlowLogger(object):
         returns a flag indicating if the buffer is full of data.
         """
 
-        partial_flow_id = str(src_ip) + "_" + str(dst_ip)
+        ip_pair = (str(src_ip), str(dst_ip))
+        flows = self.ip_pair_to_flows.get(ip_pair, [])
 
-
-        for key in self.flows_dict.keys():
+        if flows:
+            # Extract packet tensor (only once for all matching flows)
+            packet_tensor = self.build_packet_tensor(packet=packet.next)
             
-            if partial_flow_id in key:
-               # We have at this moment a flow object that is interested in this packet.
-         
-               # Extract packet tensor
-               packet_tensor = self.build_packet_tensor(packet=packet.next)
-
+            for flow in flows:
                # Add packet to the buffer
-               self.flows_dict[key].packet_feat_circular_buffer.add(packet_tensor)
-
-               self.logger_instance.debug(f"Updated packet buffer for {partial_flow_id}")
+               flow.packet_feat_circular_buffer.add(packet_tensor)
+               self.logger_instance.debug(f"Updated packet buffer for {ip_pair}")
 
 
 
@@ -180,6 +177,7 @@ class FlowLogger(object):
                packets_per_sample=self.packets_per_sample,
                replay_buffer_max_capacity=self.replay_buffer_max_capacity)
             self.flows_dict[flow.flow_id] = flow
+            self.ip_pair_to_flows[(sender_ip_addr, dest_ip_addr)].append(flow)
 
 
          # This is where our labelling takes place...
@@ -210,7 +208,13 @@ class FlowLogger(object):
 
     def reset_all_flows_metadata(self):
        self.flows_dict = {}
+       self.ip_pair_to_flows = defaultdict(list)
 
 
     def reset_single_flow_metadata(self, flow_id):
-       del self.flows_dict[flow_id]
+       flow = self.flows_dict.get(flow_id)
+       if flow:
+           ip_pair = (flow.source_ip, flow.dest_ip)
+           if flow in self.ip_pair_to_flows[ip_pair]:
+               self.ip_pair_to_flows[ip_pair].remove(flow)
+           del self.flows_dict[flow_id]

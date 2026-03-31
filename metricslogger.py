@@ -195,10 +195,11 @@ class MetricsLogger:
 
         # Now join them all — they're all winding down in parallel
         for consumer_thread in self.consumer_threads:
-            consumer_thread.join()
+            if consumer_thread.is_alive():
+                consumer_thread.join(timeout=1.0)
         
         if self.consumer_thread_manager:
-            self.consumer_thread_manager.join()
+            self.consumer_thread_manager.join(timeout=2.0)
             self.logger.info("Consumer thread stopped")
         if self.prometheus_httpd is not None:
             self.prometheus_httpd.shutdown()
