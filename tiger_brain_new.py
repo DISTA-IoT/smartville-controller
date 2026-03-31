@@ -271,6 +271,19 @@ class DynamicLabelEncoder:
         return decoded_labels
 
 
+    def inverse_transform_to_str(self, encoded_labels):
+        """
+        Decode a tensor/array/list of encoded labels into string labels.
+        """
+        flat_labels = encoded_labels.reshape(-1).tolist() if hasattr(encoded_labels, "reshape") else encoded_labels
+        return [str(self._int_to_label[int(code)]) for code in flat_labels]
+
+
+    def get_codes_for_labels(self, labels):
+        """Return encoded integer IDs for known natural-language labels."""
+        return [self._label_to_int[label] for label in labels if label in self._label_to_int]
+
+
     def get_mapping(self):
         return self._label_to_int
 
@@ -724,14 +737,18 @@ class TigerBrain():
         for label in unique_labels:
 
             mask = batch_labels == label
+            masked_flow = flow_input_batch[mask]
+            masked_packet = packet_input_batch[mask] if self.use_packet_feats else None
+            masked_node = node_feat_input_batch[mask] if self.use_node_feats else None
+            masked_labels = batch_labels[mask]
             
-            for sample_idx in range(flow_input_batch[mask].shape[0]):
+            for sample_idx in range(masked_flow.shape[0]):
                 try:
                     buffers[label.item()].push(
-                        flow_state=flow_input_batch[mask][sample_idx].unsqueeze(0), 
-                        packet_state=(packet_input_batch[mask][sample_idx].unsqueeze(0) if self.use_packet_feats else None),
-                        node_state=(node_feat_input_batch[mask][sample_idx].unsqueeze(0) if self.use_node_feats else None),
-                        label=batch_labels[mask][sample_idx].unsqueeze(0))
+                        flow_state=masked_flow[sample_idx].unsqueeze(0), 
+                        packet_state=(masked_packet[sample_idx].unsqueeze(0) if self.use_packet_feats else None),
+                        node_state=(masked_node[sample_idx].unsqueeze(0) if self.use_node_feats else None),
+                        label=masked_labels[sample_idx].unsqueeze(0))
                 except:
                     raise RuntimeError(f'Error while pushing sample {sample_idx} with label {label} to replay buffer {label}')
 
@@ -744,10 +761,11 @@ class TigerBrain():
                 buff_lengths.append((class_label, curr_buff_len))
       
             if len(buff_lengths) > 1:
-
-                self.batch_processing_allowed = torch.all(
-                        torch.Tensor([buff_len  > self.batch_size for (_, buff_len) in buff_lengths])) and \
-                        torch.any(torch.Tensor([class_name in self.env.current_knowledge['Knowns'] for (class_name, _) in buff_lengths]))        
+                has_enough_samples = all(buff_len > self.batch_size for (_, buff_len) in buff_lengths)
+                has_known_class = any(
+                    class_name in self.env.current_knowledge['Knowns'] for (class_name, _) in buff_lengths
+                )
+                self.batch_processing_allowed = has_enough_samples and has_known_class
 
             self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
 
@@ -806,16 +824,35 @@ class TigerBrain():
         because they are not.
         @TODO optimise  
         """
-
-        nl_labels = self.encoder.inverse_transform(batch.class_labels)
-        
+        class_codes = batch.class_labels.squeeze(-1)
         if mode == TRAINING:
-            test_zda_labels = torch.zeros((len(nl_labels),1))
-            zda_labels = torch.Tensor([nl_label in self.env.current_knowledge['G1s'] for nl_label in nl_labels]).unsqueeze(-1)
+            g1_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G1s'])
+            zda_labels = torch.isin(
+                class_codes,
+                torch.tensor(g1_codes, device=class_codes.device, dtype=class_codes.dtype)
+            ).unsqueeze(-1).to(torch.float32)
+            test_zda_labels = torch.zeros_like(zda_labels)
         elif mode == INFERENCE:
-            test_zda_labels = zda_labels = torch.Tensor([nl_label in self.env.current_knowledge['G2s'] for nl_label in nl_labels]).unsqueeze(-1)
+            g2_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G2s'])
+            zda_labels = torch.isin(
+                class_codes,
+                torch.tensor(g2_codes, device=class_codes.device, dtype=class_codes.dtype)
+            ).unsqueeze(-1).to(torch.float32)
+            test_zda_labels = zda_labels
 
         return zda_labels, test_zda_labels
+
+
+    def get_rewards_from_encoded_labels(self, encoded_labels):
+        """
+        Resolve per-sample rewards without rebuilding intermediate tensors multiple times.
+        """
+        rewards_lookup = {
+            class_idx: self.env.flow_rewards_dict[class_name]
+            for class_name, class_idx in self.encoder.get_mapping().items()
+        }
+        rewards = [rewards_lookup[label.item()] for label in encoded_labels]
+        return torch.tensor(rewards, dtype=torch.float32)
 
 
     def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask, accuracy_mask):
@@ -1271,11 +1308,8 @@ class TigerBrain():
         number_of_predicted_known_samples = (~predicted_online_zda_mask).sum()
         # how many of them are we classifying as anomalies instead? 
         num_of_predicted_anomalies = predicted_online_zda_mask.sum()
-        # natural language labels
-        nl_labels = self.encoder.inverse_transform(
-            merged_batch.class_labels[-num_of_online_samples:])    
-        # sample-specific rewards:
-        sample_rewards = torch.Tensor([self.env.flow_rewards_dict[label] for label in nl_labels])
+        class_codes = merged_batch.class_labels[-num_of_online_samples:].squeeze(-1)
+        sample_rewards = self.get_rewards_from_encoded_labels(class_codes)
 
         # even if we have zero anomalies, we need the confidence of these inferences.
         self.evaluate_zda_confidence(
@@ -2384,12 +2418,12 @@ class TigerBrain():
             return None, None
 
         hiddens_np = hiddens.detach().cpu().numpy()
-        if hiddens_np.shape[1] > 2:
-            pca = PCA(n_components=2)
-            hiddens_np = pca.fit_transform(hiddens_np)
+        hiddens_np = self.project_to_2d(hiddens_np, context_name="hidden vectors")
+        if hiddens_np is None:
+            return None, None
 
         labels_np = labels.squeeze(1).detach().cpu().numpy()
-        nl_labels =[str(lbl) for lbl in self.encoder.inverse_transform(labels_np)]
+        nl_labels = self.encoder.inverse_transform_to_str(labels_np)
         pred_labels_np = [str(lbl) for lbl in predicted_labels.detach().cpu().numpy()]
 
         # Prepare a lightweight dictionary for Plotly
@@ -2423,19 +2457,12 @@ class TigerBrain():
             return
 
         scores_np = score_vectors.detach().cpu().numpy()
-        
-        if scores_np.shape[1] < 2:
-            self.logger_instance.warning('PCA not applied to score vectors because they are too low dimensional')
+        scores_np = self.project_to_2d(scores_np, context_name="score vectors")
+        if scores_np is None:
             return
-        elif scores_np.shape[1] > 2:
-            try:
-                scores_np = PCA(n_components=2).fit_transform(scores_np)
-            except Exception as e:
-                self.logger_instance.warning(f'Error during PCA applied to score vectors: {e}')
-                return
 
         labels_np = labels.squeeze(1).detach().cpu().numpy()
-        nl_labels =[str(lbl) for lbl in self.encoder.inverse_transform(labels_np)]
+        nl_labels = self.encoder.inverse_transform_to_str(labels_np)
 
         # Lightweight dictionary
         data_dict = {
@@ -2451,3 +2478,39 @@ class TigerBrain():
         fig.update_traces(marker=dict(size=10, opacity=0.7))
 
         return fig
+
+
+    def project_to_2d(self, vectors_np, context_name):
+        """
+        Robust and fast 2D projection.
+        Uses randomized SVD when possible for steadier runtime across different hidden sizes.
+        """
+        if vectors_np.shape[1] < 2:
+            self.logger_instance.warning(
+                f'PCA not applied to {context_name} because they are too low dimensional'
+            )
+            return None
+
+        if vectors_np.shape[1] == 2:
+            return vectors_np
+
+        min_dim = min(vectors_np.shape[0], vectors_np.shape[1])
+        solver = 'randomized' if min_dim > 2 else 'full'
+
+        try:
+            pca = PCA(
+                n_components=2,
+                svd_solver=solver,
+                random_state=self.seed,
+                copy=False
+            )
+            return pca.fit_transform(vectors_np)
+        except Exception as e:
+            self.logger_instance.warning(
+                f'Error during PCA ({solver}) applied to {context_name}: {e}. Falling back to full solver.'
+            )
+            try:
+                return PCA(n_components=2, svd_solver='full', copy=False).fit_transform(vectors_np)
+            except Exception as inner_e:
+                self.logger_instance.warning(f'Fallback PCA failed on {context_name}: {inner_e}')
+                return None
