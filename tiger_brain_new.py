@@ -321,9 +321,9 @@ class TigerBrain():
         
         args = AttrDict(kwargs)
         
-        self._lock = threading.Lock()
-        self._epistemic_lock = threading.Lock()
-        self._model_lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._epistemic_lock = threading.RLock()
+        self._model_lock = threading.RLock()
         self.eval = args.intrusion_detection.eval
         self.kwargs = kwargs
         self.intrusion_detection_kwargs = kwargs['intrusion_detection']
@@ -1808,8 +1808,9 @@ class TigerBrain():
             targets_onehot=onehot_zda_labels.long()
             )
         
-        cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
-        cummulative_os_cm += batch_os_cm
+        with self._lock:
+            cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
+            cummulative_os_cm += batch_os_cm
         zda_balance = zda_labels.to(torch.float16).mean().item()
         batch_os_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance)
         cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
@@ -1962,20 +1963,24 @@ class TigerBrain():
                 query_mask)
         
         with self.profile("EL_confmat"):
-            self.training_cs_cm += efficient_cm(
-                preds=logits.detach(),
-                targets_onehot=one_hot_labels[query_mask])      
+            with self._lock:
+                self.training_cs_cm += efficient_cm(
+                    preds=logits.detach(),
+                    targets_onehot=one_hot_labels[query_mask])
         
         loss += classification_loss
 
         with self.profile("EL_backprop"):
             # Only during training we learn from feedback errors.  
             # backward pass
+            # We don't hold the model lock during backward() to allow the main thread
+            # to continue performing inference passes. Forward passes only read
+            # weights (.data), while backward writes to gradients (.grad).
+            loss.backward()
+            # update weights
             with self._model_lock:
-                self.optimizer.zero_grad()
-                loss.backward()
-                # update weights
                 self.optimizer.step()
+                self.optimizer.zero_grad()
 
         
          
@@ -2037,15 +2042,8 @@ class TigerBrain():
 
             if add_replay_buff:
                 self.logger_instance.info(f'label {new_label} bought proactively!')
-                # we cant invoke this function here because it would be a deadlock 
-                # self.add_class_to_knowledge_base(updates_dict['new_label'])
-                # fo we repeat the code: 
-                
-                self.current_known_classes_count += 1
-                
-                self.add_replay_buffer(new_label)
-                self.reset_train_cms()
-                self.reset_test_cms()
+                # Now safe to call thanks to RLock
+                self.add_class_to_knowledge_base(new_label)
 
         return updates_dict
     
@@ -2070,7 +2068,7 @@ class TigerBrain():
         
 
 
-    def _async_evaluate_models(self, known_classes_count):
+    def _async_evaluate_models(self, snapshotted_known_classes_count):
         """
         The background worker that runs completely lock-free.
         """
@@ -2110,7 +2108,7 @@ class TigerBrain():
             mean_eval_kr_ari = 0.0
             
             # 2. Isolated local confusion matrices so we don't overwrite the main thread's CMS
-            local_eval_cs_cm = torch.zeros([known_classes_count, known_classes_count], device=self.device)
+            local_eval_cs_cm = torch.zeros([frozen_known_classes_count, frozen_known_classes_count], device=self.device)
             local_eval_os_cm = torch.zeros(size=(2, 2), device=self.device)
 
             # Variables to hold the final batch's data for the plots
@@ -2122,12 +2120,13 @@ class TigerBrain():
                 for _ in range(self.online_eval_rounds):
                     
                     # Sample batch safely
-                    eval_batch = self._sample_from_frozen_buffers(
-                            frozen_buffers=frozen_buffers,
-                            frozen_int_to_label=frozen_int_to_label,
-                            frozen_knowledge=frozen_knowledge,
-                            samples_per_class=self.batch_size,
-                        )
+                    with self._lock:
+                        eval_batch = self._sample_from_frozen_buffers(
+                                frozen_buffers=frozen_buffers,
+                                frozen_int_to_label=frozen_int_to_label,
+                                frozen_knowledge=frozen_knowledge,
+                                samples_per_class=self.batch_size,
+                            )
 
                     if eval_batch is None:
                         continue
@@ -2229,13 +2228,21 @@ class TigerBrain():
    
     def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase, custom_cs_cm=None, custom_os_cm=None):
 
-        if phase == TRAINING:
-            cs_cm_to_plot = self.training_cs_cm
-            os_cm_to_plot = self.training_os_cm
-        else:
-        # INFERENCE
-            cs_cm_to_plot = custom_cs_cm if custom_cs_cm is not None else self.eval_cs_cm
-            os_cm_to_plot = custom_os_cm if custom_os_cm is not None else self.eval_os_cm
+        with self._lock:
+            if phase == TRAINING:
+                cs_cm_to_plot = self.training_cs_cm.clone()
+                os_cm_to_plot = self.training_os_cm.clone()
+            else:
+            # INFERENCE
+                if custom_cs_cm is not None:
+                    cs_cm_to_plot = custom_cs_cm
+                else:
+                    cs_cm_to_plot = self.eval_cs_cm.clone()
+
+                if custom_os_cm is not None:
+                    os_cm_to_plot = custom_os_cm
+                else:
+                    os_cm_to_plot = self.eval_os_cm.clone()
 
         log_dict = {}
 
@@ -2273,10 +2280,13 @@ class TigerBrain():
         self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
         self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
         
-        if phase == TRAINING:
-            self.reset_train_cms()
-        elif phase == INFERENCE:
-            self.reset_test_cms()
+        # Only reset the global cumulative matrices if we are NOT reporting from a custom snapshot (background eval)
+        if custom_cs_cm is None:
+            with self._lock:
+                if phase == TRAINING:
+                    self.reset_train_cms()
+                elif phase == INFERENCE:
+                    self.reset_test_cms()
         
         return log_dict
 
