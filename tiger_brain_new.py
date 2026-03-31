@@ -271,6 +271,14 @@ class DynamicLabelEncoder:
         return decoded_labels
 
 
+    def inverse_transform_to_str(self, encoded_labels):
+        """
+        Decode a tensor/array/list of encoded labels into string labels.
+        """
+        flat_labels = encoded_labels.reshape(-1).tolist() if hasattr(encoded_labels, "reshape") else encoded_labels
+        return [str(self._int_to_label[int(code)]) for code in flat_labels]
+
+
     def get_codes_for_labels(self, labels):
         """Return encoded integer IDs for known natural-language labels."""
         return [self._label_to_int[label] for label in labels if label in self._label_to_int]
@@ -2403,12 +2411,12 @@ class TigerBrain():
             return None, None
 
         hiddens_np = hiddens.detach().cpu().numpy()
-        if hiddens_np.shape[1] > 2:
-            pca = PCA(n_components=2)
-            hiddens_np = pca.fit_transform(hiddens_np)
+        hiddens_np = self.project_to_2d(hiddens_np, context_name="hidden vectors")
+        if hiddens_np is None:
+            return None, None
 
         labels_np = labels.squeeze(1).detach().cpu().numpy()
-        nl_labels =[str(lbl) for lbl in self.encoder.inverse_transform(labels_np)]
+        nl_labels = self.encoder.inverse_transform_to_str(labels_np)
         pred_labels_np = [str(lbl) for lbl in predicted_labels.detach().cpu().numpy()]
 
         # Prepare a lightweight dictionary for Plotly
@@ -2442,19 +2450,12 @@ class TigerBrain():
             return
 
         scores_np = score_vectors.detach().cpu().numpy()
-        
-        if scores_np.shape[1] < 2:
-            self.logger_instance.warning('PCA not applied to score vectors because they are too low dimensional')
+        scores_np = self.project_to_2d(scores_np, context_name="score vectors")
+        if scores_np is None:
             return
-        elif scores_np.shape[1] > 2:
-            try:
-                scores_np = PCA(n_components=2).fit_transform(scores_np)
-            except Exception as e:
-                self.logger_instance.warning(f'Error during PCA applied to score vectors: {e}')
-                return
 
         labels_np = labels.squeeze(1).detach().cpu().numpy()
-        nl_labels =[str(lbl) for lbl in self.encoder.inverse_transform(labels_np)]
+        nl_labels = self.encoder.inverse_transform_to_str(labels_np)
 
         # Lightweight dictionary
         data_dict = {
@@ -2470,3 +2471,39 @@ class TigerBrain():
         fig.update_traces(marker=dict(size=10, opacity=0.7))
 
         return fig
+
+
+    def project_to_2d(self, vectors_np, context_name):
+        """
+        Robust and fast 2D projection.
+        Uses randomized SVD when possible for steadier runtime across different hidden sizes.
+        """
+        if vectors_np.shape[1] < 2:
+            self.logger_instance.warning(
+                f'PCA not applied to {context_name} because they are too low dimensional'
+            )
+            return None
+
+        if vectors_np.shape[1] == 2:
+            return vectors_np
+
+        min_dim = min(vectors_np.shape[0], vectors_np.shape[1])
+        solver = 'randomized' if min_dim > 2 else 'full'
+
+        try:
+            pca = PCA(
+                n_components=2,
+                svd_solver=solver,
+                random_state=self.seed,
+                copy=False
+            )
+            return pca.fit_transform(vectors_np)
+        except Exception as e:
+            self.logger_instance.warning(
+                f'Error during PCA ({solver}) applied to {context_name}: {e}. Falling back to full solver.'
+            )
+            try:
+                return PCA(n_components=2, svd_solver='full', copy=False).fit_transform(vectors_np)
+            except Exception as inner_e:
+                self.logger_instance.warning(f'Fallback PCA failed on {context_name}: {inner_e}')
+                return None
