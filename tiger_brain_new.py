@@ -2185,27 +2185,33 @@ class TigerBrain():
         log_dict = {}
 
         if self.wbt and self.kwargs['wandb']['plots']:
-            cs_conf_mat = self.plot_confusion_matrix(
-                mod=CLOSED_SET,
-                cm=cs_cm_to_plot,
-                phase=phase,
-                norm=False,
-                classes=self.encoder.get_labels())
+            with self.profile("plot_cs_conf_matrix"):
+                cs_conf_mat = self.plot_confusion_matrix(
+                    mod=CLOSED_SET,
+                    cm=cs_cm_to_plot,
+                    phase=phase,
+                    norm=False,
+                    classes=self.encoder.get_labels())
             if cs_conf_mat: log_dict[f'{phase}Plots/{CLOSED_SET} Confusion Matrix']=cs_conf_mat
-            
-            os_conf_mat = self.plot_confusion_matrix(
-                mod=ANOMALY_DETECTION,
-                cm=os_cm_to_plot,
-                phase=phase,
-                norm=False,
-                classes=['Known', 'ZdA'])
+
+            with self.profile("plot_os_conf_matrix"):
+                os_conf_mat = self.plot_confusion_matrix(
+                    mod=ANOMALY_DETECTION,
+                    cm=os_cm_to_plot,
+                    phase=phase,
+                    norm=False,
+                    classes=['Known', 'ZdA'])
             if os_conf_mat: log_dict[f'{phase}Plots/{ANOMALY_DETECTION} Confusion Matrix']=os_conf_mat
             
-            fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
+            with self.profile("plot_hidden_space"):
+                fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
+
             if fig_gt: log_dict[f"{phase}Plots/Ground-truth clusters"] = fig_gt
             if fig_pred: log_dict[f"{phase}Plots/Predicted clusters"] = fig_pred
 
-            fig_scores = self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
+            with self.profile("plot_scores_vectors"):
+                fig_scores = self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
+                
             if fig_scores: log_dict[f"{phase}Plots/PCA of ass. scores"] = fig_scores
         
 
