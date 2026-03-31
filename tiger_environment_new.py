@@ -41,9 +41,9 @@ class NewTigerEnvironment:
         for unknown in self.init_knowledge['G2s']:
             try:
                 # the cti price is n times the cost or revenue of the corresponding flow 
-                cti_prices[unknown] = abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)  
+                cti_prices[unknown] = abs(float(self.flow_rewards_dict[unknown]) * self.cti_price_factor)  
             except Exception as e:
-                raise RuntimeError(f'Error duting CTI processing... {e}')    
+                raise RuntimeError(f'Error during CTI processing... {e}')    
 
         return cti_prices
 
