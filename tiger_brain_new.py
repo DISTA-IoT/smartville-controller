@@ -1935,10 +1935,10 @@ class TigerBrain():
                     predicted_clusters=predicted_clusters, 
                     query_mask=query_mask,
                     phase=TRAINING)
-                if self.wbt:
+            if self.wbt:
+                with self.profile("EL_report_log"):
                     self.wb_run.log(plots_dict, step=self.wb_tracker.step_counter)
-                
-            
+
             # Update the target value network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
             
@@ -2143,16 +2143,17 @@ class TigerBrain():
             plots_dict = {}
             if self.wbt and self.kwargs['wandb']['plots']:
                 try:
-                    plots_dict = self.report(
-                        preds=last_logits[:, last_known_h_mask], 
-                        hiddens=last_hiddens, 
-                        labels=last_labels,
-                        predicted_clusters=last_pred_clusters, 
-                        query_mask=last_query_mask,
-                        phase=INFERENCE,
-                        custom_cs_cm=local_eval_cs_cm,
-                        custom_os_cm=local_eval_os_cm
-                    )
+                    with self.profile("EVAL_report"):
+                        plots_dict = self.report(
+                            preds=last_logits[:, last_known_h_mask], 
+                            hiddens=last_hiddens, 
+                            labels=last_labels,
+                            predicted_clusters=last_pred_clusters, 
+                            query_mask=last_query_mask,
+                            phase=INFERENCE,
+                            custom_cs_cm=local_eval_cs_cm,
+                            custom_os_cm=local_eval_os_cm
+                        )
                 except Exception as e:
                     self.logger_instance.error(f"Error generating Plotly graphs in eval thread: {e}")
 
@@ -2210,7 +2211,16 @@ class TigerBrain():
 
         self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
         self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
+        
+        if phase == TRAINING:
+            self.reset_train_cms()
+        elif phase == INFERENCE:
+            self.reset_test_cms()
+        
+        return log_dict
 
+
+    def get_profiling_stats_dict(self):
         # Compute the mean for all profiling lists and add them to the metrics
         metrics_to_log = {}
         for key, times_list in self.profiling_stats.items():
@@ -2222,19 +2232,10 @@ class TigerBrain():
                 # Optional: If we also want to log the max time (useful for finding spikes)
                 # metrics_to_log[f"{key}_max"] = max(times_list) 
 
-        log_dict.update(metrics_to_log)
-
         # 4. VERY IMPORTANT: Clear the dictionary so the next step starts fresh!
         self.profiling_stats.clear()
-        
-        if phase == TRAINING:
-            self.reset_train_cms()
-        elif phase == INFERENCE:
-            self.reset_test_cms()
-        
-        return log_dict
 
-
+        return metrics_to_log
 
 
     def check_progress(self, curr_cs_acc, curr_ad_acc, curr_kr_acc):

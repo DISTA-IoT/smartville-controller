@@ -174,12 +174,16 @@ def smart_check():
       
       
       if check_count % 100 == 0:
-        packet_counts_dict = {}
+        report_dict = {}
         for key in flow_logger.flows_dict.keys():
           curr_packetcount = flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add
-          packet_counts_dict[f'packetcounts/{key}'] = curr_packetcount
+          report_dict[f'packetcounts/{key}'] = curr_packetcount
           logger.info(f"Packets seen for {key}: {curr_packetcount}")
-        wb_tracker.wb_run.log(packet_counts_dict, step=wb_tracker.step_counter)
+
+        profiling_metrics = controller_brain.get_profiling_stats_dict()
+        report_dict.update(profiling_metrics)
+
+        wb_tracker.wb_run.log(report_dict, step=wb_tracker.step_counter)
 
           
 
