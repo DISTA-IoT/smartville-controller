@@ -11,6 +11,7 @@ class NewTigerEnvironment:
         """Initialize the attributes of the Car class."""
         self.init_budget = float(kwargs.intrusion_detection.tiger_init_budget)
         self.flow_rewards_dict = copy.deepcopy(kwargs.rewards)
+        self.flow_rewards_dict = {key: float(value) for key, value in self.flow_rewards_dict.items()}
         self.min_budget = float(kwargs.intrusion_detection.min_budget)
         self.max_budget = float(kwargs.intrusion_detection.max_budget)
         self.current_budget = self.init_budget
