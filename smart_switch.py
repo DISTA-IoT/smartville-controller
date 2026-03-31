@@ -42,21 +42,20 @@ from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST
 from pox.lib.addresses import EthAddr
 import time
 from smartController.entry import Entry
-from collections import defaultdict
-from threading import Thread
+from collections import defaultdict, deque
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
    
 
 class ForwardingRule(object):
+    __slots__ = ['source_ip_addr', 'dest_ip_addr', 'dest_mac_addr', 'outgoing_port', 'dl_type']
     def __init__(self, source_ip_addr, dest_ip_addr, dest_mac_addr, outgoing_port, dl_type):
       self.source_ip_addr = source_ip_addr
       self.dest_ip_addr = dest_ip_addr
       self.dest_mac_addr = dest_mac_addr
       self.outgoing_port = outgoing_port
       self.dl_type = dl_type
-    
     
     def __eq__(self, other):
       if not isinstance(other, ForwardingRule):
@@ -66,6 +65,9 @@ class ForwardingRule(object):
               self.dest_mac_addr == other.dest_mac_addr and
               self.outgoing_port == other.outgoing_port and
               self.dl_type == other.dl_type)
+
+    def __hash__(self):
+      return hash((self.source_ip_addr, self.dest_ip_addr, self.dest_mac_addr, self.outgoing_port, self.dl_type))
     
 
 class SmartSwitch(EventMixin):
@@ -148,11 +150,10 @@ class SmartSwitch(EventMixin):
     self._expire_timer = Timer(5, self._handle_expiration, recurring=True)
     
     self.openflow_packets_received = 0
-    self.forwardingRules = defaultdict(list)
+    self.forwardingRules = defaultdict(set)
     self.dropped_packets = 0
     self.connection = None
-    self.sampling_rules_thread = Thread(target=self.periodically_send_sampling_rules, daemon=True)
-    self.sampling_rules_thread.start()
+    self.sampling_rules_timer = Timer(self.sampling_rate_seconds, self.send_sampling_rules, recurring=True)
     self.logger.info(f"SmartSwitch initialized!!")
 
 
@@ -160,40 +161,34 @@ class SmartSwitch(EventMixin):
     
     # Called by a timer so that we can remove old items.
     to_delete_flows = []
+    now = time.time()
 
     for flow_metadata, packet_metadata_list in self.unprocessed_flows.items():
       switch_id, dest_ip_addr = flow_metadata
 
-      if len(packet_metadata_list) == 0: 
+      while packet_metadata_list and packet_metadata_list[0][0] < now:
+        expires_at, packet_id, in_port, _ = packet_metadata_list.popleft()
+        # Tell this switch to drop such a packet:
+        # To do that we simply send an action-empty openflow message
+        # containing the buffer id and the input port of the switch.
+        po = of.ofp_packet_out(buffer_id=packet_id, in_port = in_port)
+        core.openflow.sendToDPID(switch_id, po)
+        self.logger.info(f"Expired packet {packet_id} for {flow_metadata}")
+        self.dropped_packets += 1
+
+      if not packet_metadata_list:
          self.logger.info("Flow %s expired", flow_metadata)
          to_delete_flows.append(flow_metadata)
-      else: 
-        for packet_metadata in list(packet_metadata_list):
-          
-          expires_at, packet_id, in_port, _ = packet_metadata
-
-          if expires_at < time.time():
-            # This packet is old. Remove it from the buffer.
-            packet_metadata_list.remove(packet_metadata)
-            # Tell this switch to drop such a packet:
-            # To do that we simply send an action-empty openflow message
-            # containing the buffer id and the input port of the switch.
-            po = of.ofp_packet_out(buffer_id=packet_id, in_port = in_port)
-            core.openflow.sendToDPID(switch_id, po)
-            self.logger.info(f"Expired packet {packet_id} for {flow_metadata}")
-            self.dropped_packets += 1
 
     # Remove empty flow entries from the unprocessed_flows dictionary
     # Remove also the forwarding rules
-    to_delete_frs = []
     for flow_metadata in to_delete_flows:
+      switch_id, dest_ip_addr = flow_metadata
       del self.unprocessed_flows[flow_metadata]
-      for fr in self.forwardingRules[flow_metadata[0]]:
-        if fr.dest_ip_addr == dest_ip_addr:
-          to_delete_frs.append(fr)
 
-    for fr in to_delete_frs:
-      self.forwardingRules[flow_metadata[0]].remove(fr)
+      to_delete_frs = [fr for fr in self.forwardingRules[switch_id] if fr.dest_ip_addr == dest_ip_addr]
+      for fr in to_delete_frs:
+        self.forwardingRules[switch_id].discard(fr)
 
     if not self.wb_tracker.wb_run_finished:
       self.wb_tracker.wb_run.log({
@@ -243,14 +238,9 @@ class SmartSwitch(EventMixin):
       msg.match.dl_type = ethernet.IP_TYPE
       connection.send(msg)
 
-      to_delete_frs = []
-
-      for fr in self.forwardingRules[switch_id]:
-        if fr.dest_ip_addr == dest_ip:
-          to_delete_frs.append(fr)
-
+      to_delete_frs = [fr for fr in self.forwardingRules[switch_id] if fr.dest_ip_addr == dest_ip]
       for fr in to_delete_frs:
-          self.forwardingRules[switch_id].remove(fr)
+          self.forwardingRules[switch_id].discard(fr)
 
       self.logger.debug(f"Switch {switch_id} will delete flow rules matching nw_dst={dest_ip}")
 
@@ -300,18 +290,11 @@ class SmartSwitch(EventMixin):
               f"for (ip:{ip_addr} port:{port} mac:{mac_addr})")
 
 
-  def periodically_send_sampling_rules(self):
-    while not self.paused:
-      time.sleep(self.sampling_rate_seconds)
-      self.send_sampling_rules()
-      
-  
   def send_sampling_rules(self):
-    if self.connection is None:
-      self.logger.warning("No connection to send sampling rules on")
+    if self.connection is None or self.paused:
       return
-    copied_sampling_rules = self.sampling_rule_messages.copy()
-    for flow_id, sampling_msg in copied_sampling_rules.items():
+
+    for flow_id, sampling_msg in self.sampling_rule_messages.items():
         self.connection.send(sampling_msg)
         self.logger.debug(f"Sent sampling rule for flow {flow_id}")
        
@@ -333,7 +316,7 @@ class SmartSwitch(EventMixin):
         outgoing_port=outgoing_port,
         dl_type=type)
       
-      flow_id = str(source_ip_addr) + "_" + str(dest_ip_addr) + "_" + str(outgoing_port)
+      flow_id = f"{source_ip_addr}_{dest_ip_addr}_{outgoing_port}"
 
       if forwarding_rule in self.forwardingRules[switch_id]:
         return
@@ -375,7 +358,7 @@ class SmartSwitch(EventMixin):
       
       # if self.add_flow_rule_message_to_buffer(msg, switch_id):
       connection.send(msg.pack())
-      self.forwardingRules[switch_id].append(forwarding_rule)
+      self.forwardingRules[switch_id].add(forwarding_rule)
       self.flow_creates[(source_ip_addr, dest_ip_addr)] += 1
 
       # next time we need to install a flow-rule, 
@@ -401,12 +384,12 @@ class SmartSwitch(EventMixin):
 
     to_remove = [
         fr for fr in self.forwardingRules[switch_id]
-        if str(fr.source_ip_addr) == str(match.nw_src)
-        and str(fr.dest_ip_addr) == str(match.nw_dst)
+        if fr.source_ip_addr == match.nw_src
+        and fr.dest_ip_addr == match.nw_dst
     ]
 
     for fr in to_remove:
-        self.forwardingRules[switch_id].remove(fr)
+        self.forwardingRules[switch_id].discard(fr)
 
     if to_remove:
         self.logger.debug(
@@ -429,7 +412,6 @@ class SmartSwitch(EventMixin):
       request.hwtype = request.HW_TYPE_ETHERNET
       request.prototype = request.PROTO_TYPE_IP
       request.hwlen = 6
-      request.protolen = request.protolen
       request.opcode = request.REQUEST
       request.hwdst = ETHER_BROADCAST
       request.protodst = dest_ip_addr
@@ -452,7 +434,7 @@ class SmartSwitch(EventMixin):
     self.logger.debug(f"Adding unprocessed packet for {dst_ip}")
     tuple_key = (switch_id, dst_ip)
     if tuple_key not in self.unprocessed_flows: 
-      self.unprocessed_flows[tuple_key] = []
+      self.unprocessed_flows[tuple_key] = deque()
     packet_metadata_list = self.unprocessed_flows[tuple_key]
     packet_metadata = (time.time() + self.max_buffering_secs, 
                        buffer_id, 
@@ -460,18 +442,17 @@ class SmartSwitch(EventMixin):
                        src_ip)
     packet_metadata_list.append(packet_metadata)
     while len(packet_metadata_list) > self.max_buffered_packets: 
-       del packet_metadata_list[0]
+       packet_metadata_list.popleft()
        self.dropped_packets += 1
 
 
-  def handle_unknown_ip_packet(self, switch_id, incomming_port, packet_in_event):
+  def handle_unknown_ip_packet(self, switch_id, incomming_port, packet_in_event, packet):
     """
     First, track this buffer so that we can try to resend it later, when we will learn the destination.
     Second, ARP for the destination, which should ultimately result in it responding and us learning where it is
     """
     self.logger.warning(f"Switch {switch_id} received unknown IP packet from port {incomming_port}")
 
-    packet = packet_in_event.parsed
     source_mac_addr = packet.src
     source_ip_addr = packet.next.srcip
     dest_ip_addr = packet.next.dstip
@@ -502,9 +483,8 @@ class SmartSwitch(EventMixin):
         connection=packet_in_event.connection)
     
   
-  def try_creating_flow_rule(self, switch_id, incomming_port, packet_in_event):
+  def try_creating_flow_rule(self, switch_id, incomming_port, packet_in_event, packet):
       
-      packet = packet_in_event.parsed
       source_ip_addr = packet.next.srcip
       dest_ip_addr = packet.next.dstip
 
@@ -528,17 +508,10 @@ class SmartSwitch(EventMixin):
                                 type=packet.type)
 
       else:
-          self.handle_unknown_ip_packet(switch_id, incomming_port, packet_in_event)
+          self.handle_unknown_ip_packet(switch_id, incomming_port, packet_in_event, packet)
 
 
-  def handle_ipv4_packet_in(self, switch_id, incomming_port, packet_in_event):
-      
-      try:
-        packet = packet_in_event.parsed  # DNS parsing error occurs during this step
-      except:
-        # If the parsing fails, just skip this packet without raising an exception
-        self.logger.error(f'error while parsing IPV4 packet_in_event: {packet_in_event}') 
-        return
+  def handle_ipv4_packet_in(self, switch_id, incomming_port, packet_in_event, packet):
 
       self.logger.debug("IPV4 DETECTED - SWITCH: %i ON PORT: %i IP SENDER: %s IP RECEIVER %s", 
                 switch_id,
@@ -563,7 +536,8 @@ class SmartSwitch(EventMixin):
       # Then tries to find the DESTINATION (another thing, we may not have learned it yet)
       self.try_creating_flow_rule(switch_id, 
                                     incomming_port, 
-                                    packet_in_event)
+                                    packet_in_event,
+                                    packet)
 
 
   def send_arp_response(
@@ -601,16 +575,8 @@ class SmartSwitch(EventMixin):
       connection.send(msg)
       
       
-  def handle_arp_packet_in(self, switch_id, incomming_port, packet_in_event):
+  def handle_arp_packet_in(self, switch_id, incomming_port, packet_in_event, packet):
       
-      try:
-        packet = packet_in_event.parsed  # DNS parsing error occurs during this step
-      except:
-        # If the parsing fails, just skip this packet without raising an exception
-        self.logger.error(f'error while parsing ARP packet_in_event: {packet_in_event}') 
-        return
-      
-      packet = packet_in_event.parsed
       inner_packet = packet.next
 
       arp_operation = ''
@@ -704,11 +670,13 @@ class SmartSwitch(EventMixin):
         self.handle_ipv4_packet_in(
           switch_id=switch_id,
           incomming_port=incomming_port,
-          packet_in_event=event)
+          packet_in_event=event,
+          packet=packet)
 
     elif isinstance(packet.next, arp):
         self.handle_arp_packet_in(
           switch_id=switch_id,
           incomming_port=incomming_port,
-          packet_in_event=event
+          packet_in_event=event,
+          packet=packet
         )
