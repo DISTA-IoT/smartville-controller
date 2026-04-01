@@ -124,6 +124,8 @@ class TigerBrain:
         self.learning_rate = float(args.intrusion_detection.learning_rate)
         self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
         self.pretrained_models_dir = args.intrusion_detection.pretrained_models_dir
+        self.update_target_freq = int(args.intrusion_detection.update_target_freq)
+        
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -1025,12 +1027,13 @@ class TigerBrain:
         loss.backward()
         self.optimizer.step()
 
+        if self.wb_tracker.step_countr % self.update_target_freq == 0:
+            self.mitigation_agent.update_target_model()
+
         if self.wb_tracker.step_counter % (self.report_step_freq * 5) == 0:
             plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
             if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
             self.reset_train_cms()
-
-            self.mitigation_agent.update_target_model()
             if self.online_evaluation: self.start_async_evaluation()
 
             while not self.eval_queue.empty():
