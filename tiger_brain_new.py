@@ -1027,7 +1027,7 @@ class TigerBrain:
         loss.backward()
         self.optimizer.step()
 
-        if self.wb_tracker.step_countr % self.update_target_freq == 0:
+        if self.wb_tracker.step_counter % self.update_target_freq == 0:
             self.mitigation_agent.update_target_model()
 
         if self.wb_tracker.step_counter % (self.report_step_freq * 5) == 0:
