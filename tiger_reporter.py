@@ -33,6 +33,12 @@ class TigerReporter:
         self.seed = seed
         self.wbt = kwargs['wandb']['wb_tracking']
 
+    def log_scalars(self, metrics_dict, step):
+        """
+        Logs a dictionary of scalar metrics to Weights & Biases.
+        """
+        if self.wbt and self.wb_run is not None:
+            self.wb_run.log(metrics_dict, step=step)
 
     def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase,
                training_cs_cm=None, training_os_cm=None,
