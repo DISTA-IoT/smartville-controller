@@ -431,11 +431,14 @@ class TigerBrain:
             masked_labels = batch_labels[mask]
             
             for sample_idx in range(masked_flow.shape[0]):
-                buffers[label.item()].push(
-                    flow_state=masked_flow[sample_idx].unsqueeze(0),
-                    packet_state=(masked_packet[sample_idx].unsqueeze(0) if self.use_packet_feats else None),
-                    node_state=(masked_node[sample_idx].unsqueeze(0) if self.use_node_feats else None),
-                    label=masked_labels[sample_idx].unsqueeze(0))
+                try:
+                    buffers[label.item()].push(
+                        flow_state=masked_flow[sample_idx].unsqueeze(0),
+                        packet_state=(masked_packet[sample_idx].unsqueeze(0) if self.use_packet_feats else None),
+                        node_state=(masked_node[sample_idx].unsqueeze(0) if self.use_node_feats else None),
+                        label=masked_labels[sample_idx].unsqueeze(0))
+                except Exception as e:
+                    raise RuntimeError(f'Error while pushing sample {sample_idx} with label {label} to replay buffer {label}: {e}')
 
         if not self.batch_processing_allowed:
             buff_lengths = [(cl, len(buffers[idx])) for cl, idx in self.encoder.get_mapping().items()]
@@ -718,11 +721,15 @@ class TigerBrain:
             self.env.episode_budgets.append(self.env.current_budget)
 
             if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
+                reward_val = current_reward.item() if hasattr(current_reward, 'item') else current_reward
                 self.wb_run.log({
-                    AGENT+'/'+'generic_reward': current_reward.item() if hasattr(current_reward, 'item') else current_reward,
-                    AGENT+'/'+'clustering_reward': current_reward.item() if hasattr(current_reward, 'item') else current_reward,
+                    AGENT+'/'+'generic_reward': reward_val,
+                    AGENT+'/'+'clustering_reward': reward_val,
                     AGENT+'/'+'budget': self.env.current_budget,
                     AGENT+'/'+'Epistemic Actions taken': int(epistemic_action),
+                    AGENT+'/'+'epistemic_costs': (reward_val if epistemic_action else 0),
+                    AGENT+'/'+'rewards_per_accepted_clusters': (reward_val if accepted_cluster else 0),
+                    AGENT+'/'+'rewards_per_blocked_clusters': (reward_val if not accepted_cluster else 0),
                 }, step=self.wb_tracker.step_counter)
 
     def online_inference(self, online_batch):
@@ -791,7 +798,9 @@ class TigerBrain:
                     'episode_count': self.episode_count,
                     'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
                     'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
+                    'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
                     'epistemic_actions_per_episode': self.env.epistemic_actions,
+                    'steps_per_episode': self.env.steps_done
                 }, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
