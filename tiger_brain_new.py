@@ -112,6 +112,8 @@ class TigerBrain:
         self.k_shot = int(args.intrusion_detection.k_shot)
         self.batch_size = int(args.intrusion_detection.batch_size)
         self.report_step_freq = int(args.intrusion_detection.report_step_freq)
+        self.plot_step_freq = int(args.intrusion_detection.plot_step_freq)
+        self.online_eval_step_freq = int(args.intrusion_detection.online_eval_step_freq)
         self.use_neural_AD = args.intrusion_detection.use_neural_AD
         self.use_neural_KR = args.intrusion_detection.use_neural_KR
         self.use_neural_CS = args.intrusion_detection.use_neural_CS
@@ -707,6 +709,12 @@ class TigerBrain:
         benign_rewards = torch.relu(rewards[zda_mask])
         benign_per_cluster = (clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
+        clustering_reward = 0
+        epistemic_actions_taken = 0
+        epistemic_costs = 0
+        rewards_per_accepted_clusters = 0
+        rewards_per_blocked_clusters = 0
+
         for idx, centroid in enumerate(centroids[~missing]):
             accepted_cluster = False
             epistemic_action = False
@@ -753,16 +761,31 @@ class TigerBrain:
             self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
             self.env.episode_budgets.append(self.env.current_budget)
 
-            if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-                reward_val = current_reward.item() if hasattr(current_reward, 'item') else current_reward
+            reward_val = current_reward.item() if hasattr(current_reward, 'item') else current_reward
+
+            clustering_reward += reward_val
+            epistemic_actions_taken += int(epistemic_action)
+            epistemic_costs += reward_val if epistemic_action else 0
+            rewards_per_accepted_clusters += reward_val if accepted_cluster else 0
+            rewards_per_blocked_clusters += reward_val if not accepted_cluster else 0
+
+        if len(centroids[~missing]) > 0 and \
+            self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
+                
+                clustering_reward /= len(centroids[~missing])
+                epistemic_actions_taken /= len(centroids[~missing])
+                epistemic_costs /= len(centroids[~missing])
+                rewards_per_accepted_clusters /= len(centroids[~missing])
+                rewards_per_blocked_clusters /= len(centroids[~missing])
+
                 self.reporter.log_scalars({
-                    AGENT+'/'+'generic_reward': reward_val,
-                    AGENT+'/'+'clustering_reward': reward_val,
+                    AGENT+'/'+'generic_reward': clustering_reward,
+                    AGENT+'/'+'clustering_reward': clustering_reward,
                     AGENT+'/'+'budget': self.env.current_budget,
-                    AGENT+'/'+'Epistemic Actions taken': int(epistemic_action),
-                    AGENT+'/'+'epistemic_costs': (reward_val if epistemic_action else 0),
-                    AGENT+'/'+'rewards_per_accepted_clusters': (reward_val if accepted_cluster else 0),
-                    AGENT+'/'+'rewards_per_blocked_clusters': (reward_val if not accepted_cluster else 0),
+                    AGENT+'/'+'Epistemic Actions taken': epistemic_actions_taken,
+                    AGENT+'/'+'epistemic_costs': epistemic_costs,
+                    AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
+                    AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
                 }, step=self.wb_tracker.step_counter)
 
     def online_inference(self, online_batch):
@@ -1092,23 +1115,27 @@ class TigerBrain:
             all_metrics.update(ad_metrics)
             all_metrics.update(kr_metrics)
             all_metrics.update(cs_metrics)
+            self.reset_train_cms()
             self.reporter.log_scalars(all_metrics, step=self.wb_tracker.step_counter)
 
-        if self.wb_tracker.step_counter % (self.report_step_freq * 5) == 0:
+        if self.wb_tracker.step_counter % self.plot_step_freq == 0:
             plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
             if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
-            self.reset_train_cms()
-            if self.online_evaluation: self.start_async_evaluation()
+        
+        if self.online_evaluation and self.wb_tracker.step_counter % self.online_eval_step_freq == 0:
+            self.start_async_evaluation()
 
             while not self.eval_queue.empty():
                 async_results = self.eval_queue.get()
                 if self.wbt: self.reporter.log_scalars(async_results, step=self.wb_tracker.step_counter)
-
                 # Reset evaluation confusion matrices after reporting
                 self.reset_test_cms()
 
                 if self.save_models_flag:
-                    self.check_progress(async_results[f'{INFERENCE}/Mean EVAL CS ACC'], async_results[f'{INFERENCE}/Mean EVAL AD ACC'], async_results[f'{INFERENCE}/Mean EVAL KR PREC'])
+                    self.check_progress_and_save(
+                        async_results[f'{INFERENCE}/Mean EVAL CS ACC'], 
+                        async_results[f'{INFERENCE}/Mean EVAL AD ACC'], 
+                        async_results[f'{INFERENCE}/Mean EVAL KR PREC'])
 
     @epistemic_thread_safe 
     def perform_epistemic_action(self, current_action=0):      
@@ -1203,7 +1230,7 @@ class TigerBrain:
         self.profiling_stats.clear()
         return metrics
 
-    def check_progress(self, curr_cs, curr_ad, curr_kr):
+    def check_progress_and_save(self, curr_cs, curr_ad, curr_kr):
         """Checks if current performance is better than previous best and saves models."""
         if curr_cs > self.best_cs_accuracy:
             self.best_cs_accuracy = curr_cs
