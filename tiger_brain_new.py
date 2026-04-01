@@ -15,93 +15,49 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
-from smartController.replay_buffer import RawReplayBuffer, Batch
+
 import os
 import torch
 import torch.optim as optim
 import torch.nn as nn
-from smartController.wandb_tracker import WandBTracker
 import threading
-from sklearn.decomposition import PCA
 import random
-from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
-from smartController.tiger_environment_new import NewTigerEnvironment
-from smartController.tiger_agents import ValueLearningAgent, DAIP_Agent, DAIA_Agent, DAIF_Agent, DAISA_Agent
-from functools import wraps
-from smartController.attr_dict import AttrDict
 import time
-from contextlib import contextmanager
-import plotly.express as px
 import copy
 import queue
+from functools import wraps
+from contextlib import contextmanager
 
-# List of colors
-colors = [
-    'red', 'blue', 'green', 'purple', 'orange', 'pink', 'cyan',  'brown', 'yellow',
-    'olive', 'lime', 'teal', 'maroon', 'navy', 'fuchsia', 'aqua', 'silver', 'sienna', 'gold',
-    'indigo', 'violet', 'turquoise', 'tomato', 'orchid', 'slategray', 'peru', 'magenta', 'limegreen',
-    'royalblue', 'coral', 'darkorange', 'darkviolet', 'darkslateblue', 'dodgerblue', 'firebrick',
-    'lightseagreen', 'mediumorchid', 'orangered', 'powderblue', 'seagreen', 'springgreen', 'tan', 'wheat',
-    'burlywood', 'chartreuse', 'crimson', 'darkgoldenrod', 'darkolivegreen', 'darkseagreen', 'indianred',
-    'lavender', 'lightcoral', 'lightpink', 'lightsalmon', 'limegreen', 'mediumseagreen', 'mediumpurple',
-    'midnightblue', 'palegreen', 'rosybrown', 'saddlebrown', 'salmon', 'slateblue', 'steelblue',
-]
+from smartController.replay_buffer import RawReplayBuffer, Batch
+from smartController.wandb_tracker import WandBTracker
+from smartController.tiger_environment_new import NewTigerEnvironment
+from smartController.tiger_agents import (
+    ValueLearningAgent, DAIP_Agent, DAIA_Agent,
+    DAIF_Agent, DAISA_Agent
+)
+from smartController.attr_dict import AttrDict
 
-"""
-######## PORT STATS: ###################
-00: 'collisions'
-01: 'port_no'
-02: 'rx_bytes'
-03: 'rx_crc_err'
-04: 'rx_dropped'
-05: 'rx_errors'
-06: 'rx_frame_err'
-07: 'rx_over_err'
-08: 'rx_packets'
-09: 'tx_bytes'
-10: 'tx_dropped'
-11: 'tx_errors'
-12: 'tx_packets'
-#########################################
+# Local imports
+from smartController.label_encoder import DynamicLabelEncoder
+from smartController.brain_utils import (
+    efficient_cm, efficient_os_cm, get_balanced_accuracy,
+    get_clusters, get_metrics_tensor,
+    TRAINING, INFERENCE, AGENT, OS_ACC, OS_LOSS, CS_ACC, CS_LOSS,
+    KR_ARI, KR_NMI, KR_LOSS, ANOMALY_BALANCE,
+    CONFIDENCE_DECODER_CLASS_NAME, KERNEL_REGRESSION_LOSS_CLASS_NAME,
+    ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME,
+    TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME,
+    THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME
+)
+from smartController.tiger_reporter import TigerReporter
 
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
-#############FLOW FEATURES###############
-'byte_count', 
-'duration_nsec' / 10e9,
-'duration_sec',
-'packet_count'
-#########################################
-"""
-
-RAM = 'RAM'
-CPU = 'CPU'
-INBOUND = 'INBOUND'
-OUTBOUND = 'OUTBOUND'
-RTT = 'RTT'
-AGENT = 'AGENT'
-
-# Constants for wandb monitoring:
-INFERENCE = 'Inference'
-TRAINING = 'Training'
-CS_ACC = 'Acc'
-CS_LOSS = 'Loss'
-OS_ACC = 'AD Acc'
-OS_LOSS = 'AD Loss'
-KR_LOSS = 'KR_LOSS'
-KR_ARI = 'KR_ARI'
-KR_NMI = 'KR_NMI'
-STEP_LABEL = 'step'
-ANOMALY_BALANCE = 'ANOMALY_BALANCE'
-CLOSED_SET = 'CS'
-ANOMALY_DETECTION = 'AD'
-
-CONFIDENCE_DECODER_CLASS_NAME = 'ConfidenceDecoder'
-KERNEL_REGRESSION_LOSS_CLASS_NAME = 'KernelRegressionLoss'
-ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME = 'OneStreamMulticlassFlowClassifier'
-TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME = 'TwoStreamMulticlassFlowClassifier'
-THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME = 'ThreeStreamMulticlassFlowClassifier'
 
 def thread_safe(method):
+    """
+    Decorator to ensure thread-safe access to a method using the instance's _lock.
+    """
     @wraps(method)
     def _impl(self, *method_args, **method_kwargs):
         with self._lock:
@@ -110,6 +66,9 @@ def thread_safe(method):
 
 
 def epistemic_thread_safe(method):
+    """
+    Decorator to ensure thread-safe access to a method using the instance's _epistemic_lock.
+    """
     @wraps(method)
     def _impl(self, *method_args, **method_kwargs):
         with self._epistemic_lock:
@@ -117,228 +76,38 @@ def epistemic_thread_safe(method):
     return _impl
 
 
-def efficient_cm(preds, targets_onehot):
-
-    predictions_decimal = preds.argmax(dim=1).to(torch.int64)
-    predictions_onehot = torch.zeros_like(
-        preds,
-        device=preds.device)
-    predictions_onehot.scatter_(1, predictions_decimal.view(-1, 1), 1)
-
-    return targets_onehot.T @ predictions_onehot
-
-
-def efficient_os_cm(preds, targets_onehot):
-
-    predictions_onehot = torch.zeros(
-        [preds.size(0), 2],
-        device=preds.device)
-    predictions_onehot.scatter_(1, preds.view(-1, 1), 1)
-
-    return targets_onehot.T @ predictions_onehot.long()
-
-
-def get_balanced_accuracy(os_cm, negative_weight):
-        
-    N = os_cm[0][0] + os_cm[0][1]
-    TN = os_cm[0][0]
-    TNR = TN / (N + 1e-10)
-        
-
-    P = os_cm[1][1] + os_cm[1][0]
-    TP = os_cm[1][1]
-    TPR = TP / (P + 1e-10)
-    
-    return (negative_weight * TNR) + ((1-negative_weight) * TPR)
-
-
-def get_clusters(predicted_kernel):
+class TigerBrain:
     """
-    Convert a predicted adjacency matrix (predicted_kernel) into discrete clusters by assigning
-    each node to a specific cluster based on the binary adjacency matrix.
-    
-    The function takes a predicted kernel, which is essentially a regression or a probabilistic 
-    prediction of an adjacency matrix, and performs the following steps:
-    
-    1. Binarizes the predicted kernel by applying a threshold of 0.5, converting it into 
-       a discrete adjacency matrix.
-    2. Iterates over each node and checks whether it has already been assigned to a cluster.
-    3. For unassigned nodes, creates a new cluster by assigning connected nodes to the same cluster.
-    4. Returns a tensor with cluster labels for each node.
-    
-    Args:
-    predicted_kernel (torch.Tensor): A 2D tensor representing a predicted or probabilistic adjacency 
-                                     matrix of size (N, N), where N is the number of nodes.
-    
-    Returns:
-    torch.Tensor: A 1D tensor of cluster labels, where each unique label represents a different cluster. 
-                  The label values range from 0 to (num_clusters - 1).
+    Main class for the TigerBrain intelligence module.
+    Responsible for flow classification, anomaly detection, clustering, and mitigation.
     """
-    
-    # All fellas are in its own cluster, so we should start by adding that condition:
-    predicted_kernel = predicted_kernel + torch.eye(predicted_kernel.shape[0])
-
-    # Binarize the predicted kernel to create a discrete adjacency matrix (0 or 1)
-    discrete_predicted_kernel = (predicted_kernel > 0.5).long()
-    
-    # Initialize a mask to keep track of which nodes have already been assigned to clusters
-    assigned_mask = torch.zeros_like(discrete_predicted_kernel.diag())
-    
-    # Initialize a tensor to store cluster assignments for each node
-    clusters = torch.zeros_like(discrete_predicted_kernel.diag())
-    
-    # Cluster index starts at 1 (0 is reserved for unassigned nodes)
-    curr_cluster = 1
-
-    # Iterate over each node in the adjacency matrix
-    for idx in range(discrete_predicted_kernel.shape[0]):
-        # Skip nodes that have already been assigned to a cluster
-        if assigned_mask[idx] > 0:
-            continue
-
-        # Create a mask for the current node's connections (its cluster)
-        new_cluster_mask = discrete_predicted_kernel[idx]
-        
-        # Remove nodes that have already been assigned to other clusters
-        new_cluster_mask = torch.relu(new_cluster_mask - assigned_mask)
-        
-        # Mark the nodes in the current cluster as assigned
-        assigned_mask += new_cluster_mask
-    
-        # Assign the current cluster index to all nodes in the new cluster
-        clusters += new_cluster_mask*curr_cluster
-
-        # If any node was assigned to the new cluster, increment the cluster index
-        if new_cluster_mask.sum() > 0:
-            curr_cluster += 1
-
-    # Subtract 1 from cluster labels to make cluster labels start from 0
-    return clusters -1 
-    
-
-class DynamicLabelEncoder:
-    """
-    Thread-safe dynamic label encoder.
-    
-    Warning:
-        All access to this class's data should be done through its methods.
-        Direct dictionary access is not thread-safe.
-    """
-    
-    def __init__(self):
-        self._label_to_int = {}
-        self._int_to_label = {}
-        self._current_code = 0
-
-
-    def fit(self, labels):
-        """
-        returns the number of new classes found!
-        """
-
-        # get the new labels found in the batch  
-        # batch_labels  - changed labels - current labels 
-        new_labels = set(labels) - set(self._label_to_int.keys())
-
-        for label in new_labels:
-            self.add_class(label)
-
-        return new_labels
-
-
-    def add_class(self, label):
-
-        if label in self._label_to_int:
-            return
-        
-        self._label_to_int[label] = self._current_code
-        self._int_to_label[self._current_code] = label
-        self._current_code += 1
-
-
-    def transform(self, labels):
-        
-        encoded_labels = []
-
-        for label in labels:
-            encoded_labels.append(self._label_to_int[label])
-
-        return torch.tensor(encoded_labels)
-
-
-    def inverse_transform(self, encoded_labels):
-        decoded_labels = [self._int_to_label[code.item()] for code in encoded_labels]
-        return decoded_labels
-
-
-    def inverse_transform_to_str(self, encoded_labels):
-        """
-        Decode a tensor/array/list of encoded labels into string labels.
-        """
-        flat_labels = encoded_labels.reshape(-1).tolist() if hasattr(encoded_labels, "reshape") else encoded_labels
-        return [str(self._int_to_label[int(code)]) for code in flat_labels]
-
-
-    def get_codes_for_labels(self, labels):
-        """Return encoded integer IDs for known natural-language labels."""
-        return [self._label_to_int[label] for label in labels if label in self._label_to_int]
-
-
-    def get_mapping(self):
-        return self._label_to_int
-
-
-    def get_labels(self):
-        return list(self._label_to_int.keys())
-    
-
-    def update_label(self, new_label, logger):
-
-        # the caller needs to know if he should add a replay buffer 
-        add_replay_buffer_signal = False
-
-        if not new_label in self._label_to_int:
-
-            logger.info(f'Proactively added {new_label}')
-            self.add_class(new_label)
-            add_replay_buffer_signal = True
-
-        return add_replay_buffer_signal
-
-
-def get_metrics_tensor(metrics_dict, ip, health_args):
-    metrics_to_monitor = health_args['probe_metrics']
-    if metrics_dict is not None and ip in metrics_dict:
-        return torch.tensor([metrics_dict[ip][metric] for metric in metrics_to_monitor], dtype=torch.float32).T
-    else:
-        time_window_len = health_args['node_features_time_window']
-        return torch.full((time_window_len, len(metrics_to_monitor)), -1.0, dtype=torch.float32)
-            
-
-class TigerBrain():
 
     def __init__(self, kwargs, wb_tracker=None):
-        
+        """
+        Initializes the TigerBrain module with provided configuration and optional WandB tracker.
+        """
         args = AttrDict(kwargs)
         
+        # Concurrency and logging
         self._lock = threading.Lock()
         self._epistemic_lock = threading.Lock()
-        self.eval = args.intrusion_detection.eval
+        self.logger_instance = kwargs['logger']
+
+        # Configuration parameters
         self.kwargs = kwargs
         self.intrusion_detection_kwargs = kwargs['intrusion_detection']
+        self.eval = args.intrusion_detection.eval
         self.use_packet_feats = args.use_packet_feats
         self.use_node_feats = args.node_features
         self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
         self.hidden_size = int(args.neural_modules.hidden_size)
         self.multi_class = args.intrusion_detection.multi_class
-        self.wbt = args.wandb.wb_tracking
-        self.wb_tracker = wb_tracker
-        self.wb_run = None
         self.kernel_regression = args.intrusion_detection.kernel_regression
-        self.logger_instance = kwargs['logger']
-        self.device= args.device
-        self.seed =int(args.intrusion_detection.seed)
+        self.device = args.device
+
+        # Training and Evaluation parameters
+        self.seed = int(args.intrusion_detection.seed)
         random.seed(self.seed)
         self.k_shot = int(args.intrusion_detection.k_shot)
         self.batch_size = int(args.intrusion_detection.batch_size)
@@ -346,33 +115,47 @@ class TigerBrain():
         self.use_neural_AD = args.intrusion_detection.use_neural_AD
         self.use_neural_KR = args.intrusion_detection.use_neural_KR
         self.online_evaluation = args.intrusion_detection.online_evaluation
-        self.bad_classif_cost_factor =  float(args.intrusion_detection.bad_classif_cost_factor)
+        self.bad_classif_cost_factor = float(args.intrusion_detection.bad_classif_cost_factor)
         self.online_eval_rounds = int(args.intrusion_detection.online_evaluation_rounds)
         self.load_pretrained_inference_module = args.intrusion_detection.pretrained_inference
         self.clustering_loss_backprop = args.intrusion_detection.clustering_loss_backprop
         self.attractive_weight = float(args.intrusion_detection.attractive_weight)
         self.repulsive_weight = float(args.intrusion_detection.repulsive_weight)
-        self.learning_rate= float(args.intrusion_detection.learning_rate)
-        self.replay_buffer_max_capacity= int(args.intrusion_detection.replay_buffer_max_capacity)
+        self.learning_rate = float(args.intrusion_detection.learning_rate)
+        self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
         self.pretrained_models_dir = args.intrusion_detection.pretrained_models_dir
+
+        # Environment and Networking
         self.container_ips = args.container_ips
         self.ips_containers = args.ips_containers
         self.traffic_dict = args.traffic_dict
         self.episode_count = -1
         self.env = NewTigerEnvironment(args)
+
+        # WandB Tracking
+        self.wbt = args.wandb.wb_tracking
+        self.wb_tracker = wb_tracker
+        self.wb_run = None
         if self.wbt:
             self.wb_run = self.wb_tracker.wb_run
-
         args.intrusion_detection.wbl = self.wb_run
+
+        # Initialize internal components
+        self.encoder = DynamicLabelEncoder()
+        self.reporter = TigerReporter(kwargs, self.wb_run, self.encoder, self.logger_instance, self.seed)
+
         self.init_agents(args)
         self.init_intelligence()
+
+        # Epistemic and Persistency
         self.epistemic_agency = args.intrusion_detection.epistemic_agency
         self.save_models_flag = args.intrusion_detection.save_models
-        self.profiling_stats = {}  # Dict to hold lists of timings
+
+        # Performance profiling
+        self.profiling_stats = {}
         self._rewards_lookup = None
         self._g1_codes_tensor = None
         self._g2_codes_tensor = None
-
 
     @contextmanager
     def profile(self, name):
@@ -396,18 +179,23 @@ class TigerBrain():
             self.profiling_stats[key] = []
         self.profiling_stats[key].append(elapsed_ms)
 
-
     def shutdown(self):
+        """
+        Shuts down monitoring threads and WandB tracker.
+        """
         if hasattr(self, '_stop_monitoring'):
             self._stop_monitoring.set()
             for t in self._monitoring_threads:
                 if t.is_alive():
                     t.join(timeout=2.0)
 
-        self.wb_tracker.shutdown()
+        if self.wb_tracker:
+            self.wb_tracker.shutdown()
             
-
     def init_intelligence(self):
+        """
+        Initializes metrics, confusion matrices, and the environment.
+        """
         self.eval_queue = queue.Queue()
         self.current_known_classes_count = 0
         self.current_test_known_classes_count = 0
@@ -417,27 +205,29 @@ class TigerBrain():
         self.best_KR_accuracy = 0
         self.reset_train_cms()
         self.reset_test_cms()
-        self.encoder = DynamicLabelEncoder()
         self.replay_buffers = {}
         self.reset_environment()
 
-
     @epistemic_thread_safe
     def reset_environment(self):
+        """
+        Resets the environment and initializes inference modules.
+        """
         self.env.reset()    
         self.init_inference_neural_modules()
         self.episode_count += 1
         
-
     def init_agents(self, args):
-        
+        """
+        Initializes the mitigation agent (e.g., DQN, DAI variants).
+        """
         self.state_space_dim = self.hidden_size
         if self.use_node_feats:
             self.state_space_dim += self.hidden_size
         if self.use_packet_feats:
             self.state_space_dim += self.hidden_size
 
-        # The state space will be composed of          
+        # State space components:
         # 0. centroid of collective anomaly (an all-zeros centroid for known traffic)
         # 1. number of anomalies inferred in the batch
         # 2. mean confidence of anomaly inference.  
@@ -447,31 +237,29 @@ class TigerBrain():
         # 6. current system budget
         self.state_space_dim += 6
 
-        if args.intrusion_detection.agent == 'DQN':
-            agent_class = ValueLearningAgent
-        elif args.intrusion_detection.agent == 'DDQN':
-            agent_class = ValueLearningAgent
-        elif args.intrusion_detection.agent == 'DAI_P':
-            agent_class = DAIP_Agent
-        elif args.intrusion_detection.agent == 'DAI_A':
-            agent_class = DAIA_Agent
-        elif args.intrusion_detection.agent == 'DAI_SA':
-            agent_class = DAISA_Agent
-        elif args.intrusion_detection.agent == 'DAI_F':
-            agent_class = DAIF_Agent
-        else:
-            raise ValueError('Unknown agent type: {}'.format(args.intrusion_detection.agent))
+        agent_mapping = {
+            'DQN': ValueLearningAgent,
+            'DDQN': ValueLearningAgent,
+            'DAI_P': DAIP_Agent,
+            'DAI_A': DAIA_Agent,
+            'DAI_SA': DAISA_Agent,
+            'DAI_F': DAIF_Agent
+        }
         
+        agent_type = args.intrusion_detection.agent
+        if agent_type not in agent_mapping:
+            raise ValueError(f'Unknown agent type: {agent_type}')
+
+        agent_class = agent_mapping[agent_type]
         args.intrusion_detection.action_size = 3  # block, pass or TCI acquisition
-        args.intrusion_detection.state_size = self.state_space_dim # the "current_budget" scalar is part of the state space  
+        args.intrusion_detection.state_size = self.state_space_dim
         
         self.mitigation_agent = agent_class(args)
 
-    
     def add_replay_buffer(self, class_name):
-
-        # take care of waiting to have a minimum quantity of samples for each new class before
-        # doing prototypical learning. 
+        """
+        Adds a new replay buffer for a newly discovered class.
+        """
         self.batch_processing_allowed = False
         
         self.replay_buffers[self.current_known_classes_count-1] = RawReplayBuffer(
@@ -479,47 +267,42 @@ class TigerBrain():
             seed=self.seed)
         self.logger_instance.info(f'Replay buffer with code: {self.current_known_classes_count-1} for class: {class_name} was added')
     
-
     @thread_safe
     def add_class_to_knowledge_base(self, new_class):
-
+        """
+        Updates the knowledge base with a new class.
+        """
         self.current_known_classes_count += 1
-        
         self.add_replay_buffer(new_class)
         self.reset_train_cms()
         self.reset_test_cms()
 
-
     def reset_train_cms(self):
+        """Resets training confusion matrices."""
         self.training_cs_cm = torch.zeros(
-            [self.current_known_classes_count, self.current_known_classes_count],
+            [max(1, self.current_known_classes_count), max(1, self.current_known_classes_count)],
             device=self.device)
         self.training_os_cm = torch.zeros(
             size=(2, 2),
             device=self.device)
         
-    
     def reset_test_cms(self):
+        """Resets evaluation confusion matrices."""
         self.eval_cs_cm = torch.zeros(
-            [self.current_known_classes_count, self.current_known_classes_count],
+            [max(1, self.current_known_classes_count), max(1, self.current_known_classes_count)],
             device=self.device)
         self.eval_os_cm = torch.zeros(
             size=(2, 2),
             device=self.device)
-        
 
     def load_models_from_source(self):
         """
-        Safely load models from source code with error handling
+        Safely load models from source code string provided in kwargs.
         """
         try:
-            # Create a custom namespace for execution
             namespace = {}
-            
-            # Execute the source code
             exec(self.kwargs['models'], namespace)
             
-            # Extract only the classes that are nn.Module subclasses
             model_classes = {}
             for name, obj in namespace.items():
                 if (isinstance(obj, type) and 
@@ -530,10 +313,14 @@ class TigerBrain():
             return model_classes
             
         except Exception as e:
-            self.logger.error(f"Error loading models from source: {e}")
+            self.logger_instance.error(f"Error loading models from source: {e}")
             return {}
     
     def init_inference_neural_modules(self):
+        """
+        Initializes neural modules (classifier, confidence decoder, criterion).
+        Loads pre-trained weights if specified.
+        """
         torch.manual_seed(self.seed)
         model_classes = self.load_models_from_source()
 
@@ -554,57 +341,23 @@ class TigerBrain():
                 attractive_weigth=self.attractive_weight
                 ).to(self.device)
         except Exception as e:
-            raise RuntimeError(f"Error initializing {KERNEL_REGRESSION_LOSS_CLASS_NAME} criterion: {e}" + \
-                f" repulsive weight: {self.repulsive_weight}, attractive weight: {self.attractive_weight} from configs" +\
-                f" did your {KERNEL_REGRESSION_LOSS_CLASS_NAME} class have the correct constructor?")
+            raise RuntimeError(f"Error initializing {KERNEL_REGRESSION_LOSS_CLASS_NAME} criterion: {e}")
         
-        if self.use_packet_feats:
-            if self.use_node_feats:
-                if THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
-                    raise RuntimeError(f"Using packet features and node features requires three features stream for inference " + \
-                        f", but a class named {THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
-                
-                try:
-                    self.classifier = model_classes[THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                        kwargs=self.kwargs['neural_modules'])
-                except Exception as e:
-                    raise RuntimeError(f"Error initializing {THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
-                
-            else: 
-                if TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
-                    raise RuntimeError(f"Using packet features requires two features stream for inference " + \
-                        f", but a class named {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
-                
-                try:
-                    self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                        kwargs=self.kwargs['neural_modules'])
-                except Exception as e:
-                    raise RuntimeError(f"Error initializing {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
-                
+        # Determine the correct classifier class based on features used
+        if self.use_packet_feats and self.use_node_feats:
+            target_class = THREE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME
+        elif self.use_packet_feats or self.use_node_feats:
+            target_class = TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME
         else:
-            if self.use_node_feats:
-                if TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
-                    raise RuntimeError(f"Using node features requires two features stream for inference " + \
-                        f", but a class named {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
-                
-                try:
-                    self.classifier = model_classes[TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                        kwargs=self.kwargs['neural_modules'])
-                except Exception as e:
-                    raise RuntimeError(f"Error initializing {TWO_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
-                
+            target_class = ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME
 
-            else:
-                if ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME not in model_classes:
-                    raise RuntimeError(f"Using flow features only requires one features stream for inference " + \
-                        f", but a class named {ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} was not found in your models.py file")
-                
-                try:
-                    self.classifier = model_classes[ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME](
-                        kwargs=self.kwargs['neural_modules'])
-                except Exception as e:
-                    raise RuntimeError(f"Error initializing {ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME} classifier: {e}")
-            
+        if target_class not in model_classes:
+            raise RuntimeError(f"Required classifier {target_class} not found in models.py")
+
+        try:
+            self.classifier = model_classes[target_class](kwargs=self.kwargs['neural_modules'])
+        except Exception as e:
+            raise RuntimeError(f"Error initializing {target_class} classifier: {e}")
 
         self.check_pretrained()
 
@@ -613,131 +366,64 @@ class TigerBrain():
             list(self.classifier.parameters())
 
         self.classifier.to(self.device)
-        self.optimizer = optim.Adam(
-            params_for_optimizer, 
-            lr=self.learning_rate)
+        self.optimizer = optim.Adam(params_for_optimizer, lr=self.learning_rate)
 
         if self.eval:
             self.classifier.eval()
             self.confidence_decoder.eval()
             self.logger_instance.info(f"Using MODULES in EVAL mode!")                
 
-
     def check_pretrained(self):
+        """
+        Loads pre-trained weights for the classifier and confidence decoder.
+        """
+        # Build path based on feature configuration
+        feats_str = ""
+        if self.use_packet_feats: feats_str += "_packet"
+        if self.use_node_feats: feats_str += "_node"
 
-        if self.use_packet_feats:
-            if self.use_node_feats:
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_node_classifier_pretrained_h{self.hidden_size}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_node_confidence_decoder_pretrained_h{self.hidden_size}'
-            else:
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_packet_classifier_pretrained_h{self.hidden_size}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_packet_confidence_decoder_pretrained_h{self.hidden_size}'
-        else:
-            if self.use_node_feats:
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_node_classifier_pretrained_h{self.hidden_size}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_node_confidence_decoder_pretrained_h{self.hidden_size}'
-            else:    
-                self.classifier_path = self.pretrained_models_dir+f'multiclass_flow_classifier_pretrained_h{self.hidden_size}'
-                self.confidence_decoder_path = self.pretrained_models_dir+f'flow_confidence_decoder_pretrained_h{self.hidden_size}'
+        self.classifier_path = f"{self.pretrained_models_dir}multiclass_flow{feats_str}_classifier_pretrained_h{self.hidden_size}"
+        self.confidence_decoder_path = f"{self.pretrained_models_dir}flow{feats_str}_confidence_decoder_pretrained_h{self.hidden_size}"
 
         if self.load_pretrained_inference_module:
-            # Check if the file exists
             if os.path.exists(self.pretrained_models_dir):
-
                 if os.path.exists(self.classifier_path+'.pt'):
-                    # Load the pre-trained weights
                     self.classifier.load_state_dict(torch.load(self.classifier_path+'.pt', weights_only=True))
-                    self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.classifier_path}.pt")
-                else:
-                    self.logger_instance.info(f"Pre-trained weights not found at {self.classifier_path}.pt")
+                    self.logger_instance.info(f"Pre-trained weights loaded from {self.classifier_path}.pt")
                     
-                if self.multi_class:
-                    if os.path.exists(self.confidence_decoder_path+'.pt'):
-                        self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt', weights_only=True))
-                        self.logger_instance.info(f"Pre-trained weights loaded successfully from {self.confidence_decoder_path}.pt")
-                    else:
-                        self.logger_instance.info(f"Pre-trained weights not found at {self.confidence_decoder_path}.pt")             
-                
-
+                if self.multi_class and os.path.exists(self.confidence_decoder_path+'.pt'):
+                    self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt', weights_only=True))
+                    self.logger_instance.info(f"Pre-trained weights loaded from {self.confidence_decoder_path}.pt")
             else:
                 self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
 
-
-    def infer(
-            self,
-            classifier,
-            batch,
-            known_classes_count,
-            query_mask):
+    def infer(self, classifier, batch, known_classes_count, query_mask):
         """
-        Forward inference pass on neural modules.
-        Notice that we can feed our prototypical learners with all kind of labels, (including zdas)
-        as far as we do not back-propagate error gradients from the corresponding outputs. 
-        We'll handle this epistemic correctness during learning, not during forward pass. 
-            Returns:
-                logits: logit multiclass classification predictions (only for the QUERY samples!) 
-                hiddens: 
-                predicted_kernel:
+        Performs forward inference on the given classifier.
         """
-
         try:
+            inputs = [batch.flow_features]
             if self.use_packet_feats:
-                if self.use_node_feats:
-                    logits, hiddens, predicted_kernel = classifier(
-                        batch.flow_features, 
-                        batch.packet_features, 
-                        batch.node_features,
-                        batch.class_labels, 
-                        known_classes_count,
-                        query_mask)
-                else:
-                    logits, hiddens, predicted_kernel = classifier(
-                        batch.flow_features, 
-                        batch.packet_features, 
-                        batch.class_labels, 
-                        known_classes_count,
-                        query_mask)
-            else:
-                if self.use_node_feats:
-                    logits, hiddens, predicted_kernel = classifier(
-                        batch.flow_features, 
-                        batch.node_features, 
-                        batch.class_labels, 
-                        known_classes_count,
-                        query_mask)
-                else:
-                    logits, hiddens, predicted_kernel = classifier(
-                        batch.flow_features, 
-                        batch.class_labels, 
-                        known_classes_count,
-                        query_mask)
+                inputs.append(batch.packet_features)
+            if self.use_node_feats:
+                inputs.append(batch.node_features)
 
+            inputs.extend([batch.class_labels, known_classes_count, query_mask])
 
+            logits, hiddens, predicted_kernel = classifier(*inputs)
             return logits, hiddens, predicted_kernel
         except Exception as e:
-            self.logger_instance.error(f'Error while using your classifier instance: {e}')
-            raise RuntimeError(f'Error while using your classifier instance: {e}')
+            self.logger_instance.error(f'Inference error: {e}')
+            raise RuntimeError(f'Inference error: {e}')
 
-    def push_to_replay_buffers(
-            self,
-            flow_input_batch, 
-            packet_input_batch,
-            node_feat_input_batch,
-            batch_labels):
+    def push_to_replay_buffers(self, flow_input_batch, packet_input_batch, node_feat_input_batch, batch_labels):
         """
-        Don't know why, but you can have more than one sample
-        per class in inference time. 
-        (More than one flowstats object for a single Flow!)
-        So we need to take care of carefully populating our buffers...
-        Otherwise we will have bad surprises when sampling from them!!!
-        (i.e. sampling more elements than those requested!)
+        Saves input samples into their respective class replay buffers.
         """
         unique_labels = torch.unique(batch_labels)
-
         buffers = self.replay_buffers
 
         for label in unique_labels:
-
             mask = batch_labels == label
             masked_flow = flow_input_batch[mask]
             masked_packet = packet_input_batch[mask] if self.use_packet_feats else None
@@ -747,58 +433,34 @@ class TigerBrain():
             for sample_idx in range(masked_flow.shape[0]):
                 try:
                     buffers[label.item()].push(
-                        flow_state=masked_flow[sample_idx].unsqueeze(0), 
+                        flow_state=masked_flow[sample_idx].unsqueeze(0),
                         packet_state=(masked_packet[sample_idx].unsqueeze(0) if self.use_packet_feats else None),
                         node_state=(masked_node[sample_idx].unsqueeze(0) if self.use_node_feats else None),
                         label=masked_labels[sample_idx].unsqueeze(0))
-                except:
-                    raise RuntimeError(f'Error while pushing sample {sample_idx} with label {label} to replay buffer {label}')
+                except Exception as e:
+                    raise RuntimeError(f'Error while pushing sample {sample_idx} with label {label} to replay buffer {label}: {e}')
 
         if not self.batch_processing_allowed:
-
-            buff_lengths = []
-            for class_label, class_idx in self.encoder.get_mapping().items():
-            
-                curr_buff_len = len(buffers[class_idx]) 
-                buff_lengths.append((class_label, curr_buff_len))
+            buff_lengths = [(cl, len(buffers[idx])) for cl, idx in self.encoder.get_mapping().items()]
       
             if len(buff_lengths) > 1:
-                has_enough_samples = all(buff_len > self.batch_size for (_, buff_len) in buff_lengths)
-                has_known_class = any(
-                    class_name in self.env.current_knowledge['Knowns'] for (class_name, _) in buff_lengths
-                )
+                has_enough_samples = all(bl > self.batch_size for (_, bl) in buff_lengths)
+                has_known_class = any(cn in self.env.current_knowledge['Knowns'] for (cn, _) in buff_lengths)
                 self.batch_processing_allowed = has_enough_samples and has_known_class
 
             self.logger_instance.info(f'Buffer lengths: {buff_lengths}')
 
-
-    def get_pushing_mask(self, zda_labels, test_zda_labels, mode):
+    def merge_batches(self, left_batch, right_batch):
         """
-        The pushing mask is a vertical mask (i.e. a binary mask taht assings 1 or 0 to each 
-        sample in the batch). The pushing mask tells us what samples are going to be saved in the 
-        replay buffer. In the case of a training replay buffer, we save every input sample except those 
-        that appertain to test zda labels. In the case of a test replay buffer, we omit the samples 
-        that come from training zdas classes, so we take both known classes and test zdas.
+        Merges two batches together.
         """
-        if mode==TRAINING:
-            return ~test_zda_labels.bool()
-            
-        else:
-            known_mask = ~zda_labels.bool()
-            return torch.logical_or(test_zda_labels.bool(), known_mask)
+        flow_features = torch.vstack([left_batch.flow_features, right_batch.flow_features])
+        packet_features = (torch.vstack([left_batch.packet_features, right_batch.packet_features]) if self.use_packet_feats else None)
+        node_features = (torch.vstack([left_batch.node_features, right_batch.node_features]) if self.use_node_feats else None)
 
-
-    def merge_batches(self, left_batch, rigth_batch):
-        """
-        Self-explainable... handles squeezing for you....
-        """
-        flow_features = torch.vstack([left_batch.flow_features, rigth_batch.flow_features])
-        packet_features = (torch.vstack([left_batch.packet_features, rigth_batch.packet_features]) if self.use_packet_feats else None)
-        node_features = (torch.vstack([left_batch.node_features, rigth_batch.node_features]) if self.use_node_feats else None)
-
-        class_labels = torch.cat([left_batch.class_labels.squeeze(1), rigth_batch.class_labels]).unsqueeze(1)
-        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), rigth_batch.zda_labels.squeeze(1)]).unsqueeze(1)
-        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), rigth_batch.test_zda_labels.squeeze(1)]).unsqueeze(1)
+        class_labels = torch.cat([left_batch.class_labels.squeeze(1), right_batch.class_labels]).unsqueeze(1)
+        zda_labels = torch.cat([left_batch.zda_labels.squeeze(1), right_batch.zda_labels.squeeze(1)]).unsqueeze(1)
+        test_zda_labels = torch.cat([left_batch.test_zda_labels.squeeze(1), right_batch.test_zda_labels.squeeze(1)]).unsqueeze(1)
 
         return Batch(
                 flow_features=flow_features,
@@ -808,23 +470,9 @@ class TigerBrain():
                 zda_labels=zda_labels,
                 test_zda_labels=test_zda_labels)
 
-
-    def preds_to_mask(self, zda_predictions):
-        """
-        Confidence stuff comes into play here...
-        """ 
-        # it turns out it wont work well if not boolean type!
-        mask = (zda_predictions > 0.5).to(torch.bool)
-        return mask   
-
-
     def get_zda_labels(self, batch, mode):
         """
-        Get the zda labels based on natural-language labels
-        - If we are in TRAINING mode, then we are doing experience learning and we should not have any G2 class.
-        - If we are in INFERENCE mode, then we are doing online inference or evaluation and we should not label G1s as anomalies 
-        because they are not.
-        @TODO optimise  
+        Retrieves ZDA labels based on natural-language labels and current knowledge.
         """
         class_codes = batch.class_labels.squeeze(-1)
         if mode == TRAINING:
@@ -832,28 +480,21 @@ class TigerBrain():
             if self._g1_codes_tensor is None or self._g1_codes_tensor.shape[0] != len(g1_codes):
                  self._g1_codes_tensor = torch.tensor(g1_codes, device=class_codes.device, dtype=class_codes.dtype)
 
-            zda_labels = torch.isin(
-                class_codes,
-                self._g1_codes_tensor
-            ).unsqueeze(-1).to(torch.float32)
+            zda_labels = torch.isin(class_codes, self._g1_codes_tensor).unsqueeze(-1).to(torch.float32)
             test_zda_labels = torch.zeros_like(zda_labels)
         elif mode == INFERENCE:
             g2_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G2s'])
             if self._g2_codes_tensor is None or self._g2_codes_tensor.shape[0] != len(g2_codes):
                  self._g2_codes_tensor = torch.tensor(g2_codes, device=class_codes.device, dtype=class_codes.dtype)
 
-            zda_labels = torch.isin(
-                class_codes,
-                self._g2_codes_tensor
-            ).unsqueeze(-1).to(torch.float32)
+            zda_labels = torch.isin(class_codes, self._g2_codes_tensor).unsqueeze(-1).to(torch.float32)
             test_zda_labels = zda_labels
 
         return zda_labels, test_zda_labels
 
-
     def get_rewards_from_encoded_labels(self, encoded_labels):
         """
-        Resolve per-sample rewards without rebuilding intermediate tensors multiple times.
+        Resolves per-sample rewards based on their encoded class labels.
         """
         if self._rewards_lookup is None or len(self._rewards_lookup) != len(self.encoder.get_mapping()):
             self._rewards_lookup = {
@@ -864,101 +505,63 @@ class TigerBrain():
         rewards = [self._rewards_lookup[label.item()] for label in encoded_labels]
         return torch.tensor(rewards, dtype=torch.float32)
 
-
     def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask, accuracy_mask):
-
+        """
+        Performs anomaly detection on the online batch.
+        """
         if self.use_neural_AD:
-
-            # known class horizonal mask:
             known_class_h_mask = self.get_known_classes_mask(batch, one_hot_labels)
             
             try:
-                # separate between candidate known traffic and unknown traffic.
                 zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-            except:
-                self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
-                self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
-                self.logger_instance.error(f'logits shape: {logits.shape}')
-                self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
-                self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
-                raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
+            except Exception as e:
+                self.logger_instance.error(f'Confidence decoder error: {e}')
+                raise RuntimeError(f'Confidence decoder error: {e}')
         
-            # using the inference module to classify anomalies. 
             self.zda_classification_step(
                 zda_labels=batch.zda_labels[query_mask], 
                 zda_predictions=zda_predictions,
                 accuracy_mask=accuracy_mask[query_mask],
                 mode=INFERENCE)
-            predicted_zda_mask = self.preds_to_mask(zda_predictions).squeeze(-1)
+            predicted_zda_mask = (zda_predictions > 0.5).to(torch.bool).squeeze(-1)
         else:
-            # assuming a perfect anomaly detector (just for eval purposes, not learning from this experience tuple)
             zda_predictions = batch.zda_labels[query_mask].squeeze(-1) 
             predicted_zda_mask = zda_predictions.to(torch.bool)
 
         return zda_predictions, predicted_zda_mask
     
-
     def prepare_online_batch(self, online_batch):
+        """
+        Enriches the online batch with auxiliary samples for prototypical classification.
+        """
+        online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch, mode=INFERENCE)
 
-            # get zda labels for the online batch
-            online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch, mode=INFERENCE)
-
-            # sample from the replay buffers
-            aux_batch = self.sample_from_replay_buffers(
-                                    samples_per_class=self.batch_size,
-                                    mode=INFERENCE)
-            
-            if aux_batch is None:
-                return None
-        
-            # query masks
-            aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
-            online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
-            merged_query_mask = torch.cat([aux_query_mask, online_query_mask])
-        
-            # we report and compute rewards only over online samples
-            accuracy_mask = torch.cat([torch.zeros_like(aux_query_mask), online_query_mask])
-
-            merged_batch = self.merge_batches(aux_batch, online_batch)
-
-            return merged_batch, merged_query_mask, accuracy_mask
+        aux_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=INFERENCE)
+        if aux_batch is None:
+            return None
     
+        aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
+        online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
+        merged_query_mask = torch.cat([aux_query_mask, online_query_mask])
 
-    def evaluate_cs_inference(
-            self, 
-            merged_batch, 
-            logits, 
-            predicted_online_zda_mask, 
-            num_of_online_samples, 
-            number_of_predicted_known_samples):
-        
-        # CLASSIFICATION OF KNOWN TRAFFIC: 
-        # rewards need to be given if classification is good, (as if we were accepting/blocking stuff...)
-        # notice we select only traffic classified as known using the inverse of the anomaly-classified mask
-        # i.e., the ~predicted_online_zda_mask mask
-        #
+        accuracy_mask = torch.cat([torch.zeros_like(aux_query_mask), online_query_mask])
+        merged_batch = self.merge_batches(aux_batch, online_batch)
+
+        return merged_batch, merged_query_mask, accuracy_mask
+
+    def evaluate_cs_inference(self, merged_batch, logits, predicted_online_zda_mask, num_of_online_samples, number_of_predicted_known_samples):
+        """
+        Evaluates closed-set classification for traffic predicted as known.
+        """
         online_class_labels = merged_batch.class_labels[-num_of_online_samples:][~predicted_online_zda_mask].squeeze(-1)
         online_class_preds = logits[-num_of_online_samples:][~predicted_online_zda_mask].max(1)[1]
         known_correct_classification_mask = online_class_labels == online_class_preds
 
-        # classif. accuracy (only for reporting purposes) 
-        # cs_acc = known_correct_classification_mask.sum() / known_correct_classification_mask.shape[0] 
-
-        #
-        # Computing confidence on known-class classification:
-        # take the polarisation-degree of your inferences. 
-        #  
-        # analysing only the logits of samples predicted as known: 
         interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
         number_of_known_classes = logits.shape[1]
 
-        # 
-        # CONFIDENCE MEASUREMENT:
-        # 
-        # Conf. of multiclass classification: 
-        # we compute the ratio of the average max logits with those of the other logits:  
         if number_of_predicted_known_samples == 0:
-            self.cs_classif_confidence = torch.ones(1) * 10 # high enough value, and it avoids nans
+            self.cs_classif_confidence = torch.ones(1) * 10
         else:
             non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
             non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
@@ -968,118 +571,68 @@ class TigerBrain():
             
         return known_correct_classification_mask
 
-
     def evaluate_zda_confidence(self, zda_predictions, predicted_online_zda_mask, num_of_online_samples):
-            # Conf. of anomaly detection:
-            # We say you're an anomaly if the logit is greater or equals than 0.5
-            # but how well polarized were these logits?
-            # we take the mean closeness to zero of non-anomaly logits and the mean closeness to 1 of anomaly logits
-            online_anomaly_logits =  zda_predictions[-num_of_online_samples:]
-            online_non_anomaly_pred_logits = online_anomaly_logits[~predicted_online_zda_mask]
-            online_anomaly_pred_logits = online_anomaly_logits[predicted_online_zda_mask]
-            
-            
-            conf_normalizer = 0
-            if online_non_anomaly_pred_logits.shape[0] > 0: 
-                # we do think there are some known samples:
-                self.zda_confidence += (1 - online_non_anomaly_pred_logits).mean()
-                conf_normalizer += 1
-            if  online_anomaly_pred_logits.shape[0] > 0:
-                # we also think there are anomalies:
-                self.zda_confidence += online_anomaly_pred_logits.mean()
-                conf_normalizer += 1
+        """
+        Calculates confidence for anomaly detection.
+        """
+        online_anomaly_logits = zda_predictions[-num_of_online_samples:]
+        online_non_anomaly_pred_logits = online_anomaly_logits[~predicted_online_zda_mask]
+        online_anomaly_pred_logits = online_anomaly_logits[predicted_online_zda_mask]
+
+        conf_normalizer = 0
+        if online_non_anomaly_pred_logits.shape[0] > 0:
+            self.zda_confidence += (1 - online_non_anomaly_pred_logits).mean()
+            conf_normalizer += 1
+        if online_anomaly_pred_logits.shape[0] > 0:
+            self.zda_confidence += online_anomaly_pred_logits.mean()
+            conf_normalizer += 1
+        if conf_normalizer > 0:
             self.zda_confidence /= conf_normalizer
 
-        
-    def act_on_known_traffic(
-            self, 
-            num_of_predicted_anomalies,
-            number_of_predicted_known_samples,
-            cs_correct_classif_mask,
-            hidden_vectors,
-            predicted_online_zda_mask,
-            sample_rewards
-            ):
+    def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards):
         """
-        Acting over the known traffic:
-        One state vector is assembled which has a zeros centroid. 
-        Actions do not change anything in the system, apart of the rewards: 
-        If you accept it, you'll get the reward based on the classification accuracy. 
-        For the other actions, a penalty is given
+        Assembly state and perform action for known traffic.
         """
-
         classification_reward = 0
+        empty_state_vec = -1 * torch.ones(1, hiddens.shape[1])
 
-        # create an empty centroid:
-        empty_state_vec = -1*torch.ones(1, hidden_vectors.shape[1])
-        # add the proprioceptive info:
-        state_vec = self.assembly_state_vector(
-            empty_state_vec,
-            num_of_predicted_anomalies,
-            number_of_predicted_known_samples,
-            self.env.current_budget
-            )
+        state_vec = self.assembly_state_vector(empty_state_vec, num_of_anomalies, num_known, self.env.current_budget)
 
-        if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == True:
-            # we just accept the known traffic 
+        if self.intrusion_detection_kwargs['automatic_cs_acceptance']:
             action_signal = torch.Tensor([0]).long()
         else:
-            # an agent decides this 
             action_signal = self.act(state_vec)
               
-        # advance the game steps:
         self.env.steps_done += 1
         self.wb_tracker.step_counter += 1
 
-        # Computing the rewads for known traffic: 
-        known_samples_costs = sample_rewards[~predicted_online_zda_mask]
-        
+        known_samples_costs = rewards[~zda_mask]
         correct_classif_rewards = torch.zeros_like(known_samples_costs)
         bad_classif_costs = torch.zeros_like(known_samples_costs)
         no_confidence_penalty = 0
 
         if action_signal.item() == 0:
-            # Each well classified sample is rewarded positively:        
-            correct_classif_rewards = torch.abs(known_samples_costs * cs_correct_classif_mask)
-            # Incorrectly classified stuff has a cost: 
+            correct_classif_rewards = torch.abs(known_samples_costs * correct_mask)
             if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-                bad_classif_costs = -torch.abs(known_samples_costs * (~cs_correct_classif_mask))
+                bad_classif_costs = -torch.abs(known_samples_costs * (~correct_mask))
             else:
-                bad_classif_costs = -torch.abs(known_samples_costs * (~cs_correct_classif_mask) * self.bad_classif_cost_factor)
-            # total classification reward:  
+                bad_classif_costs = -torch.abs(known_samples_costs * (~correct_mask) * self.bad_classif_cost_factor)
             classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
         else:
             no_confidence_penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
             classification_reward = no_confidence_penalty
 
-        # update the current budget 
         self.env.current_budget += classification_reward
         
-
-        if self.intrusion_detection_kwargs['automatic_cs_acceptance'] == False: 
-            # the next state is quite similar to the previous
+        if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
             new_state = state_vec.detach().clone()
-            # but changing the current budget: 
             new_state[-1] = self.env.current_budget 
-            # notice we do not edit the available CTI flag cuz it is not possible to buy CTI in this step
-            # an episode ends if the budget ends... 
             end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
-            # store the experience tuple:          
-            self.mitigation_agent.remember(
-                state_vec.detach(),
-                action_signal,
-                torch.Tensor([classification_reward]),
-                new_state,
-                end_signal,
-                self.wb_tracker.step_counter
-            )
-            
+            self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.Tensor([classification_reward]), new_state, end_signal, self.wb_tracker.step_counter)
 
-        # for keeping track of episode-stats:
         self.env.episode_rewards.append(classification_reward)
         self.env.episode_budgets.append(self.env.current_budget)
 
-        # reporting
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
             self.wb_run.log({
                 AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
@@ -1089,92 +642,44 @@ class TigerBrain():
                 AGENT+'/'+'bad_classification_cost': bad_classif_costs.sum().item(),
                 AGENT+'/'+'known traffic action': action_signal.item(),
                 AGENT+'/'+'no_confidence_penalty': no_confidence_penalty
-            },step=self.wb_tracker.step_counter)
-    
+            }, step=self.wb_tracker.step_counter)
 
-    def collective_anomaly_detection(
-            self, 
-            merged_batch,
-            predicted_kernel, 
-            one_hot_labels, 
-            predicted_online_zda_mask, 
-            num_of_online_samples,
-            hidden_vectors
-        ):
-        #  
-        # COLLECTIVE anomaly detection (i.e., clustering eventual zdas) 
-        #
-
+    def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens):
+        """
+        Clusters eventual ZDAs using kernel regression or ground truth.
+        """
         if self.use_neural_KR:
-            # use inference modules for clustering...
             _, predicted_decimal_clusters, _ = self.kernel_regression_evaluation(
                 predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:], 
                 one_hot_labels[-num_of_online_samples:],
                 INFERENCE)
         else:
-            # or assume instead a perfect clusterer
             predicted_decimal_clusters = merged_batch.class_labels[-num_of_online_samples:].squeeze(1)
             
-        # how many clusters have we identified? (useful for one-hot encoding)
-        num_of_predicted_clusters = predicted_decimal_clusters.max() + 1
+        num_clusters = predicted_decimal_clusters.max() + 1
+        anomalous_clusters = predicted_decimal_clusters[predicted_online_zda_mask]
+        predicted_clusters_oh = torch.nn.functional.one_hot(anomalous_clusters, num_classes=num_clusters)
 
-        # take only the clusters of predicted zdas...
-        anomalous_predicted_decimal_clusters = predicted_decimal_clusters[predicted_online_zda_mask] 
-            
-        # one-hot encode the predicted clusters (don't worry about exact class assignments, we just need to group stuff...)
-        predicted_clusters_oh = torch.nn.functional.one_hot(
-            anomalous_predicted_decimal_clusters,
-            num_classes=num_of_predicted_clusters
-        )
+        centroids, missing = self.get_centroids(hiddens[-num_of_online_samples:][predicted_online_zda_mask], predicted_clusters_oh.to(torch.float32))
 
-        # get latent centroids
-        centroids, missing_clusters = self.get_centroids(
-            hidden_vectors[-num_of_online_samples:][predicted_online_zda_mask], 
-            predicted_clusters_oh.to(torch.float32))
-
-        return predicted_clusters_oh, centroids, missing_clusters
+        return predicted_clusters_oh, centroids, missing
     
-    
-    def act_on_unknown_clusters(
-            self,
-            predicted_clusters_oh,
-            centroids,
-            missing_clusters,
-            num_of_predicted_anomalies,
-            number_of_predicted_known_samples,
-            predicted_online_zda_mask,
-            sample_rewards
-            ):
+    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards):
+        """
+        Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
+        """
+        num_identified = centroids[~missing].shape[0]
+        rewards_if_acc = (clusters_oh * rewards[zda_mask].unsqueeze(-1)).sum(0)
+        cost_if_acc = -torch.relu(-rewards_if_acc)
+        benign_rewards = torch.relu(rewards[zda_mask])
+        benign_per_cluster = (clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
 
-        num_of_identified_clusters = centroids[~missing_clusters].shape[0]
-
-        # get the potential rewards per cluster 
-        # This LOC takes into account every sample, and computes the reward for ACCEPTING each cluster as is.
-        # Notice the reward takes into account intersections with good and bad samples
-        rewards_per_clusters_if_accepted = (predicted_clusters_oh * sample_rewards[predicted_online_zda_mask].unsqueeze(-1)).sum(0)
-        # get the cluster-specific passing rewards
-        # we take only the penalties, cuz if we take positive rewards here, we may never want to but CTI labels.
-        cost_per_clusters_if_accepted = -torch.relu(-rewards_per_clusters_if_accepted)
-
-        # benign traffic mask:
-        benign_rewards = torch.relu(sample_rewards[predicted_online_zda_mask]) 
-        # potential benign rewards in each cluster  (this is gonna be useful to penalize blocking good stuff)
-        benign_rewards_per_cluster = (predicted_clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
-
-        for centroid_idx, centroid in enumerate(centroids[~missing_clusters]):
-            
+        for idx, centroid in enumerate(centroids[~missing]):
             accepted_cluster = False
             epistemic_action = False
 
-            state_vec = self.assembly_state_vector(
-                centroid.unsqueeze(0),
-                num_of_predicted_anomalies,
-                number_of_predicted_known_samples,
-                self.env.current_budget)
-
-            # decide if blocking or accepting each unknown...
+            state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
             action = self.act(state_vec)
-
             current_reward = 0
 
             if action == 0:
@@ -1184,1329 +689,471 @@ class TigerBrain():
                 accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
 
             if accepted_cluster: 
-                # take the cost of accepting bad instances:
-                cost_of_accepting = cost_per_clusters_if_accepted[~missing_clusters][centroid_idx]
-                if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-                    current_reward += cost_of_accepting
-                elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-                    current_reward += float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) * cost_of_accepting
-                
-            else:   # block the cluster
-                # blocked benign traffic implies to pay a cost:
-                cost_of_blocking = self.bad_classif_cost_factor * benign_rewards_per_cluster[~missing_clusters][centroid_idx]
-                if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'easy':
-                    current_reward -=  cost_of_blocking
-                elif self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard':
-                    current_reward -= float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) * cost_of_blocking
+                cost = cost_if_acc[~missing][idx]
+                f = float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard' else 1.0
+                current_reward += f * cost
+            else:
+                cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
+                f = float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard' else 1.0
+                current_reward -= f * cost
             
             if epistemic_action:
-                # cti action
-                # get information about the change in the curriculum
-                updates_dict = self.perform_epistemic_action() # updates the CTI flag that forms part of the proprioceptive state
-                cost_of_epistemic_action = updates_dict['price_payed']
-                current_reward -= cost_of_epistemic_action
+                updates_dict = self.perform_epistemic_action()
+                current_reward -= updates_dict['price_payed']
 
-
-            # update the budget:
             self.env.current_budget += current_reward
-            
-            # Approx. next-state as before:
             next_state = state_vec.detach().clone()
             
-            # uptare the exteroceptive part:
-            if centroid_idx < num_of_identified_clusters -1:
-                next_state[:-6] = centroids[~missing_clusters][centroid_idx+1]
+            if idx < num_identified - 1:
+                next_state[:-6] = centroids[~missing][idx+1]
             else:
                 next_state[:-6] = -1 * torch.ones_like(next_state[:-6])
             
-
-            # update the proprioceptive part:
-            # update the cti flag:
             next_state[-2] = self.env.epistemic_actions_available
-            # update the budget in the state vec:
             next_state[-1] = self.env.current_budget
 
-            # advance the game steps:
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
-
-            # ask again if the budget is over: 
             end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
 
-            self.mitigation_agent.remember(
-                    state_vec.detach(),
-                    action,
-                    current_reward,
-                    next_state,
-                    end_signal,
-                    self.wb_tracker.step_counter
-            )
-
-            # for keeping track of episode-stats:
-            self.env.episode_rewards.append(current_reward.item())
+            self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
+            self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
             self.env.episode_budgets.append(self.env.current_budget)
 
-            # reporting
             if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
+                reward_val = current_reward.item() if hasattr(current_reward, 'item') else current_reward
                 self.wb_run.log({
-                    AGENT+'/'+'generic_reward': current_reward.item(),
-                    AGENT+'/'+'clustering_reward': current_reward.item(),
+                    AGENT+'/'+'generic_reward': reward_val,
+                    AGENT+'/'+'clustering_reward': reward_val,
                     AGENT+'/'+'budget': self.env.current_budget,
                     AGENT+'/'+'Epistemic Actions taken': int(epistemic_action),
-                    AGENT+'/'+'epistemic_costs': (current_reward if epistemic_action else 0),
-                    AGENT+'/'+'rewards_per_accepted_clusters': (current_reward if accepted_cluster else 0),
-                    AGENT+'/'+'rewards_per_blocked_clusters': (current_reward if not accepted_cluster else 0),
-                },step=self.wb_tracker.step_counter)
+                    AGENT+'/'+'epistemic_costs': (reward_val if epistemic_action else 0),
+                    AGENT+'/'+'rewards_per_accepted_clusters': (reward_val if accepted_cluster else 0),
+                    AGENT+'/'+'rewards_per_blocked_clusters': (reward_val if not accepted_cluster else 0),
+                }, step=self.wb_tracker.step_counter)
 
-            
-
-                
-    def online_inference(
-            self, 
-            online_batch):
+    def online_inference(self, online_batch):
         """
-        Does online inference with the given online batch.
-        It uses some support samples from the replay buffers to aid in prototypical learning
-        After the known-unknown class inferences and the clustering of unknowns, the agent has 
-        performs three different actions for each cluster:
-        0. let it pass          (practic action)
-        1. block it             (practic action)
-        2. acquire a TCI label  (epistemic action)
+        Executes the online inference loop.
         """
-
         self.cs_classif_confidence = torch.zeros(1)
         self.zda_confidence = torch.zeros(1)
         
-        # do not run gradients on the inference modules!
         self.classifier.eval()
         self.confidence_decoder.eval()
 
-        # the online batch is enriched with auxiliary samples for prototypical classification
         online_batch_tuple = self.prepare_online_batch(online_batch)
-        if online_batch_tuple is None:
-            return
+        if online_batch_tuple is None: return
         
         merged_batch, merged_query_mask, accuracy_mask = online_batch_tuple
         
         with torch.no_grad():
             with self.profile("onl_inf_forward_pass"):
-                # prototypical classification and kernel regression
-                logits, hidden_vectors, predicted_kernel = self.infer(
-                    self.classifier,
-                    merged_batch,
-                    self.current_known_classes_count,
-                    query_mask=merged_query_mask)           
+                logits, hiddens, predicted_kernel = self.infer(self.classifier, merged_batch, self.current_known_classes_count, query_mask=merged_query_mask)
             
-            # one hot labels for the predictions
             one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
 
             with self.profile("onl_inf_AD"):
-                # (Individual) Anomaly detection:    
-                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(
-                    batch=merged_batch,
-                    logits=logits,
-                    one_hot_labels=one_hot_labels,
-                    query_mask=merged_query_mask,
-                    accuracy_mask=accuracy_mask
-                    )
+                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, one_hot_labels, merged_query_mask, accuracy_mask)
         
-        # We needed the aux samples to perform inference in the prototypical way, but
-        # actually, we only care about online anomalies:
-        # so we compute how many samples we had in the online batch: 
-        num_of_online_samples = online_batch.zda_labels.shape[0] 
-        # and we know those were in the last positions of the merged batch: 
-        predicted_online_zda_mask = predicted_zda_mask[-num_of_online_samples:]  
-        # how many online samples are we classifying as known? 
-        number_of_predicted_known_samples = (~predicted_online_zda_mask).sum()
-        # how many of them are we classifying as anomalies instead? 
-        num_of_predicted_anomalies = predicted_online_zda_mask.sum()
-        class_codes = merged_batch.class_labels[-num_of_online_samples:].squeeze(-1)
-        sample_rewards = self.get_rewards_from_encoded_labels(class_codes)
+        num_online = online_batch.zda_labels.shape[0]
+        pred_online_zda_mask = predicted_zda_mask[-num_online:]
+        num_known = (~pred_online_zda_mask).sum()
+        num_anom = pred_online_zda_mask.sum()
+        rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
 
-        # even if we have zero anomalies, we need the confidence of these inferences.
-        self.evaluate_zda_confidence(
-            zda_predictions, 
-            predicted_online_zda_mask, 
-            num_of_online_samples
-        )
+        self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
+        correct_mask = self.evaluate_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
 
-        cs_correct_classif_mask = self.evaluate_cs_inference(
-                merged_batch, 
-                logits, 
-                predicted_online_zda_mask, 
-                num_of_online_samples, 
-                number_of_predicted_known_samples
-                )
-
-        if number_of_predicted_known_samples > 0:
-
+        if num_known > 0:
             with self.profile("onl_inf_act_known"):
-                self.act_on_known_traffic(
-                    num_of_predicted_anomalies, 
-                    number_of_predicted_known_samples, 
-                    cs_correct_classif_mask,
-                    hidden_vectors,
-                    predicted_online_zda_mask,
-                    sample_rewards
-                    )
+                self.act_on_known_traffic(num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards)
             
-
-            # Anomaly clustering is going to be done only if there are predicted anomalies.
-            if num_of_predicted_anomalies > 0:
-
+            if num_anom > 0:
                 with self.profile("onl_inf_CAD"):
-                    predicted_clusters_oh, centroids, missing_clusters = self.collective_anomaly_detection(
-                        merged_batch,
-                        predicted_kernel,
-                        one_hot_labels,
-                        predicted_online_zda_mask,
-                        num_of_online_samples,
-                        hidden_vectors
-                    )
-
+                    clusters_oh, centroids, missing = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
                 with self.profile("onl_inf_act_unknown"):
-                    self.act_on_unknown_clusters(
-                        predicted_clusters_oh,
-                        centroids,
-                        missing_clusters,
-                        num_of_predicted_anomalies,
-                        number_of_predicted_known_samples,
-                        predicted_online_zda_mask,
-                        sample_rewards
-                        )
+                    self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
 
-        # train!
         with self.profile("onl_inf_ER"):
             self.mitigation_agent.replay(self.wb_tracker.step_counter)
 
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log({'online_inference/real_num_of_anomalies': online_batch.zda_labels.sum().item(),
-                          'online_inference/num_predicted_knowns': number_of_predicted_known_samples.item(),
-                          'online_inference/num_predicted_unknowns': num_of_predicted_anomalies.item(),
-                          'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
-                          'online_inference/zda_classif_confidence': self.zda_confidence.item(),
-                          }, 
-                          step=self.wb_tracker.step_counter)
+            self.wb_run.log({
+                'online_inference/real_num_of_anomalies': online_batch.zda_labels.sum().item(),
+                'online_inference/num_predicted_knowns': num_known.item(),
+                'online_inference/num_predicted_unknowns': num_anom.item(),
+                'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
+                'online_inference/zda_classif_confidence': self.zda_confidence.item(),
+            }, step=self.wb_tracker.step_counter)
             
-        # re-activate gradient tracking on inference modules: 
         self.classifier.train()
         self.confidence_decoder.train()
 
-        # eventually reset the environment. 
         if self.env.has_episode_ended(self.wb_tracker.step_counter): 
             if self.wbt:
                 self.wb_run.log({
-                        'episode_count': self.episode_count,
-                        'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
-                        'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
-                        'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
-                        'epistemic_actions_per_episode': self.env.epistemic_actions,
-                        'steps_per_episode': self.env.steps_done
-                    }, 
-                    step=self.wb_tracker.step_counter)
-
+                    'episode_count': self.episode_count,
+                    'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
+                    'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
+                    'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
+                    'epistemic_actions_per_episode': self.env.epistemic_actions,
+                    'steps_per_episode': self.env.steps_done
+                }, step=self.wb_tracker.step_counter)
             self.reset_environment()
-            
 
+    def class_classification_step(self, class_labels, class_predictions, mode, query_mask):
+        """Calculates loss and accuracy for closed-set classification."""
+        cs_loss = self.cs_criterion(input=class_predictions, target=class_labels[query_mask].squeeze(1))
+        acc = self.get_accuracy(logits_preds=class_predictions, decimal_labels=class_labels, query_mask=query_mask)
 
-    def class_classification_step(
-            self, 
-            class_labels, 
-            class_predictions, 
-            mode, 
-            query_mask):
-        """
-        Class classification:
-        It obviously computes the error  signal taking into account only query samples,
-        Note:  
-            This learning signal includes the query samples of train zdas and their corresponding class labels.
-            This is epistemically legal, in the sense that train zdas are fake zdas.
-            During testing instead, everythong is legal because we are not learning anymore, just evaluating.
-        """
-        cs_loss = self.cs_criterion(
-            input=class_predictions,
-            target=class_labels[query_mask].squeeze(1))
-
-        # compute accuracy (inclue zda class labels for computing accuracy)
-        acc = self.get_accuracy(
-            logits_preds=class_predictions,
-            decimal_labels=class_labels,
-            query_mask=query_mask)
-
-        # report progress
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log(
-                {
-                    mode+'/'+CS_ACC: acc.item(),
-                    mode+'/'+CS_LOSS: cs_loss.item()
-                }, 
-                step=self.wb_tracker.step_counter)
-
+            self.wb_run.log({mode+'/'+CS_ACC: acc.item(), mode+'/'+CS_LOSS: cs_loss.item()}, step=self.wb_tracker.step_counter)
         return cs_loss, acc
 
-
-    def get_centroids(
-            self,
-            hidden_vectors,
-            onehot_labels):
-        """
-        Compute the centroids (cluster centers) for a set of hidden representation vectors, 
-        based on their one-hot encoded class assignments. This method handles cases where 
-        some clusters may not have any samples in the batch (missing clusters).
-        
-        Args:
-        hidden_vectors (torch.Tensor): A 2D tensor of shape (N, D), where N is the number 
-                                    of samples and D is the dimensionality of the hidden representations.
-        onehot_labels (torch.Tensor): A 2D tensor of shape (N, K), where N is the number 
-                                    of samples and K is the number of classes. Each row is 
-                                    a one-hot encoded label indicating the class assignment 
-                                    for each sample.
-        
-        Returns:
-        tuple: A tuple containing:
-            - centroids (torch.Tensor): A 2D tensor of shape (K, D) representing the centroids 
-                                        for each class. If a class has no samples in the batch, 
-                                        its centroid will remain as zeros.
-            - missing_clusters (torch.Tensor): A 1D boolean tensor of length K, where True 
-                                            indicates that a class is missing (i.e., has 
-                                            no samples in the batch), and False means that 
-                                            the class has at least one sample.
-        """
-        
-        # Perform matrix multiplication to aggregate hidden vectors by class (onehot_labels.T @ hidden_vectors)
-        # This step sums the hidden_vectors for all samples belonging to each class.
+    def get_centroids(self, hidden_vectors, onehot_labels):
+        """Calculates centroids for each class."""
         cluster_agg = onehot_labels.T @ hidden_vectors
-
-        # Compute the number of samples for each class by summing over the one-hot encoded labels.
         samples_per_cluster = onehot_labels.sum(0)
-        
-        # Initialize centroids as a zero tensor of the same shape as the aggregated hidden vectors.
         centroids = torch.zeros_like(cluster_agg, device=self.device)
-        
-        # Identify missing clusters, i.e., classes with zero samples.
         missing_clusters = samples_per_cluster == 0
-
-        # For the clusters that have samples, compute the centroid by dividing the summed hidden vectors
-        # by the number of samples in each cluster.
         existent_centroids = cluster_agg[~missing_clusters] / samples_per_cluster[~missing_clusters].unsqueeze(-1)
-        
-        # Assign the computed centroids to their corresponding positions in the centroids tensor.
         centroids[~missing_clusters] = existent_centroids
-
         return centroids, missing_clusters
 
-
-    def assembly_state_vector(
-            self, 
-            centroid, 
-            num_of_anomalies, 
-            number_of_known_samples_in_batch, 
-            curr_budget):
-
-        # get state vectors
-        state_vec = torch.cat(
-           [centroid.squeeze(0),
+    def assembly_state_vector(self, centroid, num_anom, num_known, curr_budget):
+        """Assembles the state vector for the agent."""
+        return torch.cat([
+            centroid.squeeze(0),
             torch.tensor([
-                float(num_of_anomalies),
-                self.zda_confidence.item(),
-                float(number_of_known_samples_in_batch),
-                self.cs_classif_confidence.item(),
-                float(self.env.epistemic_actions_available),
-                float(curr_budget)
-            ], device=centroid.device, dtype=centroid.dtype)]
-        )
-
-        return state_vec
+                float(num_anom), self.zda_confidence.item(),
+                float(num_known), self.cs_classif_confidence.item(),
+                float(self.env.epistemic_actions_available), float(curr_budget)
+            ], device=centroid.device, dtype=centroid.dtype)
+        ])
     
-    def act(
-            self, 
-            state_vec):
-
+    def act(self, state_vec):
+        """Gets action from the mitigation agent."""
         action = self.mitigation_agent.act(state_vec)
-
         return torch.Tensor([action]).long()
 
-
     def process_input(self, flows, node_feats: dict = None):
-        """
-        """
-        
+        """Main entry point for processing new network flows."""
         if len(flows) > 0:
             with self.profile("process_input_total"):
-            
                 with self.profile("input_assembly"):
                     batch = self.assembly_input_tensor(flows, node_feats)
 
                 with self._lock:
+                    self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
 
-                    self.push_to_replay_buffers(
-                        batch.flow_features, 
-                        batch.packet_features,
-                        batch.node_features,  
-                        batch_labels=batch.class_labels)
-
-                    # this fella could be toogling because of a new class arriving... 
                     if self.batch_processing_allowed:
                         if self.epistemic_agency:
                             with self.profile("online_inference_total"):
                                 self.online_inference(batch)
                 
-                    # RE-CHECK — online_inference may have triggered perform_epistemic_action
-                    # which calls add_replay_buffer → batch_processing_allowed = False
-                    if self.batch_processing_allowed:
-                        with self.profile("experience_learning_total"):
-                            self.experience_learning()
+                        if self.batch_processing_allowed:
+                            with self.profile("experience_learning_total"):
+                                self.experience_learning()
 
                     if not self.epistemic_agency:
                         self.wb_tracker.step_counter += 1
 
-
-    def _sample_from_frozen_buffers(
-        self,
-        frozen_buffers: dict,
-        frozen_int_to_label: dict,
-        frozen_knowledge: dict,
-        samples_per_class: int,
-    ):
-        """
-        Like sample_from_replay_buffers(mode=INFERENCE) but operates on
-        frozen metadata snapshots so the async eval thread is safe.
-        """
+    def _sample_from_frozen_buffers(self, frozen_buffers, frozen_int_to_label, frozen_knowledge, samples_per_class):
+        """Helper for async evaluation thread to sample from buffers safely."""
+        init = True
         balanced_flow_batch = None
         balanced_packet_batch = None
         balanced_node_feat_batch = None
         balanced_labels = None
         balanced_zda_labels = None
         balanced_test_zda_labels = None
-        init = True
 
         for class_idx, replay_buff in frozen_buffers.items():
-
-            # Use the frozen encoder, not self.encoder
             class_nl_label = frozen_int_to_label.get(class_idx)
-            if class_nl_label is None:
-                continue  # class was added after snapshot, skip cleanly
+            if class_nl_label is None: continue
 
             test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
-
             if class_nl_label in frozen_knowledge.get('G2s', set()):
                 test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
 
             try:
-                flow_batch, packet_batch, node_feat_batch, batch_labels = \
-                    replay_buff.sample(samples_per_class)
-            except Exception:
-                self.logger_instance.warning('Frozen buffer sample failed. Skipping batch.')
-                return None
-
-            if init:
-                balanced_flow_batch      = flow_batch
-                balanced_labels          = batch_labels
-                balanced_zda_labels      = zda_batch_labels
-                balanced_test_zda_labels = test_zda_batch_labels
-                if packet_batch is not None:    balanced_packet_batch    = packet_batch
-                if node_feat_batch is not None: balanced_node_feat_batch = node_feat_batch
-            else:
-                balanced_flow_batch      = torch.vstack([balanced_flow_batch, flow_batch])
-                balanced_labels          = torch.vstack([balanced_labels, batch_labels])
-                balanced_zda_labels      = torch.vstack([balanced_zda_labels, zda_batch_labels])
-                balanced_test_zda_labels = torch.vstack([balanced_test_zda_labels, test_zda_batch_labels])
-                if packet_batch is not None:
-                    balanced_packet_batch = torch.vstack([balanced_packet_batch, packet_batch])
-                if node_feat_batch is not None:
-                    balanced_node_feat_batch = torch.vstack([balanced_node_feat_batch, node_feat_batch])
-
-            init = False
-
-        if init:
-            self.logger_instance.warning('Frozen buffers had nothing to sample. Skipping.')
-            return None
-
-        return Batch(
-            flow_features=balanced_flow_batch,
-            packet_features=balanced_packet_batch,
-            node_features=balanced_node_feat_batch,
-            class_labels=balanced_labels,
-            zda_labels=balanced_zda_labels,
-            test_zda_labels=balanced_test_zda_labels,
-        )
-
-    def sample_from_replay_buffers(self, samples_per_class, mode):
-        all_flow_batches = []
-        all_packet_batches = []
-        all_node_feat_batches = []
-        all_labels = []
-        all_zda_labels = []
-        all_test_zda_labels = []
-  
-        classes_decimal_tensor = torch.tensor(list(self.replay_buffers.keys()), device=self.device).to(torch.long)
-        nl_labels = self.encoder.inverse_transform(classes_decimal_tensor)
-        
-        for replay_buff, class_nl_label  in zip(self.replay_buffers.values(), nl_labels):
-
-            test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
-
-            if mode== TRAINING:
-                # we cannot use test-time anomalies for backproping gradients on our inference module, (by definition) 
-                if class_nl_label in self.env.current_knowledge['G2s']:
-                    continue
-                # we use fake-anomalies, (i.e. clusters we know but that we can label as anomalies to teach the inference
-                # module to learn the cluster separation distribution and be able to detect OOD test-time anomalies or G2 classes) 
-                if class_nl_label in self.env.current_knowledge['G1s']:
-                    zda_batch_labels = torch.ones(samples_per_class, 1)
-            
-            # in inference, we sample from the replay buffers to build an auxiliary batch for classification.
-            # the auxiliary batch is combined with the online batch, which can potentially contain any record, 
-            # (also train-time or fake-anomalies, i.e. G1 classes) for this reason, the aux batch contains also 
-            # every class, but we do not treat G1 as anomalies anymore, as we are not interested on making inferences
-            # on their benign/malicious nature, as we already known what they are, so the unique anomalies here are the eventual G2s
-            # that are still-to-buy as CTI 
-            if mode == INFERENCE:
-                if class_nl_label in self.env.current_knowledge['G2s']:
-                    test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
-            
-            try:
-                flow_batch, \
-                    packet_batch, \
-                        node_feat_batch, \
-                            batch_labels = replay_buff.sample(samples_per_class)
+                flow_batch, packet_batch, node_feat_batch, batch_labels = replay_buff.sample(samples_per_class)
             except:
-                self.logger_instance.warning('Buffer sync failed. Skipping this batch.')
                 continue
 
-            all_flow_batches.append(flow_batch)
-            all_labels.append(batch_labels)
-            all_zda_labels.append(zda_batch_labels)
-            all_test_zda_labels.append(test_zda_batch_labels)
-            if packet_batch is not None:
-                all_packet_batches.append(packet_batch)
-            if node_feat_batch is not None:
-                all_node_feat_batches.append(node_feat_batch)
+            if init:
+                balanced_flow_batch = flow_batch
+                balanced_labels = batch_labels
+                balanced_zda_labels = zda_batch_labels
+                balanced_test_zda_labels = test_zda_batch_labels
+                balanced_packet_batch = packet_batch
+                balanced_node_feat_batch = node_feat_batch
+                init = False
+            else:
+                balanced_flow_batch = torch.vstack([balanced_flow_batch, flow_batch])
+                balanced_labels = torch.vstack([balanced_labels, batch_labels])
+                balanced_zda_labels = torch.vstack([balanced_zda_labels, zda_batch_labels])
+                balanced_test_zda_labels = torch.vstack([balanced_test_zda_labels, test_zda_batch_labels])
+                if packet_batch is not None: balanced_packet_batch = torch.vstack([balanced_packet_batch, packet_batch])
+                if node_feat_batch is not None: balanced_node_feat_batch = torch.vstack([balanced_node_feat_batch, node_feat_batch])
 
-        if not all_flow_batches:
-            self.logger_instance.warning('Only G2s for now. Skipping this batch.')
-            return None
+        if init: return None
+        return Batch(flow_features=balanced_flow_batch, packet_features=balanced_packet_batch, node_features=balanced_node_feat_batch, class_labels=balanced_labels, zda_labels=balanced_zda_labels, test_zda_labels=balanced_test_zda_labels)
 
-        return Batch(
-            flow_features=torch.cat(all_flow_batches, dim=0),
-            packet_features=(torch.cat(all_packet_batches, dim=0) if all_packet_batches else None),
-            node_features=(torch.cat(all_node_feat_batches, dim=0) if all_node_feat_batches else None),
-            class_labels=torch.cat(all_labels, dim=0),
-            zda_labels=torch.cat(all_zda_labels, dim=0),
-            test_zda_labels=torch.cat(all_test_zda_labels, dim=0))
+    def sample_from_replay_buffers(self, samples_per_class, mode):
+        """Samples a balanced batch from all active replay buffers."""
+        all_flow, all_packet, all_node, all_labels, all_zda, all_test_zda = [], [], [], [], [], []
+        classes_decimal = torch.tensor(list(self.replay_buffers.keys()), device=self.device).to(torch.long)
+        nl_labels = self.encoder.inverse_transform(classes_decimal)
+        
+        for replay_buff, nl_label in zip(self.replay_buffers.values(), nl_labels):
+            test_zda_labels = zda_labels = torch.zeros(samples_per_class, 1)
 
+            if mode == TRAINING:
+                if nl_label in self.env.current_knowledge['G2s']: continue
+                if nl_label in self.env.current_knowledge['G1s']: zda_labels = torch.ones(samples_per_class, 1)
+            
+            if mode == INFERENCE:
+                if nl_label in self.env.current_knowledge['G2s']:
+                    test_zda_labels = zda_labels = torch.ones(samples_per_class, 1)
+            
+            try:
+                f, p, n, l = replay_buff.sample(samples_per_class)
+            except:
+                continue
+
+            all_flow.append(f)
+            all_labels.append(l)
+            all_zda.append(zda_labels)
+            all_test_zda.append(test_zda_labels)
+            if p is not None: all_packet.append(p)
+            if n is not None: all_node.append(n)
+
+        if not all_flow: return None
+        return Batch(flow_features=torch.cat(all_flow, dim=0), packet_features=(torch.cat(all_packet, dim=0) if all_packet else None), node_features=(torch.cat(all_node, dim=0) if all_node else None), class_labels=torch.cat(all_labels, dim=0), zda_labels=torch.cat(all_zda, dim=0), test_zda_labels=torch.cat(all_test_zda, dim=0))
 
     def get_canonical_query_mask(self, whole_batch_size):
-        """
-        The query mask differentiates support from query samples. 
-        Support samples are used for centroid computation.
-        Query samples are used for  prototypical learning, i.e., they are assigned to each centroid based on their simmilarity in the manifold.
-
-        This method returns a vertical mask, i.e. a one-dimentional binary mask that assigns 1 (True) or 0 (False) to each sample in the batch, indicating
-        if it is a query sample (1) or not (0) (in which case it will be a support sample).
-
-        This method assumes that the samples in the batch are concatenated in continuous slices, i.e. all the 
-        samples corresponding to class A are in the first M positions, where M correspondons to the number of support + query samples for each class,
-        In the positions M+1 to 2M positions, we'll have samples from class B, and so on... 
-        
-        We mask-out (i.e. put zeros on) K samples of each class, where K is the number of support samples for each class, AKA the K-shot parameter. 
-        and this methods masks the first K samples of each class. 
-        
-
-        (the mask will have dimensions N times M, where N is the number of classes in the knowledge base)
-        """
-
+        """Creates a query mask based on the K-shot parameter."""
         N = whole_batch_size // self.batch_size
         M = self.batch_size
-
-        query_mask = torch.ones(
-            size=(N, M),
-            device=self.device).to(torch.bool)
-        
-        # This is a trick for labelling withouth messing around with indexes.
-        # We started from a bi-dimensional binary mask, all zeros, 
-        # we mask out the first self.K_shot positions (that correspond to the query samples)
-        #  of every row (that corresponds to each class)
+        query_mask = torch.ones(size=(N, M), device=self.device).to(torch.bool)
         query_mask[:, :self.k_shot] = False
-        # and then we flatten the bi-dimensional mask to get a one-dimensional one that works for us! 
-        query_mask = query_mask.view(-1)
-        return query_mask
-
+        return query_mask.view(-1)
 
     def get_oh_labels(self, batch, class_shape):
-        """
-        Create a one-hot encoding of the targets.
-        """
-        curr_shape=(
-                batch.class_labels.shape[0],
-                class_shape)
-        
-        targets=batch.class_labels
-        targets = targets.to(torch.int64)
-        
-        targets_onehot = torch.zeros(
-            size=curr_shape,
-            device=targets.device)
+        """One-hot encodes class labels."""
+        targets = batch.class_labels.to(torch.int64)
+        targets_onehot = torch.zeros(size=(batch.class_labels.shape[0], class_shape), device=targets.device)
         targets_onehot.scatter_(1, targets.view(-1, 1), 1)
-
         return targets_onehot
     
-
-    def zda_classification_step(
-            self,
-            zda_labels,  
-            zda_predictions,
-            accuracy_mask,
-            mode):
-        """
-        Params:
-            zda_labels: 
-                vertical mask indicating if the sample is a Zda or not.
-                (1 bit for each query sample. not including support samples here) 
-            preds: 
-                these logit vectors have logits that indicate guessed assignation to known classes ONLY.
-                note also that we have one logits vector for each query sample. (not including support samples here)
-            mode:
-                can be TRAINING or INFERENCE, helps to differentiate the number of classes in play...
-        """
-
-        os_loss = self.os_criterion(
-            input=zda_predictions[accuracy_mask],
-            target=zda_labels[accuracy_mask])
-        
-        # one-hot binary labels have two positions. 
-        # [1,0] -> Zda
-        # [0,1] -> known stuff  
-        # we make this to rapidly compute the confusion matrix in pytorch...   
-        onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0],2)).long()
+    def zda_classification_step(self, zda_labels, zda_predictions, accuracy_mask, mode):
+        """Calculates loss and accuracy for ZDA detection."""
+        os_loss = self.os_criterion(input=zda_predictions[accuracy_mask], target=zda_labels[accuracy_mask])
+        onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
         onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
 
-        batch_os_cm = efficient_os_cm(
-            preds=(zda_predictions.detach() > 0.5).long(),
-            targets_onehot=onehot_zda_labels.long()
-            )
+        batch_os_cm = efficient_os_cm(preds=(zda_predictions.detach() > 0.5).long(), targets_onehot=onehot_zda_labels.long())
         
         cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
         cummulative_os_cm += batch_os_cm
-        zda_balance = zda_labels.to(torch.float16).mean().item()
+        zda_balance = zda_labels.to(torch.float32).mean().item()
         batch_os_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance)
         cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
 
-        
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log(
-                {
-                    mode+'/'+OS_ACC: cummulative_os_acc.item(),
-                    mode+'/'+OS_LOSS: os_loss.item(),
-                    mode+'/'+ANOMALY_BALANCE: zda_balance
-                }, 
-                step=self.wb_tracker.step_counter)
+            self.wb_run.log({mode+'/'+OS_ACC: cummulative_os_acc.item(), mode+'/'+OS_LOSS: os_loss.item(), mode+'/'+ANOMALY_BALANCE: zda_balance}, step=self.wb_tracker.step_counter)
          
-        self.logger_instance.debug(f'{mode} Groundtruth Batch ZDA balance is {zda_balance:.2f}')
-        self.logger_instance.debug(f'{mode} Predicted Batch ZDA balance is {zda_predictions.to(torch.float32).mean():.2f}')
-        self.logger_instance.debug(f'{mode} Batch ZDA detection accuracy: {batch_os_acc:.2f}')
-        self.logger_instance.info(f'{mode} Cummulative Episode ZDA detection accuracy: {cummulative_os_acc:.2f}\n')
-    
         return os_loss, cummulative_os_acc
     
-
     def kernel_regression_evaluation(self, predicted_kernel, one_hot_labels, mode):
-
+        """Evaluates clustering performance via kernel regression."""
         if self.kernel_regression:
-            
             semantic_kernel = one_hot_labels @ one_hot_labels.T
+            kernel_loss = self.kr_criterion(baseline_kernel=semantic_kernel, predicted_kernel=predicted_kernel)
 
-            kernel_loss = self.kr_criterion(
-                baseline_kernel=semantic_kernel,
-                predicted_kernel=predicted_kernel
-            )
+            decimal_semantic = one_hot_labels.max(1)[1].detach().cpu().numpy()
+            decimal_predicted = get_clusters(predicted_kernel.detach())
+            np_dec_pred = decimal_predicted.cpu().numpy()
 
-            decimal_sematic_kernel = one_hot_labels.max(1)[1].detach().numpy()
-            decimal_predicted_kernel = get_clusters(predicted_kernel.detach())
-            np_dec_pred_kernel = decimal_predicted_kernel.numpy()
-
-            # Compute clustering metrics
-            kr_ari = adjusted_rand_score(
-                decimal_sematic_kernel, 
-                np_dec_pred_kernel)
-            kr_nmi = normalized_mutual_info_score(
-                decimal_sematic_kernel,
-                np_dec_pred_kernel)
+            kr_ari = adjusted_rand_score(decimal_semantic, np_dec_pred)
+            kr_nmi = normalized_mutual_info_score(decimal_semantic, np_dec_pred)
 
             if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-                self.wb_run.log(
-                    {
-                        mode+'/'+KR_ARI: kr_ari,
-                        mode+'/'+KR_NMI: kr_nmi,
-                        mode+'/'+KR_LOSS: kernel_loss.item()
-                    }, 
-                    step=self.wb_tracker.step_counter)
+                self.wb_run.log({mode+'/'+KR_ARI: kr_ari, mode+'/'+KR_NMI: kr_nmi, mode+'/'+KR_LOSS: kernel_loss.item()}, step=self.wb_tracker.step_counter)
             
-            
-            self.logger_instance.info(f'{mode} kernel regression ARI: {kr_ari:.2f} NMI:{kr_nmi:.2f}')
-            self.logger_instance.debug(f'{mode} kernel regression loss: {kernel_loss.item():.2f}')
-            
-            return kernel_loss, decimal_predicted_kernel, kr_ari
-
+            return kernel_loss, decimal_predicted, kr_ari
 
     def get_known_classes_mask(self, batch, one_hot_labels):
-        """
-        get known class horizonal mask: An horizontal mask is a one-dimensional tensor with as many items
-        as the number of NOT ZDA classes. For each class, it is telling us if it is a zda or not.  
-        """
+        """Identifies classes that are NOT ZDAs in the current batch."""
         known_oh_labels = one_hot_labels[~batch.zda_labels.squeeze(1).bool()]
-        return known_oh_labels.sum(0)>0
-
+        return known_oh_labels.sum(0) > 0
 
     def experience_learning(self):
-        """
-        This method performs learning. (It is the only one who does so). 
-        Other methods may use the neural networks, but just for inference. 
-        """
-
-        training_batch = self.sample_from_replay_buffers(
-                samples_per_class=self.batch_size,
-                mode=TRAINING)
-
-        if training_batch is None:
-            return
-        # get zda labels for the online batch
-        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
+        """Performs a training step using experience replay."""
+        training_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=TRAINING)
+        if training_batch is None: return
         
+        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
         query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
         with self.profile("EL_forward_pass"):
-            logits, hidden_vectors, predicted_kernel = self.infer(
-                classifier=self.classifier,
-                batch=training_batch,
-                known_classes_count=self.current_known_classes_count,
-                query_mask=query_mask)
+            logits, hiddens, pred_kernel = self.infer(self.classifier, training_batch, self.current_known_classes_count, query_mask=query_mask)
         
-        with self.profile("EL_preproc"):
-            one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
-            # known class horizonal mask:
-            known_class_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
-        
+        one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
+        known_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
         loss = 0
 
-        if torch.any(known_class_h_mask):
-            try:
-                with self.profile("EL_conf_dec"):
-                    # separate between candidate known traffic and unknown traffic.
-                    zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
-            except:
-                self.logger_instance.error(f'Error while using your confidence decode instance. Check the shapes of the tensors:')
-                self.logger_instance.error(f'zda predictions shape: {zda_predictions.shape}')
-                self.logger_instance.error(f'logits shape: {logits.shape}')
-                self.logger_instance.error(f'one_hot_labels shape: {one_hot_labels.shape}')
-                self.logger_instance.error(f'known_class_h_mask shape: {known_class_h_mask.shape}')
-                raise RuntimeError(f'Error while using your confidence decode instance. Check logs and fix!')
-                
-
+        if torch.any(known_h_mask):
+            zda_preds = self.confidence_decoder(scores=logits[:, known_h_mask])
             if self.multi_class:
-                # we perform zda detection only when we make inferences about DIFFERENT types of attacks.
-                # if instead we are on a binary attack/non attack classification setting, 
-                # we do not care if the detected attacks are known or unknown.. 
-                with self.profile("EL_zda_classif_step"):
-                    zda_detection_loss, _ = self.zda_classification_step(
-                        zda_labels=training_batch.zda_labels[query_mask], 
-                        zda_predictions=zda_predictions,
-                        accuracy_mask=torch.ones(query_mask.sum()).to(torch.bool),
-                        mode=TRAINING)
-                loss += zda_detection_loss
+                zda_loss, _ = self.zda_classification_step(training_batch.zda_labels[query_mask], zda_preds, torch.ones(query_mask.sum()).to(torch.bool), TRAINING)
+                loss += zda_loss
 
-        else:
-            self.logger_instance.warning(f'Have not seen samples from known classes so far. Cannot train the confidence decoder yet.')
-
-        with self.profile("EL_KR"):
-            # clusterise everything you have labels about. 
-            kr_loss, predicted_clusters, _ = self.kernel_regression_evaluation(
-                predicted_kernel, 
-                one_hot_labels, 
-                TRAINING)
-        
+        kr_loss, pred_clusters, _ = self.kernel_regression_evaluation(pred_kernel, one_hot_labels, TRAINING)
         if self.clustering_loss_backprop: loss += kr_loss
         
-        with self.profile("EL_class_classif"):
-            # This helps to converge 
-            classification_loss, cs_acc = self.class_classification_step(
-                training_batch.class_labels, 
-                logits, 
-                TRAINING, 
-                query_mask)
-        
-        with self.profile("EL_confmat"):
-            self.training_cs_cm += efficient_cm(
-                preds=logits.detach(),
-                targets_onehot=one_hot_labels[query_mask])      
-        
-        loss += classification_loss
+        classif_loss, cs_acc = self.class_classification_step(training_batch.class_labels, logits, TRAINING, query_mask)
+        loss += classif_loss
 
-        with self.profile("EL_backprop"):
-            # Only during training we learn from feedback errors.  
-            # backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
-            # update weights
-            self.optimizer.step()
+        self.training_cs_cm += efficient_cm(preds=logits.detach(), targets_onehot=one_hot_labels[query_mask])
 
-        
-         
-        self.logger_instance.debug(f'{TRAINING} batch groundthruth class labels mean: {training_batch.class_labels.to(torch.float16).mean().item():.2f}')
-        self.logger_instance.debug(f'{TRAINING} batch prediction class labels mean: {logits.max(1)[1].to(torch.float32).mean():.2f}')
-        self.logger_instance.info(f'{TRAINING} batch multiclass classif accuracy: {cs_acc:.2f}')
-        
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
 
-        if self.wb_tracker.step_counter % (self.report_step_freq * 5 )== 0:
-            with self.profile("EL_report"):
-                plots_dict = self.report(
-                    preds=logits[:,known_class_h_mask],  
-                    hiddens=hidden_vectors.detach(), 
-                    labels=training_batch.class_labels,
-                    predicted_clusters=predicted_clusters, 
-                    query_mask=query_mask,
-                    phase=TRAINING)
-            if self.wbt:
-                with self.profile("EL_report_log"):
-                    self.wb_run.log(plots_dict, step=self.wb_tracker.step_counter)
+        if self.wb_tracker.step_counter % (self.report_step_freq * 5) == 0:
+            plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
+            if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
+            self.reset_train_cms()
 
-            # Update the target value network in the mitigation agent! 
             self.mitigation_agent.update_target_model()
-            
-            if self.online_evaluation:
-                self.start_async_evaluation()
+            if self.online_evaluation: self.start_async_evaluation()
 
-            # Check if the background thread has finished any evaluation recently.
-            # If it has, log it at the CURRENT main thread step!
             while not self.eval_queue.empty():
                 async_results = self.eval_queue.get()
-                if self.wbt:
-                    self.wb_run.log(async_results, step=self.wb_tracker.step_counter)
+                if self.wbt: self.wb_run.log(async_results, step=self.wb_tracker.step_counter)
 
-                # Save the models using the main thread (prevents file corruption)
+                # Reset evaluation confusion matrices after reporting
+                self.reset_test_cms()
+
                 if self.save_models_flag:
-                    self.check_progress(
-                        curr_cs_acc=async_results[f'{INFERENCE}/Mean EVAL CS ACC'],
-                        curr_ad_acc=async_results[f'{INFERENCE}/Mean EVAL AD ACC'],
-                        curr_kr_acc=async_results[f'{INFERENCE}/Mean EVAL KR PREC']
-                    )
-            
+                    self.check_progress(async_results[f'{INFERENCE}/Mean EVAL CS ACC'], async_results[f'{INFERENCE}/Mean EVAL AD ACC'], async_results[f'{INFERENCE}/Mean EVAL KR PREC'])
 
     @epistemic_thread_safe 
     def perform_epistemic_action(self, current_action=0):      
-        
-        updates_dict = self.env.perform_epistemic_action(current_action)
-
-        new_label = updates_dict['updated_label']
+        """Acquires a CTI label, updating the knowledge base and replay buffers."""
+        updates = self.env.perform_epistemic_action(current_action)
+        new_label = updates['updated_label']
         
         if new_label is not None:
-            
-            self.logger_instance.info(f'Bought label {new_label}')
-            
-            add_replay_buff = self.encoder.update_label(
-                new_label=new_label,
-                logger=self.logger_instance
-            )
-
-            if add_replay_buff:
-                self.logger_instance.info(f'label {new_label} bought proactively!')
-                # we cant invoke this function here because it would be a deadlock 
-                # self.add_class_to_knowledge_base(updates_dict['new_label'])
-                # fo we repeat the code: 
-                
+            if self.encoder.update_label(new_label=new_label, logger=self.logger_instance):
                 self.current_known_classes_count += 1
-                
                 self.add_replay_buffer(new_label)
                 self.reset_train_cms()
                 self.reset_test_cms()
-
-        return updates_dict
-    
+        return updates
 
     def start_async_evaluation(self):
-  
-        
-        # 1. Prevent overlapping evaluation threads (prevents crashing if eval takes too long)
-        if hasattr(self, '_eval_thread') and self._eval_thread is not None and self._eval_thread.is_alive():
-            self.logger_instance.warning("Previous evaluation thread still running. Skipping this eval cycle.")
-            return
-            
-        known_classes_count = self.current_known_classes_count
-        
-        # 3. Spin up the background thread
-        self._eval_thread = threading.Thread(
-            target=self._async_evaluate_models,
-            args=(known_classes_count,)
-        )
+        """Starts a background thread for model evaluation."""
+        if hasattr(self, '_eval_thread') and self._eval_thread.is_alive(): return
+        self._eval_thread = threading.Thread(target=self._async_evaluate_models, args=(self.current_known_classes_count,))
         self._eval_thread.start()
+
+    def _async_evaluate_models(self, known_count):
+        """Background worker for lock-free model evaluation."""
+        with self._epistemic_lock:
+            frozen_buffers = dict(self.replay_buffers)
+            frozen_int_to_label = dict(self.encoder._int_to_label)
+            frozen_knowledge = {k: set(v) for k, v in self.env.current_knowledge.items()}
+
+        classifier_clone = copy.deepcopy(self.classifier).eval()
+        decoder_clone = copy.deepcopy(self.confidence_decoder).eval() if self.multi_class else None
         
-        
+        m_ad, m_cs, m_kr = 0.0, 0.0, 0.0
+        l_cs_cm = torch.zeros([known_count, known_count], device=self.device)
+        l_os_cm = torch.zeros(size=(2, 2), device=self.device)
+        l_logits, l_hiddens, l_labels, l_pred, l_q_mask, l_k_mask = None, None, None, None, None, None
 
-
-    def _async_evaluate_models(self, known_classes_count):
-        """
-        The background worker that runs completely lock-free.
-        """
-        with self.profile("EL_online_eval"):
-
-            with self._epistemic_lock:
-                # --- Snapshot lightweight state before doing anything else ---
-                # Shallow-copy the buffers dict: just copies references, not the actual data.
-                # This freezes WHICH buffers we'll iterate over, preventing RuntimeError
-                # if a new class arrives and adds a key mid-iteration.
-                frozen_buffers = dict(self.replay_buffers)
-
-                # Snapshot encoder internals so label <-> int mapping is consistent
-                # throughout the whole eval (new classes may arrive mid-eval otherwise).
-                frozen_int_to_label = dict(self.encoder._int_to_label)
-
-                # Snapshot current_knowledge so epistemic actions mid-eval don't
-                # change what we consider G1/G2 halfway through.
-                frozen_knowledge = {
-                    k: set(v) for k, v in self.env.current_knowledge.items()
-                }
-
-                frozen_known_classes_count = self.current_known_classes_count
-
-            # known_classes_count is already passed in as a parameter (snapshot at call site),
-            # so confusion matrices are sized correctly for THIS eval round.
-            # ---------------------------------------------------------------
-
-            # 1. Instantiate completely independent model clones
-            classifier_clone = copy.deepcopy(self.classifier)
-            classifier_clone.eval()
-
-            decoder_clone = None
-            if self.multi_class:
-                decoder_clone = copy.deepcopy(self.confidence_decoder)
-                decoder_clone.eval()
-
-            mean_eval_ad_acc = 0.0
-            mean_eval_cs_acc = 0.0
-            mean_eval_kr_ari = 0.0
-            
-            # 2. Isolated local confusion matrices so we don't overwrite the main thread's CMS
-            local_eval_cs_cm = torch.zeros([known_classes_count, known_classes_count], device=self.device)
-            local_eval_os_cm = torch.zeros(size=(2, 2), device=self.device)
-
-            # Variables to hold the final batch's data for the plots
-            last_logits, last_hiddens, last_labels = None, None, None
-            last_pred_clusters, last_query_mask, last_known_h_mask = None, None, None
-
-            # 3. Disable gradients for massive memory and speed optimizations
-            with torch.no_grad(): 
-                for _ in range(self.online_eval_rounds):
-                    
-                    # Sample batch safely
-                    eval_batch = self._sample_from_frozen_buffers(
-                            frozen_buffers=frozen_buffers,
-                            frozen_int_to_label=frozen_int_to_label,
-                            frozen_knowledge=frozen_knowledge,
-                            samples_per_class=self.batch_size,
-                        )
-
-                    if eval_batch is None:
-                        continue
-                    
-                    query_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
-
-                    assert query_mask.shape[0] == eval_batch.class_labels.shape[0]
-
-                    logits, hidden_vectors, predicted_kernel = self.infer(
-                        classifier_clone,
-                        eval_batch,
-                        frozen_known_classes_count,
-                        query_mask=query_mask)
-
-                    one_hot_labels = self.get_oh_labels(eval_batch, logits.shape[1])
-                    known_class_h_mask = self.get_known_classes_mask(eval_batch, one_hot_labels)
-
-                    # --- Anomaly Detection ---
-                    ad_acc = 0.0
-                    if self.multi_class and decoder_clone is not None:
-                        zda_predictions = decoder_clone(scores=logits[:, known_class_h_mask])
-                        
-                        zda_labels = eval_batch.zda_labels[query_mask]
-                        onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
-                        onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
-
-                        batch_os_cm = efficient_os_cm(
-                            preds=(zda_predictions > 0.5).long(),
-                            targets_onehot=onehot_zda_labels
-                        )
-                        local_eval_os_cm += batch_os_cm
-                        zda_balance = zda_labels.to(torch.float32).mean().item()
-                        ad_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance).item()
-
-                    # --- Kernel Regression ---
-                    kr_precision = 0.0
-                    predicted_clusters = None
-                    if self.kernel_regression:
-                        decimal_sematic_kernel = one_hot_labels.max(1)[1].cpu().numpy()
-                        decimal_predicted_kernel = get_clusters(predicted_kernel)
-                        np_dec_pred_kernel = decimal_predicted_kernel.cpu().numpy()
-                        
-                        kr_precision = adjusted_rand_score(decimal_sematic_kernel, np_dec_pred_kernel)
-                        predicted_clusters = decimal_predicted_kernel
-
-                    # --- Closed Set Classification ---
-                    local_eval_cs_cm += efficient_cm(
-                        preds=logits,
-                        targets_onehot=one_hot_labels[query_mask]
-                    )
-                    
-                    match_mask = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][query_mask]
-                    cs_acc = (match_mask.sum() / match_mask.shape[0]).item()
-
-                    mean_eval_ad_acc += (ad_acc / self.online_eval_rounds)
-                    mean_eval_cs_acc += (cs_acc / self.online_eval_rounds)
-                    mean_eval_kr_ari += (kr_precision / self.online_eval_rounds)
-
-                    # Cache data for the final plot reporting
-                    last_logits, last_hiddens, last_labels = logits, hidden_vectors, eval_batch.class_labels
-                    last_pred_clusters, last_query_mask = predicted_clusters, query_mask
-                    last_known_h_mask = known_class_h_mask
-
-            self.logger_instance.info(f'\033[92mEVAL mean AD acc.: {mean_eval_ad_acc:.2f} CS acc.: {mean_eval_cs_acc:.2f} KR ARI.: {mean_eval_kr_ari:.2f}\033[0m')
-
-            
-            # 4. Generate the plots. (This calls the modified `report` function that returns a dict of Plotly figures)
-            plots_dict = {}
-            if self.wbt and self.kwargs['wandb']['plots']:
-                try:
-                    with self.profile("EVAL_report"):
-                        plots_dict = self.report(
-                            preds=last_logits[:, last_known_h_mask], 
-                            hiddens=last_hiddens, 
-                            labels=last_labels,
-                            predicted_clusters=last_pred_clusters, 
-                            query_mask=last_query_mask,
-                            phase=INFERENCE,
-                            custom_cs_cm=local_eval_cs_cm,
-                            custom_os_cm=local_eval_os_cm
-                        )
-                except Exception as e:
-                    self.logger_instance.error(f"Error generating Plotly graphs in eval thread: {e}")
-
-            # 5. Package results for the main thread queue
-            # Note: We do NOT call wb_run.log() or check_progress() here. The main thread will do it!
-            results_to_log = {
-                f'{INFERENCE}/Mean EVAL AD ACC': mean_eval_ad_acc,
-                f'{INFERENCE}/Mean EVAL CS ACC': mean_eval_cs_acc,
-                f'{INFERENCE}/Mean EVAL KR PREC': mean_eval_kr_ari,
-                **plots_dict  # Unpack the Plotly figures into the dict
-            }
-
-            # 6. Push to Queue
-            if hasattr(self, 'eval_queue'):
-                self.eval_queue.put(results_to_log)
-
-
-   
-    def report(self, preds, hiddens, labels, predicted_clusters, query_mask, phase, custom_cs_cm=None, custom_os_cm=None):
-
-        if phase == TRAINING:
-            cs_cm_to_plot = self.training_cs_cm
-            os_cm_to_plot = self.training_os_cm
-        else:
-        # INFERENCE
-            cs_cm_to_plot = custom_cs_cm if custom_cs_cm is not None else self.eval_cs_cm
-            os_cm_to_plot = custom_os_cm if custom_os_cm is not None else self.eval_os_cm
-
-        log_dict = {}
-
-        if self.wbt and self.kwargs['wandb']['plots']:
-            with self.profile("plot_cs_conf_matrix"):
-                cs_conf_mat = self.plot_confusion_matrix(
-                    mod=CLOSED_SET,
-                    cm=cs_cm_to_plot,
-                    phase=phase,
-                    norm=False,
-                    classes=self.encoder.get_labels())
-            if cs_conf_mat: log_dict[f'{phase}Plots/{CLOSED_SET} Confusion Matrix']=cs_conf_mat
-
-            with self.profile("plot_os_conf_matrix"):
-                os_conf_mat = self.plot_confusion_matrix(
-                    mod=ANOMALY_DETECTION,
-                    cm=os_cm_to_plot,
-                    phase=phase,
-                    norm=False,
-                    classes=['Known', 'ZdA'])
-            if os_conf_mat: log_dict[f'{phase}Plots/{ANOMALY_DETECTION} Confusion Matrix']=os_conf_mat
-            
-            with self.profile("plot_hidden_space"):
-                fig_gt, fig_pred = self.plot_hidden_space(hiddens=hiddens, labels=labels, predicted_labels=predicted_clusters, phase=phase)
-
-            if fig_gt: log_dict[f"{phase}Plots/Ground-truth clusters"] = fig_gt
-            if fig_pred: log_dict[f"{phase}Plots/Predicted clusters"] = fig_pred
-
-            with self.profile("plot_scores_vectors"):
-                fig_scores = self.plot_scores_vectors(score_vectors=preds, labels=labels[query_mask], phase=phase)
+        with torch.no_grad():
+            for _ in range(self.online_eval_rounds):
+                eval_batch = self._sample_from_frozen_buffers(frozen_buffers, frozen_int_to_label, frozen_knowledge, self.batch_size)
+                if eval_batch is None: continue
                 
-            if fig_scores: log_dict[f"{phase}Plots/PCA of ass. scores"] = fig_scores
-        
+                q_mask = self.get_canonical_query_mask(eval_batch.class_labels.shape[0])
+                logits, hiddens, pred_kernel = self.infer(classifier_clone, eval_batch, known_count, query_mask=q_mask)
+                oh = self.get_oh_labels(eval_batch, logits.shape[1])
+                k_mask = self.get_known_classes_mask(eval_batch, oh)
 
-        self.logger_instance.debug(f'{phase} CS Conf matrix: \n {cs_cm_to_plot}')
-        self.logger_instance.debug(f'{phase} AD Conf matrix: \n {os_cm_to_plot}')
-        
-        if phase == TRAINING:
-            self.reset_train_cms()
-        elif phase == INFERENCE:
-            self.reset_test_cms()
-        
-        return log_dict
+                ad_acc = 0.0
+                if self.multi_class and decoder_clone:
+                    zda_p = decoder_clone(scores=logits[:, k_mask])
+                    zda_l = eval_batch.zda_labels[q_mask]
+                    oh_zda = torch.zeros(size=(zda_l.shape[0], 2), device=self.device).long().scatter(1, zda_l.long().view(-1, 1), 1)
+                    b_os_cm = efficient_os_cm(preds=(zda_p > 0.5).long(), targets_onehot=oh_zda)
+                    l_os_cm += b_os_cm
+                    ad_acc = get_balanced_accuracy(b_os_cm, negative_weight=zda_l.to(torch.float32).mean().item()).item()
 
+                kr_p, pred_cl = 0.0, None
+                if self.kernel_regression:
+                    pred_cl = get_clusters(pred_kernel)
+                    kr_p = adjusted_rand_score(oh.max(1)[1].cpu().numpy(), pred_cl.cpu().numpy())
+
+                l_cs_cm += efficient_cm(preds=logits, targets_onehot=oh[q_mask])
+                match = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][q_mask]
+                cs_acc = (match.sum() / match.shape[0]).item()
+
+                m_ad += ad_acc / self.online_eval_rounds
+                m_cs += cs_acc / self.online_eval_rounds
+                m_kr += kr_p / self.online_eval_rounds
+                l_logits, l_hiddens, l_labels, l_pred, l_q_mask, l_k_mask = logits, hiddens, eval_batch.class_labels, pred_cl, q_mask, k_mask
+
+        plots = self.reporter.report(l_logits[:, l_k_mask], l_hiddens, l_labels, l_pred, l_q_mask, INFERENCE, custom_cs_cm=l_cs_cm, custom_os_cm=l_os_cm)
+        self.eval_queue.put({
+            f'{INFERENCE}/Mean EVAL AD ACC': m_ad, f'{INFERENCE}/Mean EVAL CS ACC': m_cs, f'{INFERENCE}/Mean EVAL KR PREC': m_kr, **plots
+        })
 
     def get_profiling_stats_dict(self):
-        # Compute the mean for all profiling lists and add them to the metrics
-        metrics_to_log = {}
-        for key, times_list in self.profiling_stats.items():
-            if len(times_list) > 0:
-                # Pure python mean calculation (no numpy, no tensor overhead)
-                mean_time = sum(times_list) / len(times_list)
-                metrics_to_log[key] = mean_time
-                
-                # Optional: If we also want to log the max time (useful for finding spikes)
-                # metrics_to_log[f"{key}_max"] = max(times_list) 
-
-        # 4. VERY IMPORTANT: Clear the dictionary so the next step starts fresh!
+        """Computes and clears the profiling statistics."""
+        metrics = {k: sum(v)/len(v) for k, v in self.profiling_stats.items() if len(v) > 0}
         self.profiling_stats.clear()
+        return metrics
 
-        return metrics_to_log
+    def check_progress(self, curr_cs, curr_ad, curr_kr):
+        """Checks if current performance is better than previous best and saves models."""
+        if curr_cs > self.best_cs_accuracy:
+            self.best_cs_accuracy = curr_cs
+            self.save_model(self.classifier, self.classifier_path + 'single.pt', "flow classifier")
+        if curr_ad > self.best_AD_accuracy:
+            self.best_AD_accuracy = curr_ad
+            self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'single.pt', "confidence decoder")
+        if curr_kr > self.best_KR_accuracy:
+            self.best_KR_accuracy = curr_kr
+            self.save_model(self.classifier, self.classifier_path + 'coupled.pt', "flow classifier (coupled)")
+            if self.multi_class: self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'coupled.pt', "confidence decoder (coupled)")
 
-
-    def check_progress(self, curr_cs_acc, curr_ad_acc, curr_kr_acc):
-        self.check_cs_progress(curr_cs_acc)
-        self.check_AD_progress(curr_ad_acc)
-        self.check_kr_progress(curr_kr_acc)
-
-
-    def check_cs_progress(self, curr_cs_acc):
-        if curr_cs_acc > self.best_cs_accuracy:
-            self.best_cs_accuracy = curr_cs_acc
-            self.save_cs_model()
-
-    
-    def check_AD_progress(self, curr_ad_acc):
-        if curr_ad_acc > self.best_AD_accuracy:
-            self.best_AD_accuracy = curr_ad_acc
-            self.save_ad_model()
-
-    
-    def check_kr_progress(self, curr_kr_acc):
-        if curr_kr_acc > self.best_KR_accuracy:
-            self.best_KR_accuracy = curr_kr_acc
-            self.save_models()
-
-
-    def save_cs_model(self, postfix='single'):
-        torch.save(
-            self.classifier.state_dict(),
-            self.classifier_path+postfix+'.pt')
-         
-        self.logger_instance.info(f'\033[95mNew {postfix} flow classifier model version saved to {self.classifier_path}{postfix}.pt\033[0m')
-
-
-    def save_ad_model(self, postfix='single'):
-        torch.save(
-            self.confidence_decoder.state_dict(),
-            self.confidence_decoder_path+postfix+'.pt')
-         
-        self.logger_instance.info(f'\033[95mNew {postfix} confidence decoder model version saved to {self.confidence_decoder_path}{postfix}.pt\033[0m')
-
-
-    def save_models(self):
-        self.save_cs_model(postfix='coupled')
-        if self.multi_class:
-            self.save_ad_model(postfix='coupled')
-    
+    def save_model(self, model, path, name):
+        """Saves a model's state dictionary to a file."""
+        torch.save(model.state_dict(), path)
+        self.logger_instance.info(f'\033[95mNew {name} model version saved to {path}\033[0m')
 
     def get_accuracy(self, logits_preds, decimal_labels, query_mask):
-        """
-        labels must not be one hot!
-        """
-        match_mask = logits_preds.max(1)[1] == decimal_labels.max(1)[0][query_mask]
-        return match_mask.sum() / match_mask.shape[0]
-
+        """Calculates accuracy for a set of predictions."""
+        match = logits_preds.max(1)[1] == decimal_labels.max(1)[0][query_mask]
+        return match.sum() / match.shape[0]
 
     def get_labels(self, flows):
-
-        string_labels = [flow.element_class for flow in flows]
-        new_classes = self.encoder.fit(string_labels)
-        for new_class in new_classes:
-            self.add_class_to_knowledge_base(new_class)
-
-        encoded_labels = self.encoder.transform(string_labels)
-
-        return encoded_labels.to(torch.long)
+        """Encodes string labels from flows into integers."""
+        labels = [f.element_class for f in flows]
+        for cl in self.encoder.fit(labels): self.add_class_to_knowledge_base(cl)
+        return self.encoder.transform(labels).to(torch.long)
     
-
-    def assembly_input_tensor(
-            self,
-            flows,
-            node_feats):
-        """
-        Assemblies a batch from current observations. 
-        A (flow) batch is composed of a set of flows. 
-        
-        Returns a Batch object containing the corresponding features and labels.
-        """
-        flow_input_batch = torch.stack([flow.get_flow_features() for flow in flows])
-
-        packet_input_batch = None
-        if self.use_packet_feats:
-            packet_input_batch = torch.stack([flow.get_packet_features() for flow in flows])
-
-        node_feat_input_batch = None
-        if self.use_node_feats:
-            health_args = self.kwargs['health']
-            node_feat_input_batch = torch.stack([
-                get_metrics_tensor(node_feats, flow.dest_ip, health_args)
-                for flow in flows
-            ])
-         
-        batch_labels = self.get_labels(flows)
-        
-        return Batch(
-            flow_features=flow_input_batch, 
-            packet_features=packet_input_batch, 
-            node_features=node_feat_input_batch,
-            class_labels=batch_labels)
-         
-    
-    def plot_confusion_matrix(self, mod, cm, phase, norm=True, classes=None):
-        if self.wb_run is None:
-            return None
-
-        cm_np = cm.detach().cpu().numpy().astype(float)
-        
-        if norm:
-            # Normalize and prevent division by zero
-            denom = cm_np.sum(axis=1, keepdims=True)
-            denom[denom == 0] = 1.0
-            cm_np = cm_np / denom
-            fmt_str = '.2f'
-        else:
-            fmt_str = '.0f'
-
-        # Ensure classes are strings
-        str_classes = [str(c) for c in classes]
-
-        # Generate a Plotly Heatmap
-        fig = px.imshow(
-            cm_np,
-            x=str_classes,
-            y=str_classes,
-            labels=dict(x="Predicted", y="Baseline", color="Count"),
-            color_continuous_scale="Blues",
-            text_auto=fmt_str,
-            title=f'{phase} {mod} Confusion Matrix'
-        )
-        
-        fig.update_xaxes(side="bottom")
-        return fig
-
-
-    def plot_hidden_space(self, hiddens, labels, predicted_labels, phase):
-        if self.wb_run is None:
-            return None, None
-
-        hiddens_np = hiddens.detach().cpu().numpy()
-        hiddens_np = self.project_to_2d(hiddens_np, context_name="hidden vectors")
-        if hiddens_np is None:
-            return None, None
-
-        labels_np = labels.squeeze(1).detach().cpu().numpy()
-        nl_labels = self.encoder.inverse_transform_to_str(labels_np)
-        pred_labels_np = [str(lbl) for lbl in predicted_labels.detach().cpu().numpy()]
-
-        # Prepare a lightweight dictionary for Plotly
-        data_dict = {
-            "PCA_1": hiddens_np[:, 0],
-            "PCA_2": hiddens_np[:, 1],
-            "Ground Truth": nl_labels,
-            "Predicted Cluster": pred_labels_np
-        }
-
-        # Plot 1: Ground Truth
-        fig_gt = px.scatter(
-            data_dict, x="PCA_1", y="PCA_2", color="Ground Truth", 
-            title=f'{phase} Ground-truth clusters'
-        )
-        # Enlarge the markers a bit
-        fig_gt.update_traces(marker=dict(size=10, opacity=0.7))
-
-        # Plot 2: Predicted Clusters
-        fig_pred = px.scatter(
-            data_dict, x="PCA_1", y="PCA_2", color="Predicted Cluster", 
-            title=f'{phase} Predicted clusters'
-        )
-        fig_pred.update_traces(marker=dict(size=10, opacity=0.7))
-
-        return fig_gt, fig_pred
-
-
-    def plot_scores_vectors(self, score_vectors, labels, phase):
-        if self.wb_run is None:
-            return
-
-        scores_np = score_vectors.detach().cpu().numpy()
-        scores_np = self.project_to_2d(scores_np, context_name="score vectors")
-        if scores_np is None:
-            return
-
-        labels_np = labels.squeeze(1).detach().cpu().numpy()
-        nl_labels = self.encoder.inverse_transform_to_str(labels_np)
-
-        # Lightweight dictionary
-        data_dict = {
-            "Score_X": scores_np[:, 0],
-            "Score_Y": scores_np[:, 1],
-            "Ground Truth": nl_labels
-        }
-
-        fig = px.scatter(
-            data_dict, x="Score_X", y="Score_Y", color="Ground Truth", 
-            title=f'{phase} PCA reduction of association scores'
-        )
-        fig.update_traces(marker=dict(size=10, opacity=0.7))
-
-        return fig
-
-
-    def project_to_2d(self, vectors_np, context_name):
-        """
-        Robust and fast 2D projection.
-        Uses randomized SVD when possible for steadier runtime across different hidden sizes.
-        """
-        if vectors_np.shape[1] < 2:
-            self.logger_instance.warning(
-                f'PCA not applied to {context_name} because they are too low dimensional'
-            )
-            return None
-
-        if vectors_np.shape[1] == 2:
-            return vectors_np
-
-        min_dim = min(vectors_np.shape[0], vectors_np.shape[1])
-        solver = 'randomized' if min_dim > 2 else 'full'
-
-        try:
-            pca = PCA(
-                n_components=2,
-                svd_solver=solver,
-                random_state=self.seed,
-                copy=False
-            )
-            return pca.fit_transform(vectors_np)
-        except Exception as e:
-            self.logger_instance.warning(
-                f'Error during PCA ({solver}) applied to {context_name}: {e}. Falling back to full solver.'
-            )
-            try:
-                return PCA(n_components=2, svd_solver='full', copy=False).fit_transform(vectors_np)
-            except Exception as inner_e:
-                self.logger_instance.warning(f'Fallback PCA failed on {context_name}: {inner_e}')
-                return None
+    def assembly_input_tensor(self, flows, node_feats):
+        """Assemblies a batch from current flow observations."""
+        f_batch = torch.stack([f.get_flow_features() for f in flows])
+        p_batch = torch.stack([f.get_packet_features() for f in flows]) if self.use_packet_feats else None
+        n_batch = torch.stack([get_metrics_tensor(node_feats, f.dest_ip, self.kwargs['health']) for f in flows]) if self.use_node_feats else None
+        return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch, class_labels=self.get_labels(flows))
