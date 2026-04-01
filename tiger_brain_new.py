@@ -733,6 +733,7 @@ class TigerBrain:
                 cost = cost_if_acc[~missing][idx]
                 f = float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard' else 1.0
                 current_reward += f * cost
+                current_reward += benign_per_cluster[~missing][idx].item()
             else:
                 cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
                 f = float(self.intrusion_detection_kwargs['hard_bad_classif_cost_factor']) if self.intrusion_detection_kwargs['bad_classif_penalisation'] == 'hard' else 1.0
