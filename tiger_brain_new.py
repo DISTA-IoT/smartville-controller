@@ -114,6 +114,7 @@ class TigerBrain:
         self.report_step_freq = int(args.intrusion_detection.report_step_freq)
         self.use_neural_AD = args.intrusion_detection.use_neural_AD
         self.use_neural_KR = args.intrusion_detection.use_neural_KR
+        self.use_neural_CS = args.intrusion_detection.use_neural_CS
         self.online_evaluation = args.intrusion_detection.online_evaluation
         self.bad_classif_cost_factor = float(args.intrusion_detection.bad_classif_cost_factor)
         self.online_eval_rounds = int(args.intrusion_detection.online_evaluation_rounds)
@@ -507,7 +508,7 @@ class TigerBrain:
         rewards = [self._rewards_lookup[label.item()] for label in encoded_labels]
         return torch.tensor(rewards, dtype=torch.float32)
 
-    def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask, accuracy_mask):
+    def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask):
         """
         Performs anomaly detection on the online batch.
         """
@@ -520,15 +521,10 @@ class TigerBrain:
                 self.logger_instance.error(f'Confidence decoder error: {e}')
                 raise RuntimeError(f'Confidence decoder error: {e}')
         
-            self.zda_classification_step(
-                zda_labels=batch.zda_labels[query_mask], 
-                zda_predictions=zda_predictions,
-                accuracy_mask=accuracy_mask[query_mask],
-                mode=INFERENCE)
             predicted_zda_mask = (zda_predictions > 0.5).to(torch.bool).squeeze(-1)
         else:
-            zda_predictions = batch.zda_labels[query_mask].squeeze(-1) 
-            predicted_zda_mask = zda_predictions.to(torch.bool)
+            zda_predictions = batch.zda_labels[query_mask]
+            predicted_zda_mask = zda_predictions.to(torch.bool).squeeze(-1)
 
         return zda_predictions, predicted_zda_mask
     
@@ -551,13 +547,23 @@ class TigerBrain:
 
         return merged_batch, merged_query_mask, accuracy_mask
 
-    def evaluate_cs_inference(self, merged_batch, logits, predicted_online_zda_mask, num_of_online_samples, number_of_predicted_known_samples):
+    def perform_cs_inference(self, merged_batch, logits, predicted_online_zda_mask, num_of_online_samples, number_of_predicted_known_samples):
         """
-        Evaluates closed-set classification for traffic predicted as known.
+        Performs closed-set classification for traffic predicted as known.
         """
         online_class_labels = merged_batch.class_labels[-num_of_online_samples:][~predicted_online_zda_mask].squeeze(-1)
-        online_class_preds = logits[-num_of_online_samples:][~predicted_online_zda_mask].max(1)[1]
+
+        if self.use_neural_CS:
+            online_class_preds = logits[-num_of_online_samples:][~predicted_online_zda_mask].max(1)[1]
+        else:
+            online_class_preds = online_class_labels
+
         known_correct_classification_mask = online_class_labels == online_class_preds
+
+        # Calculate accuracy for reporting
+        cs_acc = 1.0
+        if online_class_labels.shape[0] > 0:
+            cs_acc = (known_correct_classification_mask.sum() / online_class_labels.shape[0]).item()
 
         interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
         number_of_known_classes = logits.shape[1]
@@ -571,7 +577,28 @@ class TigerBrain:
             mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
             self.cs_classif_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
             
-        return known_correct_classification_mask
+        return known_correct_classification_mask, cs_acc
+
+    def evaluate_closed_set(self, class_labels, class_predictions, mode, accuracy_mask=None):
+        """
+        Calculates loss and accuracy for closed-set classification.
+        Assumes class_labels and class_predictions already correspond to the same samples (e.g. query subset).
+        """
+        if mode == INFERENCE and not self.use_neural_CS:
+            acc = torch.tensor(1.0, device=self.device)
+            cs_loss = torch.tensor(0.0, device=self.device)
+        else:
+            targets = class_labels.squeeze(1)
+
+            if accuracy_mask is not None:
+                cs_loss = self.cs_criterion(input=class_predictions[accuracy_mask], target=targets[accuracy_mask])
+            else:
+                cs_loss = self.cs_criterion(input=class_predictions, target=targets)
+
+            acc = self.get_accuracy(logits_preds=class_predictions, decimal_labels=class_labels, accuracy_mask=accuracy_mask)
+
+        metrics = {mode+'/'+CS_ACC: acc.item(), mode+'/'+CS_LOSS: cs_loss.item()}
+        return cs_loss, acc, metrics
 
     def evaluate_zda_confidence(self, zda_predictions, predicted_online_zda_mask, num_of_online_samples):
         """
@@ -636,7 +663,7 @@ class TigerBrain:
         self.env.episode_budgets.append(self.env.current_budget)
 
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log({
+            self.reporter.log_scalars({
                 AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
                 AGENT+'/'+'classification_reward': classification_reward,
                 AGENT+'/'+'budget': self.env.current_budget,
@@ -651,12 +678,16 @@ class TigerBrain:
         Clusters eventual ZDAs using kernel regression or ground truth.
         """
         if self.use_neural_KR:
-            _, predicted_decimal_clusters, _ = self.kernel_regression_evaluation(
+            _, predicted_decimal_clusters, kr_metrics = self.evaluate_kernel_regression(
                 predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:], 
                 one_hot_labels[-num_of_online_samples:],
                 INFERENCE)
         else:
             predicted_decimal_clusters = merged_batch.class_labels[-num_of_online_samples:].squeeze(1)
+            _, _, kr_metrics = self.evaluate_kernel_regression(
+                predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:],
+                one_hot_labels[-num_of_online_samples:],
+                INFERENCE)
             
         num_clusters = predicted_decimal_clusters.max() + 1
         anomalous_clusters = predicted_decimal_clusters[predicted_online_zda_mask]
@@ -664,7 +695,7 @@ class TigerBrain:
 
         centroids, missing = self.get_centroids(hiddens[-num_of_online_samples:][predicted_online_zda_mask], predicted_clusters_oh.to(torch.float32))
 
-        return predicted_clusters_oh, centroids, missing
+        return predicted_clusters_oh, centroids, missing, kr_metrics
     
     def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards):
         """
@@ -724,7 +755,7 @@ class TigerBrain:
 
             if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
                 reward_val = current_reward.item() if hasattr(current_reward, 'item') else current_reward
-                self.wb_run.log({
+                self.reporter.log_scalars({
                     AGENT+'/'+'generic_reward': reward_val,
                     AGENT+'/'+'clustering_reward': reward_val,
                     AGENT+'/'+'budget': self.env.current_budget,
@@ -753,27 +784,42 @@ class TigerBrain:
             with self.profile("onl_inf_forward_pass"):
                 logits, hiddens, predicted_kernel = self.infer(self.classifier, merged_batch, self.current_known_classes_count, query_mask=merged_query_mask)
             
-            one_hot_labels = self.get_oh_labels(merged_batch, logits.shape[1])
+            one_hot_labels = self.get_oh_labels(merged_batch, self.current_known_classes_count)
 
             with self.profile("onl_inf_AD"):
-                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, one_hot_labels, merged_query_mask, accuracy_mask)
+                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, one_hot_labels, merged_query_mask)
         
         num_online = online_batch.zda_labels.shape[0]
+        # Always evaluate to update online stats (CMs) and get metrics
+        # evaluate_anomaly_detection expects zda_labels and zda_predictions for the query subset
+        _, _, ad_metrics = self.evaluate_anomaly_detection(merged_batch.zda_labels[merged_query_mask], zda_predictions, accuracy_mask[merged_query_mask], INFERENCE)
+        # evaluate_closed_set expects pre-subsetted labels and predictions
+        _, _, cs_metrics = self.evaluate_closed_set(merged_batch.class_labels[merged_query_mask], logits, INFERENCE, accuracy_mask=accuracy_mask[merged_query_mask])
+
+        # accuracy_mask and merged_query_mask alignment:
+        # logits shape is [N_query, K]. accuracy_mask[merged_query_mask] is [N_query].
+        if not self.use_neural_CS:
+            perfect_preds = one_hot_labels[merged_query_mask][accuracy_mask[merged_query_mask]]
+            self.eval_cs_cm += efficient_cm(preds=perfect_preds, targets_onehot=perfect_preds)
+        else:
+            self.eval_cs_cm += efficient_cm(preds=logits[accuracy_mask[merged_query_mask]].detach(), targets_onehot=one_hot_labels[merged_query_mask][accuracy_mask[merged_query_mask]])
+
         pred_online_zda_mask = predicted_zda_mask[-num_online:]
         num_known = (~pred_online_zda_mask).sum()
         num_anom = pred_online_zda_mask.sum()
         rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
-        correct_mask = self.evaluate_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
+        correct_mask, cs_acc = self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
 
+        kr_metrics = {}
         if num_known > 0:
             with self.profile("onl_inf_act_known"):
                 self.act_on_known_traffic(num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards)
             
             if num_anom > 0:
                 with self.profile("onl_inf_CAD"):
-                    clusters_oh, centroids, missing = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
+                    clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
                 with self.profile("onl_inf_act_unknown"):
                     self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
 
@@ -783,20 +829,25 @@ class TigerBrain:
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log({
+            all_metrics = {
                 'online_inference/real_num_of_anomalies': online_batch.zda_labels.sum().item(),
                 'online_inference/num_predicted_knowns': num_known.item(),
                 'online_inference/num_predicted_unknowns': num_anom.item(),
                 'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
                 'online_inference/zda_classif_confidence': self.zda_confidence.item(),
-            }, step=self.wb_tracker.step_counter)
+            }
+            all_metrics.update(ad_metrics)
+            all_metrics.update(cs_metrics)
+            all_metrics.update(kr_metrics)
+
+            self.reporter.log_scalars(all_metrics, step=self.wb_tracker.step_counter)
             
         self.classifier.train()
         self.confidence_decoder.train()
 
         if self.env.has_episode_ended(self.wb_tracker.step_counter): 
             if self.wbt:
-                self.wb_run.log({
+                self.reporter.log_scalars({
                     'episode_count': self.episode_count,
                     'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
                     'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
@@ -805,15 +856,6 @@ class TigerBrain:
                     'steps_per_episode': self.env.steps_done
                 }, step=self.wb_tracker.step_counter)
             self.reset_environment()
-
-    def class_classification_step(self, class_labels, class_predictions, mode, query_mask):
-        """Calculates loss and accuracy for closed-set classification."""
-        cs_loss = self.cs_criterion(input=class_predictions, target=class_labels[query_mask].squeeze(1))
-        acc = self.get_accuracy(logits_preds=class_predictions, decimal_labels=class_labels, query_mask=query_mask)
-
-        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log({mode+'/'+CS_ACC: acc.item(), mode+'/'+CS_LOSS: cs_loss.item()}, step=self.wb_tracker.step_counter)
-        return cs_loss, acc
 
     def get_centroids(self, hidden_vectors, onehot_labels):
         """Calculates centroids for each class."""
@@ -952,28 +994,44 @@ class TigerBrain:
         targets_onehot.scatter_(1, targets.view(-1, 1), 1)
         return targets_onehot
     
-    def zda_classification_step(self, zda_labels, zda_predictions, accuracy_mask, mode):
+    def evaluate_anomaly_detection(self, zda_labels, zda_predictions, accuracy_mask, mode):
         """Calculates loss and accuracy for ZDA detection."""
-        os_loss = self.os_criterion(input=zda_predictions[accuracy_mask], target=zda_labels[accuracy_mask])
-        onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
-        onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
+        if mode == INFERENCE and not self.use_neural_AD:
+            os_loss = torch.tensor(0.0, device=self.device)
+            cummulative_os_acc = torch.tensor(1.0, device=self.device)
+            zda_balance = zda_labels[accuracy_mask].to(torch.float32).mean().item()
 
-        batch_os_cm = efficient_os_cm(preds=(zda_predictions.detach() > 0.5).long(), targets_onehot=onehot_zda_labels.long())
-        
-        cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
-        cummulative_os_cm += batch_os_cm
-        zda_balance = zda_labels.to(torch.float32).mean().item()
-        batch_os_acc = get_balanced_accuracy(batch_os_cm, negative_weight=zda_balance)
-        cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
+            # Update confusion matrix with perfect predictions
+            onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
+            onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
+            batch_os_cm = efficient_os_cm(preds=zda_labels[accuracy_mask].long().squeeze(-1), targets_onehot=onehot_zda_labels[accuracy_mask].long())
+            self.eval_os_cm += batch_os_cm
+        else:
+            os_loss = self.os_criterion(input=zda_predictions[accuracy_mask], target=zda_labels[accuracy_mask])
+            onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
+            onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
 
-        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-            self.wb_run.log({mode+'/'+OS_ACC: cummulative_os_acc.item(), mode+'/'+OS_LOSS: os_loss.item(), mode+'/'+ANOMALY_BALANCE: zda_balance}, step=self.wb_tracker.step_counter)
-         
-        return os_loss, cummulative_os_acc
+            batch_os_cm = efficient_os_cm(preds=(zda_predictions[accuracy_mask].detach() > 0.5).long(), targets_onehot=onehot_zda_labels[accuracy_mask].long())
+
+            cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
+            cummulative_os_cm += batch_os_cm
+            zda_balance = zda_labels[accuracy_mask].to(torch.float32).mean().item()
+            cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
+
+        metrics = {mode+'/'+OS_ACC: cummulative_os_acc.item(), mode+'/'+OS_LOSS: os_loss.item(), mode+'/'+ANOMALY_BALANCE: zda_balance}
+        return os_loss, cummulative_os_acc, metrics
     
-    def kernel_regression_evaluation(self, predicted_kernel, one_hot_labels, mode):
+    def evaluate_kernel_regression(self, predicted_kernel, one_hot_labels, mode):
         """Evaluates clustering performance via kernel regression."""
-        if self.kernel_regression:
+        if not self.kernel_regression:
+            return 0, None, {}
+
+        if mode == INFERENCE and not self.use_neural_KR:
+            kernel_loss = torch.tensor(0.0, device=self.device)
+            kr_ari = 1.0
+            kr_nmi = 1.0
+            decimal_predicted = one_hot_labels.max(1)[1]
+        else:
             semantic_kernel = one_hot_labels @ one_hot_labels.T
             kernel_loss = self.kr_criterion(baseline_kernel=semantic_kernel, predicted_kernel=predicted_kernel)
 
@@ -984,10 +1042,8 @@ class TigerBrain:
             kr_ari = adjusted_rand_score(decimal_semantic, np_dec_pred)
             kr_nmi = normalized_mutual_info_score(decimal_semantic, np_dec_pred)
 
-            if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-                self.wb_run.log({mode+'/'+KR_ARI: kr_ari, mode+'/'+KR_NMI: kr_nmi, mode+'/'+KR_LOSS: kernel_loss.item()}, step=self.wb_tracker.step_counter)
-            
-            return kernel_loss, decimal_predicted, kr_ari
+        metrics = {mode+'/'+KR_ARI: kr_ari, mode+'/'+KR_NMI: kr_nmi, mode+'/'+KR_LOSS: kernel_loss.item()}
+        return kernel_loss, decimal_predicted, metrics
 
     def get_known_classes_mask(self, batch, one_hot_labels):
         """Identifies classes that are NOT ZDAs in the current batch."""
@@ -1009,16 +1065,17 @@ class TigerBrain:
         known_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
         loss = 0
 
+        ad_metrics = {}
         if torch.any(known_h_mask):
             zda_preds = self.confidence_decoder(scores=logits[:, known_h_mask])
             if self.multi_class:
-                zda_loss, _ = self.zda_classification_step(training_batch.zda_labels[query_mask], zda_preds, torch.ones(query_mask.sum()).to(torch.bool), TRAINING)
+                zda_loss, _, ad_metrics = self.evaluate_anomaly_detection(training_batch.zda_labels[query_mask], zda_preds, torch.ones(query_mask.sum()).to(torch.bool), TRAINING)
                 loss += zda_loss
 
-        kr_loss, pred_clusters, _ = self.kernel_regression_evaluation(pred_kernel, one_hot_labels, TRAINING)
+        kr_loss, pred_clusters, kr_metrics = self.evaluate_kernel_regression(pred_kernel, one_hot_labels, TRAINING)
         if self.clustering_loss_backprop: loss += kr_loss
         
-        classif_loss, cs_acc = self.class_classification_step(training_batch.class_labels, logits, TRAINING, query_mask)
+        classif_loss, cs_acc, cs_metrics = self.evaluate_closed_set(training_batch.class_labels[query_mask], logits, TRAINING)
         loss += classif_loss
 
         self.training_cs_cm += efficient_cm(preds=logits.detach(), targets_onehot=one_hot_labels[query_mask])
@@ -1030,6 +1087,13 @@ class TigerBrain:
         if self.wb_tracker.step_counter % self.update_target_freq == 0:
             self.mitigation_agent.update_target_model()
 
+        if self.wb_tracker.step_counter % self.report_step_freq == 0:
+            all_metrics = {}
+            all_metrics.update(ad_metrics)
+            all_metrics.update(kr_metrics)
+            all_metrics.update(cs_metrics)
+            self.reporter.log_scalars(all_metrics, step=self.wb_tracker.step_counter)
+
         if self.wb_tracker.step_counter % (self.report_step_freq * 5) == 0:
             plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
             if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
@@ -1038,7 +1102,7 @@ class TigerBrain:
 
             while not self.eval_queue.empty():
                 async_results = self.eval_queue.get()
-                if self.wbt: self.wb_run.log(async_results, step=self.wb_tracker.step_counter)
+                if self.wbt: self.reporter.log_scalars(async_results, step=self.wb_tracker.step_counter)
 
                 # Reset evaluation confusion matrices after reporting
                 self.reset_test_cms()
@@ -1093,21 +1157,35 @@ class TigerBrain:
 
                 ad_acc = 0.0
                 if self.multi_class and decoder_clone:
-                    zda_p = decoder_clone(scores=logits[:, k_mask])
-                    zda_l = eval_batch.zda_labels[q_mask]
-                    oh_zda = torch.zeros(size=(zda_l.shape[0], 2), device=self.device).long().scatter(1, zda_l.long().view(-1, 1), 1)
-                    b_os_cm = efficient_os_cm(preds=(zda_p > 0.5).long(), targets_onehot=oh_zda)
-                    l_os_cm += b_os_cm
-                    ad_acc = get_balanced_accuracy(b_os_cm, negative_weight=zda_l.to(torch.float32).mean().item()).item()
+                    if self.use_neural_AD:
+                        zda_p = decoder_clone(scores=logits[:, k_mask])
+                        zda_l = eval_batch.zda_labels[q_mask]
+                        oh_zda = torch.zeros(size=(zda_l.shape[0], 2), device=self.device).long().scatter(1, zda_l.long().view(-1, 1), 1)
+                        b_os_cm = efficient_os_cm(preds=(zda_p > 0.5).long(), targets_onehot=oh_zda)
+                        l_os_cm += b_os_cm
+                        ad_acc = get_balanced_accuracy(b_os_cm, negative_weight=zda_l.to(torch.float32).mean().item()).item()
+                    else:
+                        ad_acc = 1.0
+                        zda_l = eval_batch.zda_labels[q_mask]
+                        oh_zda = torch.zeros(size=(zda_l.shape[0], 2), device=self.device).long().scatter(1, zda_l.long().view(-1, 1), 1)
+                        b_os_cm = efficient_os_cm(preds=zda_l.long().squeeze(-1), targets_onehot=oh_zda)
+                        l_os_cm += b_os_cm
 
                 kr_p, pred_cl = 0.0, None
                 if self.kernel_regression:
-                    pred_cl = get_clusters(pred_kernel)
-                    kr_p = adjusted_rand_score(oh.max(1)[1].cpu().numpy(), pred_cl.cpu().numpy())
+                    if self.use_neural_KR:
+                        pred_cl = get_clusters(pred_kernel)
+                        kr_p = adjusted_rand_score(oh.max(1)[1].cpu().numpy(), pred_cl.cpu().numpy())
+                    else:
+                        pred_cl = oh.max(1)[1]
+                        kr_p = 1.0
 
                 l_cs_cm += efficient_cm(preds=logits, targets_onehot=oh[q_mask])
-                match = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][q_mask]
-                cs_acc = (match.sum() / match.shape[0]).item()
+                if self.use_neural_CS:
+                    match = logits.max(1)[1] == eval_batch.class_labels.max(1)[0][q_mask]
+                    cs_acc = (match.sum() / match.shape[0]).item()
+                else:
+                    cs_acc = 1.0
 
                 m_ad += ad_acc / self.online_eval_rounds
                 m_cs += cs_acc / self.online_eval_rounds
@@ -1143,9 +1221,16 @@ class TigerBrain:
         torch.save(model.state_dict(), path)
         self.logger_instance.info(f'\033[95mNew {name} model version saved to {path}\033[0m')
 
-    def get_accuracy(self, logits_preds, decimal_labels, query_mask):
+    def get_accuracy(self, logits_preds, decimal_labels, accuracy_mask=None):
         """Calculates accuracy for a set of predictions."""
-        match = logits_preds.max(1)[1] == decimal_labels.max(1)[0][query_mask]
+        preds = logits_preds.max(1)[1]
+        targets = decimal_labels.max(1)[0]
+        if accuracy_mask is not None:
+            preds = preds[accuracy_mask]
+            targets = targets[accuracy_mask]
+
+        if targets.shape[0] == 0: return torch.tensor(1.0, device=self.device)
+        match = preds == targets
         return match.sum() / match.shape[0]
 
     def get_labels(self, flows):
