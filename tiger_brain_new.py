@@ -154,8 +154,8 @@ class TigerBrain:
         self.init_agents(args)
         self.init_intelligence()
 
-        # Epistemic and Persistency
-        self.epistemic_agency = args.intrusion_detection.epistemic_agency
+        # Agency and Persistency
+        self.agency = args.intrusion_detection.agency
         self.save_models_flag = args.intrusion_detection.save_models
 
         # Performance profiling
@@ -920,16 +920,21 @@ class TigerBrain:
                     self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
 
                     if self.batch_processing_allowed:
-                        if self.epistemic_agency:
+                        if self.agency:
                             with self.profile("online_inference_total"):
                                 self.online_inference(batch)
                 
+                        # we check again if batch_processing allowed because 
+                        # knowledge can change during online inference.
                         if self.batch_processing_allowed:
-                            with self.profile("experience_learning_total"):
-                                self.experience_learning()
+                            with self.profile("train_inf_module_single_batch"):
+                                self.train_inf_module_single_batch()
 
-                    if not self.epistemic_agency:
+                    if not self.agency:
                         self.wb_tracker.step_counter += 1
+        
+        if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
+            self.mitigation_agent.update_target_model()
 
     def _sample_from_frozen_buffers(self, frozen_buffers, frozen_int_to_label, frozen_knowledge, samples_per_class):
         """Helper for async evaluation thread to sample from buffers safely."""
@@ -1076,8 +1081,8 @@ class TigerBrain:
         known_oh_labels = one_hot_labels[~batch.zda_labels.squeeze(1).bool()]
         return known_oh_labels.sum(0) > 0
 
-    def experience_learning(self):
-        """Performs a training step using experience replay."""
+    def train_inf_module_single_batch(self):
+        """Performs a training step of the inference module sampling from buffers."""
         training_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=TRAINING)
         if training_batch is None: return
         
@@ -1110,8 +1115,7 @@ class TigerBrain:
         loss.backward()
         self.optimizer.step()
 
-        if self.wb_tracker.step_counter % self.update_target_freq == 0:
-            self.mitigation_agent.update_target_model()
+        
 
         if self.wb_tracker.step_counter % self.report_step_freq == 0:
             all_metrics = {}
