@@ -79,7 +79,7 @@ class ReplayBuffer():
         return torch.cat(f_batch, 0), \
                (torch.cat(p_batch, 0) if p_batch else None), \
                (torch.cat(n_batch, 0) if n_batch else None), \
-               torch.cat(l_batch, 0), \
+               torch.cat(l_batch, 0).unsqueeze(1), \
                torch.cat(zl_batch, 0), \
                torch.cat(tzl_batch, 0)
 
@@ -125,7 +125,7 @@ class RawReplayBuffer():
         return torch.cat(f_batch, 0), \
             (torch.cat(p_batch, 0) if p_batch else None), \
             (torch.cat(n_batch, 0) if n_batch else None), \
-            torch.cat(l_batch, 0)
+            torch.cat(l_batch, 0).unsqueeze(1)
 
 
     def __len__(self):
