@@ -37,6 +37,7 @@ class NewTigerEnvironment:
     def get_cti_prices(self):
         try:
             return {
+                # the cti price is n times the cost or revenue of the corresponding flow
                 unknown: abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)
                 for unknown in self.init_knowledge['G2s']
             }
@@ -94,6 +95,7 @@ class NewTigerEnvironment:
         """
         This method changes the curriculum by turning an attack that
         was a type2 ZDA in a known attack.
+        TODO check legacy with corresponding tiger_enrivonment action.
         """
                
         price_payed = 0

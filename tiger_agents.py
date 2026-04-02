@@ -1013,6 +1013,7 @@ class ValueLearningAgent:
                 action_probs = torch.softmax(
                     self.temperature_for_action_sampling * q_values,
                     dim=-1).squeeze()
+                # sample from a categorical distribution
                 return torch.multinomial(action_probs, 1).item()
             else:
                 if random.random() <= self.epsilon:
