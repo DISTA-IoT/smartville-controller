@@ -49,7 +49,9 @@ class DAIF_Agent:
         self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
-        self.memory = deque(maxlen=self.memory_size)
+        self.memory = [None] * self.memory_size
+        self.memory_position = 0
+        self.memory_size_actual = 0
         self.sequential_memory_size = int(kwargs['actor_train_interval_steps'])
         self.reset_sequential_memory()
         self.replay_batch_size = int(kwargs['replay_batch_size'])
@@ -57,6 +59,7 @@ class DAIF_Agent:
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
         self.use_critic_to_act = kwargs['use_critic_to_act']
+        self._action_eye = torch.eye(self.action_size)
 
 
     def reset_sequential_memory(self):
@@ -72,12 +75,15 @@ class DAIF_Agent:
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
         # print(id(next_state_to_memorise.untyped_storage()))
-        self.memory.append((
+        self.memory[self.memory_position] = (
             state_to_memorise, 
             action, 
             reward, 
             next_state_to_memorise,
-            done))
+            done)
+        self.memory_position = (self.memory_position + 1) % self.memory_size
+        self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
+
         self.sequential_memory.append(state_to_memorise)
         if len(self.sequential_memory) == self.sequential_memory_size:
             self.train_actor(step)
@@ -87,16 +93,14 @@ class DAIF_Agent:
         with torch.no_grad():
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
-                log_action_probs = torch.log_softmax(
+                action_probs = torch.softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
-                action_probs = log_action_probs.exp()
             else:
-                action_probs = self.policynet(state)
+                action_probs = self.policynet(state).squeeze()
 
-            # sample from a categorical distribution 
-            m = distributions.Categorical(action_probs)
-            action = m.sample().item()
+            # sample from a categorical distribution
+            action = torch.multinomial(action_probs, 1).item()
 
         return action
     
@@ -113,15 +117,16 @@ class DAIF_Agent:
         -\hat{G(s_t,a_t)} =  r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
         This new form is more of a "value" (a policy's value is inversely prop. to the expected free energy)
         """
-        if len(self.memory) < self.replay_batch_size:
+        if self.memory_size_actual < self.replay_batch_size:
             return
 
         self.neg_efe_net.eval()
         self.target_neg_efe_net.eval()
+        self.policynet.train()
+        self.transitionnet.train()
         
-
-        # Unpack minibatch
-        minibatch = random.sample(self.memory, self.replay_batch_size)
+        indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
+        minibatch = [self.memory[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
         states = torch.stack(states)
@@ -134,133 +139,104 @@ class DAIF_Agent:
         transition_inputs = torch.cat([states, action_onehots], dim=1)
             
         targets = rewards.clone()
-        active_epistemic_gains = torch.zeros_like(rewards)
         
+        # 1. Forward passes for gain and consistency
+        policy_probabilities = self.policynet(states)
+        estimated_neg_efe_values = self.neg_efe_net(states)
+
+        if self.variational_t_model:
+            sample_next, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+            eps_var = eps_logvars.exp()
+        else:
+            predicted_observations = self.transitionnet(transition_inputs)
+
         # Vectorized computation of active epistemic gain
         with torch.no_grad():
-            action_probs_prior =self.policynet(states)   # [B, A]
-
-            # Compute transition log-likelihoods for ALL actions
-            action_onehots_all = torch.eye(self.action_size)  # [A, A]
+            action_onehots_all = self._action_eye.to(states.device)
             expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
             expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
             expanded_transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
+
             if self.variational_t_model:
                 _, l_eps_means, l_eps_logvars = self.transitionnet(expanded_transition_inputs)
                 var = l_eps_logvars.exp()
                 res = next_proprioceptive_states.repeat_interleave(self.action_size, 0) - l_eps_means
-                log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + torch.log(torch.tensor(2 * torch.pi))).sum(1).view(self.replay_batch_size, self.action_size)
+                log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + 1.837877).sum(1).view(self.replay_batch_size, self.action_size) # 1.837877 is log(2*pi)
             else:
-                predicted_nexts = self.transitionnet(expanded_transition_inputs) # [B*A, S']
-            
+                predicted_nexts_all = self.transitionnet(expanded_transition_inputs) # [B*A, S']
+
                 # Compute log P(o_next | o_current, a)
                 log_likelihoods = -0.5 * F.mse_loss(
-                    predicted_nexts, 
+                    predicted_nexts_all,
                     next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
                     reduction='none'
-                ).sum(dim=1).view(self.replay_batch_size, self.action_size)  # [B, A]
+                ).sum(dim=1).view(self.replay_batch_size, self.action_size) # [B, A]
             
             # Bayes' rule: Q(a|s,s') ∝ P(s'|s,a) * Q(a|s)
-            log_posterior = log_likelihoods + torch.log(action_probs_prior + 1e-8)
+            log_posterior = log_likelihoods + torch.log(policy_probabilities.detach() + 1e-8)
             action_probs_posterior = torch.softmax(log_posterior, dim=1).clamp_min(1e-8)
 
             # KL divergence: Σ posterior * log(posterior/prior)
-            kl_div = (action_probs_posterior * 
-                    (torch.log(action_probs_posterior + 1e-8) - 
-                    torch.log(action_probs_prior + 1e-8))
-                    ).sum(dim=1, keepdim=True)  # [B, 1]
+            active_epistemic_gains = (action_probs_posterior *
+                    (torch.log(action_probs_posterior) - torch.log(policy_probabilities.detach() + 1e-8))
+                    ).sum(dim=1, keepdim=True) # [B, 1]
             
             # active epistemic gain
-            active_epistemic_gains = kl_div
-
-        targets += self.epistemic_regularisation_factor * active_epistemic_gains
-
-        
-        perceptive_epistemic_gains = torch.zeros_like(rewards)
-        # Vectorized computation of perceptive epistemic gain
-        with torch.no_grad():
-            # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
-            # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
-            # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
             if self.variational_t_model:
-                _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+                # These lines approximate the epistemic gain term: \int Q(s)[logQ(s_t) + logQ(s_t|a_t, s_{t-1})]
+                # eps_means <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
+                # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
                 # Analytical KL divergence.
                 perceptive_epistemic_gains = 0.5 * torch.sum(
-                    (1 / torch.exp(eps_logvars)) + ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
-                    - 1 - eps_logvars,
-                    dim=1,
-                    keepdim=True
-                )
+                    (1 / eps_var) + ((next_proprioceptive_states - eps_means) ** 2) / eps_var - 1 - eps_logvars,
+                    dim=1, keepdim=True)
             else:
-                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                perceptive_epistemic_gains = 0.5 * torch.sum(
-                        (next_proprioceptive_states - estimated_next_proprioceptive_states) ** 2,
-                        dim=1,
-                        keepdim=True)
+                perceptive_epistemic_gains = 0.5 * torch.sum((next_proprioceptive_states - predicted_observations) ** 2, dim=1, keepdim=True)
 
-            targets += self.epistemic_regularisation_factor * perceptive_epistemic_gains.detach()
-
+        targets += self.epistemic_regularisation_factor * (active_epistemic_gains + perceptive_epistemic_gains.detach())
 
         with torch.no_grad():
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
             if self.greedy_update:
                 # DDQN style
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
-                # Argmax(softmax(x)) ≡ Argmax(x)
-                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
-                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+                expected_next_neg_efe_values = estimated_next_neg_efe_values.max(1, keepdim=True)[0]
             else:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 if self.use_critic_to_act:
-                    next_action_probs = torch.softmax(
-                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                    next_action_probs = torch.softmax(self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 else:
                     next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
+            targets += (~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
-            target_neg_efes = self.neg_efe_net(states)
+            target_neg_efes = self.neg_efe_net(states) # Re-compute for target base
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
                     
         # train the EFE value network (critic)
         self.neg_efe_net.train()
-        predicted_values = self.neg_efe_net(states)
-        value_loss = self.value_loss_fn(predicted_values, target_neg_efes)
+        value_loss = self.value_loss_fn(self.neg_efe_net(states), target_neg_efes)
         self.efe_net_optimizer.zero_grad()
         value_loss.backward()
         self.efe_net_optimizer.step()
     
-
         # perceptive and policy model training through VFE:
         self.neg_efe_net.eval()
-        self.policynet.train()
-        self.transitionnet.train()
-        vfe = 0
-
-        # The following corresponds Q(a_t | s_t) in eq. (6) 
-        policy_probabilities = self.policynet(states) 
         
+        # The following corresponds Q(a_t | s_t) in eq. (6)
         if self.surrogate_policy_consistency:
-            with torch.no_grad():
-                target_policy = torch.softmax(
-                    self.temperature_for_action_sampling * self.neg_efe_net(states), dim=1
-                )
+            target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
             policy_consistency = -0.5 * ((policy_probabilities - target_policy) ** 2).sum(dim=1).mean()
         else:
             # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
             # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
-            with torch.no_grad():
-                estimated_neg_efe_values = self.neg_efe_net(states)
-                efe_actions = torch.log_softmax(
-                    self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+            efe_actions_log = torch.log_softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
             # The following loc corresponds to the first term in eq (7), i.e.:
-            # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
+            # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
             # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
             # We need to maximise this energy by minimising VFE which is the negative of this fella.
-            policy_consistency = torch.sum(policy_probabilities * efe_actions, dim=1).mean()
+            policy_consistency = torch.sum(policy_probabilities * efe_actions_log, dim=1).mean()
                     
-
         # The following 2 loc's correspond to the second term in eq (7), i.e.:
         # -E_{Q(s)}\{ H[Q(a|s)] \}
         # Also here, we want to maximise the entropy, that's why substract it from the loss.
@@ -269,24 +245,18 @@ class DAIF_Agent:
         actor_loss = -policy_consistency - self.entropy_reg_coefficient * policy_entropy
         
         if self.variational_t_model:
-            _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
             # Gaussian Log-likelihood.
-            perceptive_consistency = -0.5 * torch.sum(
-                ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
-                + eps_logvars + torch.log(torch.tensor(2 * torch.pi)),
-                dim=1
-                ).mean()
+            perceptive_consistency = -0.5 * torch.sum(((next_proprioceptive_states - eps_means) ** 2) / eps_var + eps_logvars + 1.837877, dim=1).mean() # 1.837877 is log(2*pi)
             # Batch variance
-            batch_var = eps_logvars.exp().mean(dim=0) + 1e-6
+            batch_var = eps_var.mean(dim=0) + 1e-6
         else:
             # perceptive model
-            predicted_observations = self.transitionnet(transition_inputs)
             # Perception consistency (cross entropy ≈ −MSE/2)
             perceptive_consistency = -0.5 * ((next_proprioceptive_states - predicted_observations) ** 2).sum(dim=1).mean()
             # Perception neutrality (entropy proxy using batch variance)
             batch_var = predicted_observations.var(dim=0) + 1e-6
         
-        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * next_proprioceptive_states.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
+        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * next_proprioceptive_states.shape[1] * 2.837877 # 2.837877 is log(2*pi*e)
         
         perceptive_loss = -perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
 
@@ -300,17 +270,19 @@ class DAIF_Agent:
         
 
         if self.wbl: 
-            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step) 
-            self.wbl.log({'active_inference/epistemic_gain': perceptive_epistemic_gains.mean().item()}, step=step)
-            self.wbl.log({'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
-            self.wbl.log({'active_inference/actor_loss': actor_loss.item()}, step=step)
-            self.wbl.log({'active_inference/perceptive_loss': perceptive_loss.item()}, step=step)
-            self.wbl.log({'active_inference/perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'active_inference/perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'active_inference/actor_entropy': policy_entropy.item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'active_inference/actor_performance': policy_consistency.mean().item()}, step=step) # maximise this (it is positive)
-            self.wbl.log({'active_inference/vfe': vfe.item()}, step=step)
+            self.wbl.log({
+                'active_inference/value_loss': value_loss.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item(),
+                'active_inference/epistemic_gain': perceptive_epistemic_gains.mean().item(),
+                'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item(),
+                'active_inference/actor_loss': actor_loss.item(),
+                'active_inference/perceptive_loss': perceptive_loss.item(),
+                'active_inference/perceptive_entropy': perceptive_entropy.item(),
+                'active_inference/perceptive_consistency': perceptive_consistency.item(),
+                'active_inference/actor_entropy': policy_entropy.item(),
+                'active_inference/actor_performance': policy_consistency.mean().item(),
+                'active_inference/vfe': vfe.item()
+            }, step=step)
 
 
 class DAIP_Agent:
@@ -354,7 +326,9 @@ class DAIP_Agent:
         self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
-        self.memory = deque(maxlen=self.memory_size)
+        self.memory = [None] * self.memory_size
+        self.memory_position = 0
+        self.memory_size_actual = 0
         self.sequential_memory_size = int(kwargs['actor_train_interval_steps'])
         self.reset_sequential_memory()
         self.replay_batch_size = int(kwargs['replay_batch_size'])
@@ -375,12 +349,15 @@ class DAIP_Agent:
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
         # print(id(next_state_to_memorise.untyped_storage()))
-        self.memory.append((
+        self.memory[self.memory_position] = (
             state_to_memorise, 
             action, 
             reward, 
             next_state_to_memorise,
-            done))
+            done)
+        self.memory_position = (self.memory_position + 1) % self.memory_size
+        self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
+
         self.sequential_memory.append(state_to_memorise)
         if len(self.sequential_memory) == self.sequential_memory_size:
             self.train_actor(step)
@@ -390,16 +367,14 @@ class DAIP_Agent:
         with torch.no_grad():
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
-                log_action_probs = torch.log_softmax(
+                action_probs = torch.softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
-                action_probs = log_action_probs.exp()
             else:
-                action_probs = self.policynet(state)
+                action_probs = self.policynet(state).squeeze()
 
-            # sample from a categorical distribution 
-            m = distributions.Categorical(action_probs)
-            action = m.sample().item()
+            # sample from a categorical distribution
+            action = torch.multinomial(action_probs, 1).item()
 
         return action
     
@@ -427,8 +402,8 @@ class DAIP_Agent:
 
         vfe = 0
         # batching the states
-        states = torch.vstack(list(self.sequential_memory))
-        # The following corresponds Q(a_t | s_t) in eq. (6) 
+        states = torch.stack(list(self.sequential_memory))
+        # The following corresponds Q(a_t | s_t) in eq. (6)
         policy_probabilities = self.policynet(states) 
         # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
         # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
@@ -437,7 +412,7 @@ class DAIP_Agent:
             self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
 
         # The following 2 loc's correspond to the first term in eq (7), i.e.:
-        # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da] 
+        # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
         # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
         # We need to maximise this energy by minimising VFE which is the negative of this fella.
         energies = torch.sum(policy_probabilities * efe_actions, dim=1)
@@ -456,9 +431,12 @@ class DAIP_Agent:
         self.policynet_optimizer.step()
         self.reset_sequential_memory()
 
-        if self.wbl: self.wbl.log({'active_inference/actor_loss': vfe.item()}, step=step)
-        if self.wbl: self.wbl.log({'active_inference/actor_entropy': expected_policy_entropy.item()}, step=step) # maximise this (it is positive)
-        if self.wbl: self.wbl.log({'active_inference/actor_performance': energies.mean().item()}, step=step) # maximise this (it is positive)
+        if self.wbl:
+            self.wbl.log({
+                'active_inference/actor_loss': vfe.item(),
+                'active_inference/actor_entropy': expected_policy_entropy.item(),
+                'active_inference/actor_performance': energies.mean().item()
+            }, step=step)
 
 
     def replay(self, step):
@@ -470,15 +448,16 @@ class DAIP_Agent:
         -\hat{G(s_t,a_t)} =  r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
         This new form is more of a "value" (a policy's value is inversely prop. to the expected free energy)
         """
-        if len(self.memory) < self.replay_batch_size:
+        if self.memory_size_actual < self.replay_batch_size:
             return
 
         self.neg_efe_net.eval()
         self.target_neg_efe_net.eval()
-        if self.transitionnet is not None: self.transitionnet.eval()
+        if self.transitionnet is not None: self.transitionnet.train()
+        self.policynet.eval()
 
-        # Unpack minibatch
-        minibatch = random.sample(self.memory, self.replay_batch_size)
+        indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
+        minibatch = [self.memory[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
         states = torch.stack(states)
@@ -489,104 +468,86 @@ class DAIP_Agent:
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
             
-
         targets = rewards.clone()
         epistemic_gains = torch.zeros_like(rewards)
         
-        # Vectorized computation of perceptive epistemic gain
         if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
             transition_inputs = torch.cat([states, action_onehots], dim=1)
             
-            # These lines approximate the epistemic gain term: 
-            # estimated_next_proprioceptive_states <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
-            # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
+            # Vectorized computation of perceptive epistemic gain
             if self.variational_t_model:
-                _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+                sample_next, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+                eps_var = eps_logvars.exp()
+                # These lines approximate the epistemic gain term:
+                # eps_means <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
+                # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
                 # Analytical KL divergence.
-                epistemic_gains = 0.5 * torch.sum(
-                    (1 / torch.exp(eps_logvars)) + ((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars)
-                    - 1 - eps_logvars,
-                    dim=1,
-                    keepdim=True
-                )
+                epistemic_gains = 0.5 * torch.sum((1 / eps_var) + ((next_proprioceptive_states - eps_means) ** 2) / eps_var - 1 - eps_logvars, dim=1, keepdim=True)
             else:
-                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                epistemic_gains = 0.5 * torch.sum(
-                        (next_proprioceptive_states - estimated_next_proprioceptive_states) ** 2,
-                        dim=1,
-                        keepdim=True)
+                predicted_observations = self.transitionnet(transition_inputs)
+                epistemic_gains = 0.5 * torch.sum((next_proprioceptive_states - predicted_observations) ** 2, dim=1, keepdim=True)
 
             targets += self.epistemic_regularisation_factor * epistemic_gains.detach()
 
-
         with torch.no_grad():
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
             if self.greedy_update:
                 # DDQN style
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
-                # Argmax(softmax(x)) ≡ Argmax(x)
-                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
-                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+                expected_next_neg_efe_values = estimated_next_neg_efe_values.max(1, keepdim=True)[0]
             else:
                 # Act-Inf style
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 if self.use_critic_to_act:
                     # Value-based Act-Inf
-                    next_action_probs = torch.softmax(
-                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                    next_action_probs = torch.softmax(self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 else:
                     # Act-Inf as policy gradients
                     next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
+            targets += (~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
             target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
-        # train the EFE value network (critic)
         self.neg_efe_net.train()
-        predicted_values = self.neg_efe_net(states)
-        value_loss = self.value_loss_fn(predicted_values, target_neg_efes)
+        value_loss = self.value_loss_fn(self.neg_efe_net(states), target_neg_efes)
         self.efe_net_optimizer.zero_grad()
         value_loss.backward()
         self.efe_net_optimizer.step()
     
-        # Train transition model
         if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
-            self.transitionnet.train()
             if self.variational_t_model:
-                estimated_next_proprioceptive_states, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
-
                 if self.variational_variational_transition_loss:
-                    # Use means for deterministic target comparison
-                    reconstruction_loss = F.mse_loss(l_eps_means, next_proprioceptive_states, reduction='mean')
-                    # KL divergence to standard normal
-                    kl_div = 0.5 * torch.sum(
-                        l_eps_logvars.exp() + l_eps_means**2 - 1. - l_eps_logvars, 
-                        dim=1
-                    ).mean()
+                    reconstruction_loss = F.mse_loss(eps_means, next_proprioceptive_states, reduction='mean')
+                    kl_div = 0.5 * torch.sum(eps_var + eps_means**2 - 1. - eps_logvars, dim=1).mean()
                     transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                    if self.wbl: self.wbl.log({'active_inference/state_reconstruction_loss': reconstruction_loss.item()}, step=step)
-                    if self.wbl: self.wbl.log({'active_inference/state kl_div': kl_div.item()}, step=step)
+                    if self.wbl:
+                        self.wbl.log({
+                            'active_inference/state_reconstruction_loss': reconstruction_loss.item(),
+                            'active_inference/state kl_div': kl_div.item()
+                        }, step=step)
                 else:
-                    transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
+                    transition_loss = self.state_loss_fn(sample_next, next_proprioceptive_states)
             else:
-                estimated_next_proprioceptive_states = self.transitionnet(transition_inputs)
-                transition_loss = self.state_loss_fn(estimated_next_proprioceptive_states, next_proprioceptive_states)
+                transition_loss = self.state_loss_fn(predicted_observations, next_proprioceptive_states)
 
             self.transitionnet_optimizer.zero_grad()
             transition_loss.backward()
             self.transitionnet_optimizer.step()
 
             if self.wbl: 
-                self.wbl.log({'active_inference/transition_loss': transition_loss.item()}, step=step)
-                self.wbl.log({'active_inference/epistemic_gain': epistemic_gains.mean().item()}, step=step)
+                self.wbl.log({
+                    'active_inference/transition_loss': transition_loss.item(),
+                    'active_inference/epistemic_gain': epistemic_gains.mean().item()
+                }, step=step)
 
         if self.wbl: 
-            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step) 
+            self.wbl.log({
+                'active_inference/value_loss': value_loss.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item()
+            }, step=step)
        
 
 class DAIA_Agent:
@@ -628,13 +589,16 @@ class DAIA_Agent:
         self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
-        self.memory = deque(maxlen=self.memory_size)
+        self.memory = [None] * self.memory_size
+        self.memory_position = 0
+        self.memory_size_actual = 0
         self.sequential_memory_size = int(kwargs['actor_train_interval_steps'])
         self.reset_sequential_memory()
         self.replay_batch_size = int(kwargs['replay_batch_size'])
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.use_critic_to_act = kwargs['use_critic_to_act']
+        self._action_eye = torch.eye(self.action_size)
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.sequential_memory_size)
@@ -648,12 +612,15 @@ class DAIA_Agent:
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
         # print(id(next_state_to_memorise.untyped_storage()))
-        self.memory.append((
+        self.memory[self.memory_position] = (
             state_to_memorise, 
             action, 
             reward, 
             next_state_to_memorise,
-            done))
+            done)
+        self.memory_position = (self.memory_position + 1) % self.memory_size
+        self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
+
         self.sequential_memory.append(state_to_memorise)
         if len(self.sequential_memory) == self.sequential_memory_size:
             self.train_actor(step)
@@ -663,16 +630,14 @@ class DAIA_Agent:
         with torch.no_grad():
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
-                log_action_probs = torch.log_softmax(
+                action_probs = torch.softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
-                action_probs = log_action_probs.exp()
             else:
-                action_probs = self.policynet(state)
+                action_probs = self.policynet(state).squeeze()
             
-            # sample from a categorical distribution 
-            m = distributions.Categorical(action_probs)
-            action = m.sample().item()
+            # sample from a categorical distribution
+            action = torch.multinomial(action_probs, 1).item()
 
         return action
     
@@ -682,11 +647,10 @@ class DAIA_Agent:
         vfe = 0
         
         # batching the states
-        states = torch.vstack(list(self.sequential_memory))
+        states = torch.stack(list(self.sequential_memory))
         proprioceptive_states = states[:, -self.proprioceptive_state_size:]
         estimated_neg_efe_values = self.neg_efe_net(states).detach()
-        efe_actions = torch.log_softmax(
-            self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1).max(dim=1)[1]
+        efe_actions = torch.argmax(estimated_neg_efe_values, dim=1)
         action_onehots = torch.nn.functional.one_hot(efe_actions, self.action_size).float()
         transition_inputs = torch.cat([states, action_onehots], dim=1)
 
@@ -697,7 +661,7 @@ class DAIA_Agent:
             # Gaussian Log-likelihood.
             perceptive_consistency = -0.5 * torch.sum(
                 ((proprioceptive_states[1:] - eps_means[:-1]) ** 2) / torch.exp(eps_logvars)
-                + eps_logvars  + torch.log(torch.tensor(2 * torch.pi)),
+                + eps_logvars  + 1.837877, # 1.837877 is log(2*pi)
                 dim=1,
             ).mean()
             # Batch variance
@@ -709,31 +673,41 @@ class DAIA_Agent:
             # Perception neutrality (entropy proxy using batch variance)
             batch_var = predicted_observations.var(dim=0) + 1e-6
 
-        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * predicted_observations.shape[1] * torch.log(torch.tensor(2 * torch.pi * torch.e))
+        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * proprioceptive_states.shape[1] * 2.837877 # 2.837877 is log(2*pi*e)
 
         vfe = - perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
-        if self.wbl: self.wbl.log({'active_inference/perceptive_entropy': perceptive_entropy.item()}, step=step) # maximise this (it is positive)
-        if self.wbl: self.wbl.log({'active_inference/perceptive_consistency': perceptive_consistency.item()}, step=step) # maximise this (it is positive)
+        if self.wbl:
+            self.wbl.log({
+                'active_inference/perceptive_entropy': perceptive_entropy.item(),
+                'active_inference/perceptive_consistency': perceptive_consistency.item(),
+                'active_inference/perceptive_loss': vfe.item()
+            }, step=step)
 
         self.transitionnet_optimizer.zero_grad()
         vfe.backward()
         self.transitionnet_optimizer.step()
         self.reset_sequential_memory()
 
-        if self.wbl: self.wbl.log({'active_inference/perceptive_loss': vfe.item()}, step=step)
-
 
     def replay(self, step):
-
-        if len(self.memory) < self.replay_batch_size:
+        """
+        Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
+        This update is based on equation (17) of the Millidge's paper (after the sign correction), which in our paper is:
+        \hat{G(s_t,a_t)} =  -r(o) -  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] + G_\phi(s_t,a_t)
+        which is equivalent to:
+        -\hat{G(s_t,a_t)} =  r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
+        This new form is more of a "value" (a policy's value is inversely prop. to the expected free energy)
+        """
+        if self.memory_size_actual < self.replay_batch_size:
             return
 
         self.neg_efe_net.eval()
         self.target_neg_efe_net.eval()
         self.transitionnet.eval()
+        self.policynet.train()
 
-        # Unpack minibatch
-        minibatch = random.sample(self.memory, self.replay_batch_size)
+        indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
+        minibatch = [self.memory[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
         states = torch.stack(states)
@@ -743,98 +717,84 @@ class DAIA_Agent:
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
             
-
         targets = rewards.clone()
-        active_epistemic_gains = torch.zeros_like(rewards)
         
+        # 1. Forward pass for policy prior
+        action_probs_prior = self.policynet(states)
+
         # Vectorized computation of active epistemic gain
         with torch.no_grad():
-            action_probs_prior =self.policynet(states)   # [B, A]
-
-            # Compute transition log-likelihoods for ALL actions
-            action_onehots_all = torch.eye(self.action_size)  # [A, A]
+            action_onehots_all = self._action_eye.to(states.device)
             expanded_actions = action_onehots_all.repeat(self.replay_batch_size, 1)  # [B*A, A]
             expanded_states = states.repeat_interleave(self.action_size, dim=0)  # [B*A, S]
-            transition_inputs = torch.cat([expanded_states, expanded_actions], dim=1)
+            transition_inputs_all = torch.cat([expanded_states, expanded_actions], dim=1)
+
             if self.variational_t_model:
-                _, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs)
+                _, l_eps_means, l_eps_logvars = self.transitionnet(transition_inputs_all)
                 var = l_eps_logvars.exp()
                 res = next_proprioceptive_states.repeat_interleave(self.action_size, 0) - l_eps_means
-                log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + torch.log(torch.tensor(2 * torch.pi))).sum(1).view(self.replay_batch_size, self.action_size)
+                log_likelihoods = -0.5 * ((res**2)/var + l_eps_logvars + 1.837877).sum(1).view(self.replay_batch_size, self.action_size) # 1.837877 is log(2*pi)
             else:
-                predicted_nexts = self.transitionnet(transition_inputs) # [B*A, S']
-            
-                # Compute log P(o_next | o_current, a)
+                predicted_nexts_all = self.transitionnet(transition_inputs_all)
                 log_likelihoods = -0.5 * F.mse_loss(
-                    predicted_nexts, 
+                    predicted_nexts_all,
                     next_proprioceptive_states.repeat_interleave(self.action_size, dim=0),
                     reduction='none'
-                ).sum(dim=1).view(self.replay_batch_size, self.action_size)  # [B, A]
+                ).sum(dim=1).view(self.replay_batch_size, self.action_size)
             
             # Bayes' rule: Q(a|s,s') ∝ P(s'|s,a) * Q(a|s)
-            log_posterior = log_likelihoods + torch.log(action_probs_prior + 1e-8)
+            log_posterior = log_likelihoods + torch.log(action_probs_prior.detach() + 1e-8)
             action_probs_posterior = torch.softmax(log_posterior, dim=1).clamp_min(1e-8)
 
             # KL divergence: Σ posterior * log(posterior/prior)
-            kl_div = (action_probs_posterior * 
-                    (torch.log(action_probs_posterior + 1e-8) - 
-                    torch.log(action_probs_prior + 1e-8))
-                    ).sum(dim=1, keepdim=True)  # [B, 1]
-            
+            active_epistemic_gains = (action_probs_posterior *
+                    (torch.log(action_probs_posterior) - torch.log(action_probs_prior.detach() + 1e-8))
+                    ).sum(dim=1, keepdim=True) # [B, 1]
+
             # active epistemic gain
-            active_epistemic_gains = kl_div
 
         targets += self.epistemic_regularisation_factor * active_epistemic_gains
 
-
         with torch.no_grad():
+            estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
             if self.greedy_update:
                 # DDQN style
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
-                # Argmax(softmax(x)) ≡ Argmax(x)
-                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
-                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+                expected_next_neg_efe_values = estimated_next_neg_efe_values.max(1, keepdim=True)[0]
             else:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 if self.use_critic_to_act:
-                    next_action_probs = torch.softmax(
-                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                    next_action_probs = torch.softmax(self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
                 else:
                     next_action_probs = self.policynet(next_states)
                 expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
+            targets += (~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
             target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
-
-        # train the EFE value network (critic)
         self.neg_efe_net.train()
-        predicted_values = self.neg_efe_net(states)
-        value_loss = self.value_loss_fn(predicted_values, target_neg_efes)
+        value_loss = self.value_loss_fn(self.neg_efe_net(states), target_neg_efes)
         self.efe_net_optimizer.zero_grad()
         value_loss.backward()
         self.efe_net_optimizer.step()
     
         # train the policy network:
-        self.policynet.train()
-        predicted_actions = self.policynet(states)
-        with torch.no_grad():
-            target_logits = self.temperature_for_action_sampling * self.neg_efe_net(states)
-            target_policy = torch.softmax(target_logits, dim=1)
-        policy_loss = -(target_policy * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
+        target_logits = self.temperature_for_action_sampling * self.neg_efe_net(states).detach()
+        target_policy = torch.softmax(target_logits, dim=1)
+        policy_loss = -(target_policy * (action_probs_prior.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
 
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
         
         if self.wbl: 
-            self.wbl.log({'active_inference/policy_loss': policy_loss.item()}, step=step)
-            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step) 
-            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({
+                'active_inference/policy_loss': policy_loss.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item(),
+                'active_inference/value_loss': value_loss.item(),
+                'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item()
+            }, step=step)
 
 class DAISA_Agent:
     def __init__(self, args):
@@ -862,7 +822,9 @@ class DAISA_Agent:
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
-        self.memory = deque(maxlen=self.memory_size)
+        self.memory = [None] * self.memory_size
+        self.memory_position = 0
+        self.memory_size_actual = 0
         self.sequential_memory_size = kwargs['actor_train_interval_steps']
         self.reset_sequential_memory()
         self.replay_batch_size = int(kwargs['replay_batch_size'])
@@ -881,12 +843,15 @@ class DAISA_Agent:
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
         # print(id(next_state_to_memorise.untyped_storage()))
-        self.memory.append((
+        self.memory[self.memory_position] = (
             state_to_memorise, 
             action, 
             reward, 
             next_state_to_memorise,
-            done))
+            done)
+        self.memory_position = (self.memory_position + 1) % self.memory_size
+        self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
+
         self.sequential_memory.append(state_to_memorise)
         if len(self.sequential_memory) == self.sequential_memory_size:
             self.train_actor(step)
@@ -896,16 +861,14 @@ class DAISA_Agent:
         with torch.no_grad():
             if self.use_critic_to_act:
                 neg_efe = self.neg_efe_net(state)
-                log_action_probs = torch.log_softmax(
+                action_probs = torch.softmax(
                     self.temperature_for_action_sampling * neg_efe,
                     dim=-1).squeeze()
-                action_probs = log_action_probs.exp()
             else:
-                action_probs = self.policynet(state)
+                action_probs = self.policynet(state).squeeze()
 
-            # sample from a categorical distribution 
-            m = distributions.Categorical(action_probs)
-            action = m.sample().item()
+            # sample from a categorical distribution
+            action = torch.multinomial(action_probs, 1).item()
 
         return action
     
@@ -915,15 +878,23 @@ class DAISA_Agent:
 
 
     def replay(self, step):
-
-        if len(self.memory) < self.replay_batch_size:
+        """
+        Use temporal difference on expected free energy to update the critic (efe bootstrapped network)
+        This update is based on equation (17) of the Millidge's paper (after the sign correction), which in our paper is:
+        \hat{G(s_t,a_t)} =  -r(o) -  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] + G_\phi(s_t,a_t)
+        which is equivalent to:
+        -\hat{G(s_t,a_t)} =  r(o) +  \int Q(s)[logQ(s_t) - logQ(s_t|a_t, s_{t-1})] - G_\phi(s_t,a_t)
+        This new form is more of a "value" (a policy's value is inversely prop. to the expected free energy)
+        """
+        if self.memory_size_actual < self.replay_batch_size:
             return
 
         self.neg_efe_net.eval()
         self.target_neg_efe_net.eval()
+        self.policynet.train()
 
-        # Unpack minibatch
-        minibatch = random.sample(self.memory, self.replay_batch_size)
+        indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
+        minibatch = [self.memory[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*minibatch)
 
         states = torch.stack(states)
@@ -932,70 +903,57 @@ class DAISA_Agent:
         rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
         dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
 
-
         targets = rewards.clone()
-        surrogate_active_epistemic_gains = torch.zeros_like(rewards)
+
+        # 1. Forward passes
+        predicted_actions = self.policynet(states)
+        estimated_neg_efe_values = self.neg_efe_net(states)
          
         with torch.no_grad():
-
-            estimated_neg_efe_values = self.neg_efe_net(states)
-            target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
-            predicted_actions =self.policynet(states)
-
-            surrogate_active_epistemic_gains = torch.sum(
-                    (predicted_actions - target_policy) ** 2,
-                    dim=1,
-                    keepdim=True)
+            target_policy_inf = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+            surrogate_active_epistemic_gains = torch.sum((predicted_actions.detach() - target_policy_inf) ** 2, dim=1, keepdim=True)
 
             targets += self.epistemic_regularisation_factor * surrogate_active_epistemic_gains
 
+            estimated_next_neg_efe_values_tgt = self.target_neg_efe_net(next_states)
             if self.greedy_update:
                 # DDQN style
-                estimated_next_neg_efe_values = self.neg_efe_net(next_states)
-                # Argmax(softmax(x)) ≡ Argmax(x)
-                efe_actions = estimated_next_neg_efe_values.max(1)[1] 
-                expected_next_neg_efe_values = self.target_neg_efe_net(next_states).gather(1, efe_actions.unsqueeze(1))
+                expected_next_neg_efe_values = estimated_next_neg_efe_values_tgt.max(1, keepdim=True)[0]
             else:
-                estimated_next_neg_efe_values = self.target_neg_efe_net(next_states)
                 if self.use_critic_to_act:
-                    next_action_probs = torch.softmax(
-                        self.temperature_for_action_sampling * estimated_next_neg_efe_values, dim=1)
+                    next_action_probs = torch.softmax(self.temperature_for_action_sampling * estimated_next_neg_efe_values_tgt, dim=1)
                 else:
                     next_action_probs = self.policynet(next_states)
-                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values).sum(dim=1, keepdim=True)
+                expected_next_neg_efe_values = (next_action_probs * estimated_next_neg_efe_values_tgt).sum(dim=1, keepdim=True)
 
-            targets +=(~dones) * 0.99 * expected_next_neg_efe_values
+            targets += (~dones) * 0.99 * expected_next_neg_efe_values
 
             # Prepare targets for all actions
             target_neg_efes = self.neg_efe_net(states)
             target_neg_efes[range(self.replay_batch_size), actions] = targets.squeeze()
 
 
-        # train the EFE value network (critic)
         self.neg_efe_net.train()
-        predicted_values = self.neg_efe_net(states)
-        value_loss = self.value_loss_fn(predicted_values, target_neg_efes)
+        value_loss = self.value_loss_fn(self.neg_efe_net(states), target_neg_efes)
         self.efe_net_optimizer.zero_grad()
         value_loss.backward()
         self.efe_net_optimizer.step()
     
 
         # train the policy network:
-        self.policynet.train()
-        predicted_actions = self.policynet(states)
-        with torch.no_grad():
-            target_logits = self.temperature_for_action_sampling * self.neg_efe_net(states)
-            target_policy = torch.softmax(target_logits, dim=1)
-        policy_loss = -(target_policy * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
+        target_policy_vfe = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
+        policy_loss = -(target_policy_vfe * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
 
         if self.wbl: 
-            self.wbl.log({'active_inference/policy_loss': policy_loss.item()}, step=step)
-            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step)
-            self.wbl.log({'active_inference/value_loss': value_loss.item()}, step=step)
-            self.wbl.log({'active_inference/active_epistemic_gain': surrogate_active_epistemic_gains.mean().item()}, step=step)
+            self.wbl.log({
+                'active_inference/policy_loss': policy_loss.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item(),
+                'active_inference/value_loss': value_loss.item(),
+                'active_inference/active_epistemic_gain': surrogate_active_epistemic_gains.mean().item()
+            }, step=step)
 
 
 class ValueLearningAgent:
@@ -1009,7 +967,10 @@ class ValueLearningAgent:
         self.wbl = kwargs['wbl']
         self.state_size = int(kwargs['state_size'])
         self.action_size = int(kwargs['action_size'])
-        self.memory = deque(maxlen=int(kwargs['agent_memory_size']))
+        self.memory_size = int(kwargs['agent_memory_size'])
+        self.memory = [None] * self.memory_size
+        self.memory_position = 0
+        self.memory_size_actual = 0
         self.gamma = float(kwargs['agent_discount_rate'])  # discount rate
         self.boltzmann_sampling = kwargs['boltzmann_sampling']
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
@@ -1035,39 +996,40 @@ class ValueLearningAgent:
         # print(id(state_to_memorise.untyped_storage()))
         next_state_to_memorise = next_state.detach().clone()
         # print(id(next_state_to_memorise.untyped_storage()))
-        self.memory.append((
+        self.memory[self.memory_position] = (
             state_to_memorise, 
             action, 
             reward, 
             next_state_to_memorise,
-            done))
+            done)
+        self.memory_position = (self.memory_position + 1) % self.memory_size
+        self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
 
 
     def act(self, state):
         with torch.no_grad():
             if self.boltzmann_sampling:
                 q_values = self.model(state).squeeze()
-                log_action_probs = torch.log_softmax(
+                action_probs = torch.softmax(
                     self.temperature_for_action_sampling * q_values,
                     dim=-1).squeeze()
-                action_probs = log_action_probs.exp()
-                # sample from a categorical distribution 
-                m = distributions.Categorical(action_probs)
-                return m.sample().item()
+                # sample from a categorical distribution
+                return torch.multinomial(action_probs, 1).item()
             else:
-                if torch.rand(1).item() <= self.epsilon:
+                if random.random() <= self.epsilon:
                     return random.randrange(self.action_size)
                 
                 q_values = self.model(state).squeeze()
-                return q_values.max(0)[1].item()
+                return q_values.argmax(0).item()
 
 
     def replay(self, step):
 
-        if len(self.memory) < self.replay_batch_size:
+        if self.memory_size_actual < self.replay_batch_size:
             return
 
-        minibatch = random.sample(self.memory, self.replay_batch_size)
+        indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
+        minibatch = [self.memory[i] for i in indices]
 
         # Unpack and stack transitions
         states, actions, rewards, next_states, dones = zip(*minibatch)
@@ -1112,8 +1074,10 @@ class ValueLearningAgent:
 
         # Log
         if self.wbl: 
-            self.wbl.log({'active_inference/value_loss': loss.item()}, step=step)
-            self.wbl.log({'active_inference/pragmatic_gain': rewards.mean().item()}, step=step)
+            self.wbl.log({
+                'active_inference/value_loss': loss.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item()
+            }, step=step)
             
         # Epsilon decay
         if self.epsilon > self.epsilon_min:
