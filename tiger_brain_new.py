@@ -118,9 +118,9 @@ class TigerBrain:
         self.use_neural_KR = args.intrusion_detection.use_neural_KR
         self.use_neural_CS = args.intrusion_detection.use_neural_CS
         self.online_evaluation = args.intrusion_detection.online_evaluation
-        self.wrong_inference_penalisation = args.intrusion_detection.bad_classif_penalisation
+        self.wrong_inference_penalisation = args.intrusion_detection.wrong_inference_penalisation
         self.bad_classif_cost_factor = float(args.intrusion_detection.bad_classif_cost_factor)
-        self.bad_clustering_cost_factor = float(args.intrusion_detection.hard_bad_classif_cost_factor)
+        self.bad_clustering_cost_factor = float(args.intrusion_detection.bad_clustering_cost_factor)
         self.online_eval_rounds = int(args.intrusion_detection.online_evaluation_rounds)
         self.load_pretrained_inference_module = args.intrusion_detection.pretrained_inference
         self.clustering_loss_backprop = args.intrusion_detection.clustering_loss_backprop
