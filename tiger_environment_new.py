@@ -49,16 +49,20 @@ class NewTigerEnvironment:
         This method updates the CTI agent state vector, i.e., according to available labels to buy.
         """
         
+        # set a list of n_options available cti options:
         self.current_cti_options = {}  
         g2s = self.current_knowledge['G2s']
         num_g2s = len(g2s)
 
         for idx in range(n_options):
+
+            # do we still have so many unknowns?
             if idx < num_g2s:
                 label = g2s[idx]
                 self.current_cti_options[label] = self.cti_prices[label]
                 self.epistemic_actions_available = 1
             else:
+                # if we do not have unknowns anymore, then lets put a placeholder in the state space (with high cost).
                 self.current_cti_options[f'placeholder_{idx}'] = 100 
                 self.epistemic_actions_available = 0
 
@@ -93,6 +97,7 @@ class NewTigerEnvironment:
         """
                
         price_payed = 0
+        # get the label corresponding to the attack we want to purchase info about
         # Optimization: Avoid list(keys()) if possible, but for small n_options it's fine.
         # However, we can use a more direct way if current_action is always 0.
         keys = list(self.current_cti_options.keys())
@@ -103,6 +108,7 @@ class NewTigerEnvironment:
 
         self.epistemic_actions += 1
         
+        # if the action corresponds to a placeholder, it means we did not buy anything.
         if 'placeholder' not in acquired_cti:
             self.current_knowledge['G2s'].remove(acquired_cti)
             self.current_knowledge['Knowns'].append(acquired_cti)
