@@ -977,7 +977,7 @@ class ValueLearningAgent:
         self.epsilon_decay = float(kwargs['greedy_decay'])
 
         self.agent_type = kwargs['agent']
-        if self.agent_type == 'DuelingDQN':
+        if self.agent_type == 'DuelingDQN' or self.agent_type == 'DuelingDDQN':
             self.model = DuelingDQN(kwargs)
             self.target_model = DuelingDQN(kwargs)
         else:
@@ -1117,10 +1117,10 @@ class ValueLearningAgent:
         # Compute target Q-values
         with torch.no_grad():
             gamma_n = self.gamma ** self.n_step
-            if self.algorithm == 'DQN':
+            if self.algorithm == 'DQN' or self.algorithm == 'DuelingDQN':
                 # Use target network to get max Q-values of next states
                 next_q_values = self.target_model(next_states).max(1)[0]  # shape: [B]
-            elif self.algorithm == 'DDQN':
+            elif self.algorithm == 'DDQN' or self.algorithm == 'DuelingDDQN':
                 # Action selection from online model
                 next_actions = self.model(next_states).max(1)[1]          # shape: [B]
                 # Evaluation from target model

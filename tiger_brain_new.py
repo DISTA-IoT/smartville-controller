@@ -248,6 +248,7 @@ class TigerBrain:
             'DQN': ValueLearningAgent,
             'DDQN': ValueLearningAgent,
             'DuelingDQN': ValueLearningAgent,
+            'DuelingDDQN': ValueLearningAgent,
             'DAI_P': DAIP_Agent,
             'DAI_A': DAIA_Agent,
             'DAI_SA': DAISA_Agent,
