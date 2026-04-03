@@ -89,8 +89,11 @@ class TigerBrain:
         args = AttrDict(kwargs)
         
         # Concurrency and logging
-        self._lock = threading.Lock()
-        self._epistemic_lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._epistemic_lock = threading.RLock()
+        self._model_lock = threading.RLock()
+        self._agent_lock = threading.RLock()
+        self._stop_background_threads = threading.Event()
         self.logger_instance = kwargs['logger']
 
         # Configuration parameters
@@ -131,12 +134,20 @@ class TigerBrain:
         self.pretrained_models_dir = args.intrusion_detection.pretrained_models_dir
         self.update_target_freq = int(args.intrusion_detection.update_target_freq)
         
+        # Parallel processing parameters
+        self.parallel_training = args.intrusion_detection.get('parallel_training', False)
+        self.inference_update_freq = int(args.intrusion_detection.get('inference_update_freq', 100))
+        self.training_sleep = float(args.intrusion_detection.get('training_sleep', 0.01))
+        self.replay_sleep = float(args.intrusion_detection.get('replay_sleep', 0.01))
+        self.training_iterations_per_batch = int(args.intrusion_detection.get('training_iterations_per_batch', -1))
+        self.replay_iterations_per_batch = int(args.intrusion_detection.get('replay_iterations_per_batch', -1))
 
         # Environment and Networking
         self.container_ips = args.container_ips
         self.ips_containers = args.ips_containers
         self.traffic_dict = args.traffic_dict
         self.episode_count = -1
+        self.received_batches_count = 0
         self.env = NewTigerEnvironment(args)
 
         # WandB Tracking
@@ -190,6 +201,14 @@ class TigerBrain:
         """
         Shuts down monitoring threads and WandB tracker.
         """
+        self._stop_background_threads.set()
+
+        if hasattr(self, '_background_training_thread') and self._background_training_thread.is_alive():
+            self._background_training_thread.join(timeout=2.0)
+
+        if hasattr(self, '_background_replay_thread') and self._background_replay_thread.is_alive():
+            self._background_replay_thread.join(timeout=2.0)
+
         if hasattr(self, '_stop_monitoring'):
             self._stop_monitoring.set()
             for t in self._monitoring_threads:
@@ -288,21 +307,23 @@ class TigerBrain:
 
     def reset_train_cms(self):
         """Resets training confusion matrices."""
-        self.training_cs_cm = torch.zeros(
-            [max(1, self.current_known_classes_count), max(1, self.current_known_classes_count)],
-            device=self.device)
-        self.training_os_cm = torch.zeros(
-            size=(2, 2),
-            device=self.device)
+        with self._lock:
+            self.training_cs_cm = torch.zeros(
+                [max(1, self.current_known_classes_count), max(1, self.current_known_classes_count)],
+                device=self.device)
+            self.training_os_cm = torch.zeros(
+                size=(2, 2),
+                device=self.device)
         
     def reset_test_cms(self):
         """Resets evaluation confusion matrices."""
-        self.eval_cs_cm = torch.zeros(
-            [max(1, self.current_known_classes_count), max(1, self.current_known_classes_count)],
-            device=self.device)
-        self.eval_os_cm = torch.zeros(
-            size=(2, 2),
-            device=self.device)
+        with self._lock:
+            self.eval_cs_cm = torch.zeros(
+                [max(1, self.current_known_classes_count), max(1, self.current_known_classes_count)],
+                device=self.device)
+            self.eval_os_cm = torch.zeros(
+                size=(2, 2),
+                device=self.device)
 
     def load_models_from_source(self):
         """
@@ -377,6 +398,12 @@ class TigerBrain:
         self.classifier.to(self.device)
         self.optimizer = optim.Adam(params_for_optimizer, lr=self.learning_rate)
 
+        if self.parallel_training:
+            self.classifier_inf = copy.deepcopy(self.classifier)
+            self.confidence_decoder_inf = copy.deepcopy(self.confidence_decoder)
+            self.classifier_inf.eval()
+            self.confidence_decoder_inf.eval()
+
         if self.eval:
             self.classifier.eval()
             self.confidence_decoder.eval()
@@ -429,6 +456,7 @@ class TigerBrain:
         """
         Saves input samples into their respective class replay buffers.
         """
+        self.received_batches_count += 1
         unique_labels = torch.unique(batch_labels)
         buffers = self.replay_buffers
 
@@ -519,15 +547,18 @@ class TigerBrain:
         rewards = [self._rewards_lookup[label.item()] for label in encoded_labels]
         return torch.tensor(rewards, dtype=torch.float32)
 
-    def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask):
+    def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask, decoder=None):
         """
         Performs anomaly detection on the online batch.
         """
+        if decoder is None:
+            decoder = self.confidence_decoder
+
         if self.use_neural_AD:
             known_class_h_mask = self.get_known_classes_mask(batch, one_hot_labels)
             
             try:
-                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+                zda_predictions = decoder(scores=logits[:, known_class_h_mask])
             except Exception as e:
                 self.logger_instance.error(f'Confidence decoder error: {e}')
                 raise RuntimeError(f'Confidence decoder error: {e}')
@@ -545,9 +576,10 @@ class TigerBrain:
         """
         online_batch.zda_labels, online_batch.test_zda_labels = self.get_zda_labels(online_batch, mode=INFERENCE)
 
-        aux_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=INFERENCE)
-        if aux_batch is None:
-            return None
+        with self._lock:
+            aux_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=INFERENCE)
+            if aux_batch is None:
+                return None
     
         aux_query_mask = self.get_canonical_query_mask(aux_batch.class_labels.shape[0])
         online_query_mask = torch.ones_like(online_batch.class_labels).to(torch.bool)
@@ -677,7 +709,8 @@ class TigerBrain:
             new_state = state_vec.detach().clone()
             new_state[-1] = self.env.current_budget 
             end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
-            self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.Tensor([classification_reward]), new_state, end_signal, self.wb_tracker.step_counter)
+            with self._agent_lock:
+                self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.Tensor([classification_reward]), new_state, end_signal, self.wb_tracker.step_counter)
 
         self.env.episode_rewards.append(classification_reward)
         self.env.episode_budgets.append(self.env.current_budget)
@@ -776,7 +809,8 @@ class TigerBrain:
             self.wb_tracker.step_counter += 1
             end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
 
-            self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
+            with self._agent_lock:
+                self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
             self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
             self.env.episode_budgets.append(self.env.current_budget)
 
@@ -814,8 +848,12 @@ class TigerBrain:
         self.cs_classif_confidence = torch.zeros(1)
         self.zda_confidence = torch.zeros(1)
         
-        self.classifier.eval()
-        self.confidence_decoder.eval()
+        classifier = self.classifier_inf if self.parallel_training else self.classifier
+        decoder = self.confidence_decoder_inf if self.parallel_training else self.confidence_decoder
+
+        classifier.eval()
+        if decoder:
+            decoder.eval()
 
         online_batch_tuple = self.prepare_online_batch(online_batch)
         if online_batch_tuple is None: return
@@ -824,12 +862,12 @@ class TigerBrain:
         
         with torch.no_grad():
             with self.profile("onl_inf_forward_pass"):
-                logits, hiddens, predicted_kernel = self.infer(self.classifier, merged_batch, self.current_known_classes_count, query_mask=merged_query_mask)
+                logits, hiddens, predicted_kernel = self.infer(classifier, merged_batch, self.current_known_classes_count, query_mask=merged_query_mask)
             
             one_hot_labels = self.get_oh_labels(merged_batch, self.current_known_classes_count)
 
             with self.profile("onl_inf_AD"):
-                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, one_hot_labels, merged_query_mask)
+                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, one_hot_labels, merged_query_mask, decoder=decoder)
         
         num_online = online_batch.zda_labels.shape[0]
         # Always evaluate to update online stats (CMs) and get metrics
@@ -840,11 +878,15 @@ class TigerBrain:
 
         # accuracy_mask and merged_query_mask alignment:
         # logits shape is [N_query, K]. accuracy_mask[merged_query_mask] is [N_query].
-        if not self.use_neural_CS:
-            perfect_preds = one_hot_labels[merged_query_mask][accuracy_mask[merged_query_mask]]
-            self.eval_cs_cm += efficient_cm(preds=perfect_preds, targets_onehot=perfect_preds)
-        else:
-            self.eval_cs_cm += efficient_cm(preds=logits[accuracy_mask[merged_query_mask]].detach(), targets_onehot=one_hot_labels[merged_query_mask][accuracy_mask[merged_query_mask]])
+        with self._lock:
+            if not self.use_neural_CS:
+                perfect_preds = one_hot_labels[merged_query_mask][accuracy_mask[merged_query_mask]]
+                cm = efficient_cm(preds=perfect_preds, targets_onehot=perfect_preds)
+            else:
+                cm = efficient_cm(preds=logits[accuracy_mask[merged_query_mask]].detach(), targets_onehot=one_hot_labels[merged_query_mask][accuracy_mask[merged_query_mask]])
+
+            if cm.shape == self.eval_cs_cm.shape:
+                self.eval_cs_cm += cm
 
         pred_online_zda_mask = predicted_zda_mask[-num_online:]
         num_known = (~pred_online_zda_mask).sum()
@@ -865,8 +907,10 @@ class TigerBrain:
                 with self.profile("onl_inf_act_unknown"):
                     self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
 
-        with self.profile("onl_inf_ER"):
-            self.mitigation_agent.replay(self.wb_tracker.step_counter)
+        if not self.parallel_training:
+            with self.profile("onl_inf_ER"):
+                with self._agent_lock:
+                    self.mitigation_agent.replay(self.wb_tracker.step_counter)
 
         self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
         
@@ -922,7 +966,8 @@ class TigerBrain:
     
     def act(self, state_vec):
         """Gets action from the mitigation agent."""
-        action = self.mitigation_agent.act(state_vec)
+        with self._agent_lock:
+            action = self.mitigation_agent.act(state_vec)
         return torch.Tensor([action]).long()
 
     def process_input(self, flows, node_feats: dict = None):
@@ -934,23 +979,37 @@ class TigerBrain:
 
                 with self._lock:
                     self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
+                    batch_processing_allowed = self.batch_processing_allowed
 
-                    if self.batch_processing_allowed:
+                if batch_processing_allowed:
+                    if self.parallel_training:
+                        if not hasattr(self, '_background_threads_started'):
+                            self.start_background_threads()
+                            self._background_threads_started = True
+
+                        if self.wb_tracker.step_counter % self.inference_update_freq == 0:
+                            self.update_inference_clones()
+                        if self.agency:
+                            with self.profile("online_inference_total"):
+                                self.online_inference(batch)
+                    else:
                         if self.agency:
                             with self.profile("online_inference_total"):
                                 self.online_inference(batch)
                 
-                        # we check again if batch_processing allowed because 
-                        # knowledge can change during online inference.
-                        if self.batch_processing_allowed:
+                    # we check again if batch_processing allowed because
+                    # knowledge can change during online inference.
+                    if self.batch_processing_allowed:
+                        if not self.parallel_training:
                             with self.profile("train_inf_module_single_batch"):
                                 self.train_inf_module_single_batch()
 
-                    if not self.agency:
-                        self.wb_tracker.step_counter += 1
+                if not self.agency:
+                    self.wb_tracker.step_counter += 1
         
         if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
-            self.mitigation_agent.update_target_model()
+            with self._agent_lock:
+                self.mitigation_agent.update_target_model()
 
     def _sample_from_frozen_buffers(self, frozen_buffers, frozen_int_to_label, frozen_knowledge, samples_per_class):
         """Helper for async evaluation thread to sample from buffers safely."""
@@ -1052,7 +1111,8 @@ class TigerBrain:
             onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
             onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
             batch_os_cm = efficient_os_cm(preds=zda_labels[accuracy_mask].long().squeeze(-1), targets_onehot=onehot_zda_labels[accuracy_mask].long())
-            self.eval_os_cm += batch_os_cm
+            with self._lock:
+                self.eval_os_cm += batch_os_cm
         else:
             os_loss = self.os_criterion(input=zda_predictions[accuracy_mask], target=zda_labels[accuracy_mask])
             onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
@@ -1060,10 +1120,11 @@ class TigerBrain:
 
             batch_os_cm = efficient_os_cm(preds=(zda_predictions[accuracy_mask].detach() > 0.5).long(), targets_onehot=onehot_zda_labels[accuracy_mask].long())
 
-            cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
-            cummulative_os_cm += batch_os_cm
-            zda_balance = zda_labels[accuracy_mask].to(torch.float32).mean().item()
-            cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
+            with self._lock:
+                cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
+                cummulative_os_cm += batch_os_cm
+                zda_balance = zda_labels[accuracy_mask].to(torch.float32).mean().item()
+                cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=0.5)
 
         metrics = {mode+'/'+OS_ACC: cummulative_os_acc.item(), mode+'/'+OS_LOSS: os_loss.item(), mode+'/'+ANOMALY_BALANCE: zda_balance}
         return os_loss, cummulative_os_acc, metrics
@@ -1099,14 +1160,16 @@ class TigerBrain:
 
     def train_inf_module_single_batch(self):
         """Performs a training step of the inference module sampling from buffers."""
-        training_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=TRAINING)
-        if training_batch is None: return
-        
-        training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
-        query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
+        with self._lock:
+            training_batch = self.sample_from_replay_buffers(samples_per_class=self.batch_size, mode=TRAINING)
+            if training_batch is None: return
+
+            training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
+            query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
+            known_count = self.current_known_classes_count
 
         with self.profile("EL_forward_pass"):
-            logits, hiddens, pred_kernel = self.infer(self.classifier, training_batch, self.current_known_classes_count, query_mask=query_mask)
+            logits, hiddens, pred_kernel = self.infer(self.classifier, training_batch, known_count, query_mask=query_mask)
         
         one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
         known_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
@@ -1125,11 +1188,14 @@ class TigerBrain:
         classif_loss, cs_acc, cs_metrics = self.evaluate_closed_set(training_batch.class_labels[query_mask], logits, TRAINING)
         loss += classif_loss
 
-        self.training_cs_cm += efficient_cm(preds=logits.detach(), targets_onehot=one_hot_labels[query_mask])
+        with self._model_lock:
+            cm = efficient_cm(preds=logits.detach(), targets_onehot=one_hot_labels[query_mask])
+            with self._lock:
+                self.training_cs_cm += cm
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
         
 
@@ -1168,10 +1234,11 @@ class TigerBrain:
         
         if new_label is not None:
             if self.encoder.update_label(new_label=new_label, logger=self.logger_instance):
-                self.current_known_classes_count += 1
-                self.add_replay_buffer(new_label)
-                self.reset_train_cms()
-                self.reset_test_cms()
+                with self._lock:
+                    self.current_known_classes_count += 1
+                    self.add_replay_buffer(new_label)
+                    self.reset_train_cms()
+                    self.reset_test_cms()
         return updates
 
     def start_async_evaluation(self):
@@ -1187,8 +1254,9 @@ class TigerBrain:
             frozen_int_to_label = dict(self.encoder._int_to_label)
             frozen_knowledge = {k: set(v) for k, v in self.env.current_knowledge.items()}
 
-        classifier_clone = copy.deepcopy(self.classifier).eval()
-        decoder_clone = copy.deepcopy(self.confidence_decoder).eval() if self.multi_class else None
+        with self._model_lock:
+            classifier_clone = copy.deepcopy(self.classifier).eval()
+            decoder_clone = copy.deepcopy(self.confidence_decoder).eval() if self.multi_class else None
         
         m_ad, m_cs, m_kr = 0.0, 0.0, 0.0
         l_cs_cm = torch.zeros([known_count, known_count], device=self.device)
@@ -1255,16 +1323,17 @@ class TigerBrain:
 
     def check_progress_and_save(self, curr_cs, curr_ad, curr_kr):
         """Checks if current performance is better than previous best and saves models."""
-        if curr_cs > self.best_cs_accuracy:
-            self.best_cs_accuracy = curr_cs
-            self.save_model(self.classifier, self.classifier_path + 'single.pt', "flow classifier")
-        if curr_ad > self.best_AD_accuracy:
-            self.best_AD_accuracy = curr_ad
-            self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'single.pt', "confidence decoder")
-        if curr_kr > self.best_KR_accuracy:
-            self.best_KR_accuracy = curr_kr
-            self.save_model(self.classifier, self.classifier_path + 'coupled.pt', "flow classifier (coupled)")
-            if self.multi_class: self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'coupled.pt', "confidence decoder (coupled)")
+        with self._model_lock:
+            if curr_cs > self.best_cs_accuracy:
+                self.best_cs_accuracy = curr_cs
+                self.save_model(self.classifier, self.classifier_path + 'single.pt', "flow classifier")
+            if curr_ad > self.best_AD_accuracy:
+                self.best_AD_accuracy = curr_ad
+                self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'single.pt', "confidence decoder")
+            if curr_kr > self.best_KR_accuracy:
+                self.best_KR_accuracy = curr_kr
+                self.save_model(self.classifier, self.classifier_path + 'coupled.pt', "flow classifier (coupled)")
+                if self.multi_class: self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'coupled.pt', "confidence decoder (coupled)")
 
     def save_model(self, model, path, name):
         """Saves a model's state dictionary to a file."""
@@ -1286,8 +1355,11 @@ class TigerBrain:
     def get_labels(self, flows):
         """Encodes string labels from flows into integers."""
         labels = [f.element_class for f in flows]
-        for cl in self.encoder.fit(labels): self.add_class_to_knowledge_base(cl)
-        return self.encoder.transform(labels).to(torch.long)
+        with self._epistemic_lock:
+            new_classes = self.encoder.fit(labels)
+            for cl in new_classes:
+                self.add_class_to_knowledge_base(cl)
+            return self.encoder.transform(labels).to(torch.long)
     
     def assembly_input_tensor(self, flows, node_feats):
         """Assemblies a batch from current flow observations."""
@@ -1295,3 +1367,84 @@ class TigerBrain:
         p_batch = torch.stack([f.get_packet_features() for f in flows]) if self.use_packet_feats else None
         n_batch = torch.stack([get_metrics_tensor(node_feats, f.dest_ip, self.kwargs['health']) for f in flows]) if self.use_node_feats else None
         return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch, class_labels=self.get_labels(flows))
+
+    def update_inference_clones(self):
+        """Updates the inference module clones with weights from training modules."""
+        with self._model_lock:
+            self.classifier_inf.load_state_dict(self.classifier.state_dict())
+            self.confidence_decoder_inf.load_state_dict(self.confidence_decoder.state_dict())
+        self.classifier_inf.eval()
+        self.confidence_decoder_inf.eval()
+
+    def start_background_threads(self):
+        """Starts background threads for training and experience replay."""
+        if not self.parallel_training:
+            return
+
+        self._background_training_thread = threading.Thread(target=self._background_training_loop, daemon=True)
+        self._background_replay_thread = threading.Thread(target=self._background_replay_loop, daemon=True)
+
+        self._background_training_thread.start()
+        self._background_replay_thread.start()
+
+    def _background_training_loop(self):
+        """Continuously runs the inference module training in the background."""
+        self.logger_instance.info("Background training thread started.")
+        last_processed_batch = -1
+        iterations_on_current_batch = 0
+
+        while not self._stop_background_threads.is_set():
+            current_batch_count = self.received_batches_count
+
+            if self.batch_processing_allowed:
+                if current_batch_count > last_processed_batch:
+                    last_processed_batch = current_batch_count
+                    iterations_on_current_batch = 0
+
+                if self.training_iterations_per_batch < 0 or iterations_on_current_batch < self.training_iterations_per_batch:
+                    self.train_inf_module_single_batch()
+                    iterations_on_current_batch += 1
+                else:
+                    # We reached the limit for the current batch, wait for next one
+                    time.sleep(self.training_sleep if self.training_sleep > 0 else 0.01)
+                    continue
+
+            if self.training_sleep > 0:
+                time.sleep(self.training_sleep)
+            elif not self.batch_processing_allowed:
+                time.sleep(0.01) # Avoid busy wait if buffers empty
+
+    def _background_replay_loop(self):
+        """Continuously runs the mitigation agent experience replay in the background."""
+        self.logger_instance.info("Background replay thread started.")
+        last_processed_batch = -1
+        iterations_on_current_batch = 0
+
+        while not self._stop_background_threads.is_set():
+            current_batch_count = self.received_batches_count
+            has_enough_samples = False
+            with self._agent_lock:
+                # ValueLearningAgent uses self.memory (PrioritizedReplayBuffer or list)
+                if self.mitigation_agent.use_per:
+                    has_enough_samples = len(self.mitigation_agent.memory) >= self.mitigation_agent.replay_batch_size
+                else:
+                    has_enough_samples = self.mitigation_agent.memory_size_actual >= self.mitigation_agent.replay_batch_size
+
+            if has_enough_samples:
+                if current_batch_count > last_processed_batch:
+                    last_processed_batch = current_batch_count
+                    iterations_on_current_batch = 0
+
+                if self.replay_iterations_per_batch < 0 or iterations_on_current_batch < self.replay_iterations_per_batch:
+                    with self._agent_lock:
+                        self.mitigation_agent.replay(self.wb_tracker.step_counter)
+                    iterations_on_current_batch += 1
+                else:
+                    # We reached the limit for the current batch, wait for next one
+                    time.sleep(self.replay_sleep if self.replay_sleep > 0 else 0.01)
+                    continue
+
+            if self.replay_sleep > 0:
+                time.sleep(self.replay_sleep)
+            elif not has_enough_samples:
+                time.sleep(0.01) # Avoid busy wait if buffer empty
