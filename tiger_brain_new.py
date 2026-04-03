@@ -247,6 +247,8 @@ class TigerBrain:
         agent_mapping = {
             'DQN': ValueLearningAgent,
             'DDQN': ValueLearningAgent,
+            'DuelingDQN': ValueLearningAgent,
+            'DuelingDDQN': ValueLearningAgent,
             'DAI_P': DAIP_Agent,
             'DAI_A': DAIA_Agent,
             'DAI_SA': DAISA_Agent,
@@ -337,7 +339,7 @@ class TigerBrain:
         self.confidence_decoder = model_classes[CONFIDENCE_DECODER_CLASS_NAME](device=self.device)
         
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
-        self.cs_criterion = nn.CrossEntropyLoss().to(self.device)
+        self.cs_criterion = nn.SmoothL1Loss(reduction='mean').to(self.device) if self.kwargs['intrusion_detection'].get('use_huber_cs', False) else nn.CrossEntropyLoss().to(self.device)
         
         if KERNEL_REGRESSION_LOSS_CLASS_NAME not in model_classes:
             raise RuntimeError(f"A class named {KERNEL_REGRESSION_LOSS_CLASS_NAME} was not found in your models.py file")
@@ -480,19 +482,24 @@ class TigerBrain:
     def get_zda_labels(self, batch, mode):
         """
         Retrieves ZDA labels based on natural-language labels and current knowledge.
+        Optimized with caching for g1/g2 codes.
         """
         class_codes = batch.class_labels.squeeze(-1)
         if mode == TRAINING:
-            g1_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G1s'])
-            if self._g1_codes_tensor is None or self._g1_codes_tensor.shape[0] != len(g1_codes):
-                 self._g1_codes_tensor = torch.tensor(g1_codes, device=class_codes.device, dtype=class_codes.dtype)
+            g1_labels = tuple(sorted(self.env.current_knowledge['G1s']))
+            if not hasattr(self, '_g1_cache') or self._g1_cache != g1_labels:
+                g1_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G1s'])
+                self._g1_codes_tensor = torch.tensor(g1_codes, device=class_codes.device, dtype=class_codes.dtype)
+                self._g1_cache = g1_labels
 
             zda_labels = torch.isin(class_codes, self._g1_codes_tensor).unsqueeze(-1).to(torch.float32)
             test_zda_labels = torch.zeros_like(zda_labels)
         elif mode == INFERENCE:
-            g2_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G2s'])
-            if self._g2_codes_tensor is None or self._g2_codes_tensor.shape[0] != len(g2_codes):
-                 self._g2_codes_tensor = torch.tensor(g2_codes, device=class_codes.device, dtype=class_codes.dtype)
+            g2_labels = tuple(sorted(self.env.current_knowledge['G2s']))
+            if not hasattr(self, '_g2_cache') or self._g2_cache != g2_labels:
+                g2_codes = self.encoder.get_codes_for_labels(self.env.current_knowledge['G2s'])
+                self._g2_codes_tensor = torch.tensor(g2_codes, device=class_codes.device, dtype=class_codes.dtype)
+                self._g2_cache = g2_labels
 
             zda_labels = torch.isin(class_codes, self._g2_codes_tensor).unsqueeze(-1).to(torch.float32)
             test_zda_labels = zda_labels
@@ -595,9 +602,18 @@ class TigerBrain:
             targets = class_labels.squeeze(1)
 
             if accuracy_mask is not None:
-                cs_loss = self.cs_criterion(input=class_predictions[accuracy_mask], target=targets[accuracy_mask])
+                target_in = targets[accuracy_mask]
+                pred_in = class_predictions[accuracy_mask]
             else:
-                cs_loss = self.cs_criterion(input=class_predictions, target=targets)
+                target_in = targets
+                pred_in = class_predictions
+
+            if isinstance(self.cs_criterion, nn.SmoothL1Loss):
+                # Huber loss expects one-hot targets for classification if used this way
+                oh_targets = torch.zeros_like(pred_in).scatter_(1, target_in.unsqueeze(1), 1)
+                cs_loss = self.cs_criterion(pred_in, oh_targets).mean()
+            else:
+                cs_loss = self.cs_criterion(input=pred_in, target=target_in)
 
             acc = self.get_accuracy(logits_preds=class_predictions, decimal_labels=class_labels, accuracy_mask=accuracy_mask)
 

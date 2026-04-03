@@ -1,8 +1,10 @@
-from smartController.neural_modules import DQN, PolicyNet, NEFENet, VariationalTransitionNet, NewTransitionNet
+from smartController.neural_modules import DQN, DuelingDQN, PolicyNet, NEFENet, VariationalTransitionNet, NewTransitionNet
+from smartController.replay_buffer import PrioritizedReplayBuffer
 import torch.optim as optim
 from collections import deque
 import torch
 import random
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as distributions
@@ -968,42 +970,100 @@ class ValueLearningAgent:
         self.state_size = int(kwargs['state_size'])
         self.action_size = int(kwargs['action_size'])
         self.memory_size = int(kwargs['agent_memory_size'])
-        self.memory = [None] * self.memory_size
-        self.memory_position = 0
-        self.memory_size_actual = 0
         self.gamma = float(kwargs['agent_discount_rate'])  # discount rate
         self.boltzmann_sampling = kwargs['boltzmann_sampling']
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
         self.epsilon_min = float(kwargs['greedy_min'])
         self.epsilon_decay = float(kwargs['greedy_decay'])
-        self.model = DQN(kwargs)
-        self.target_model = DQN(kwargs)
+
+        self.agent_type = kwargs['agent']
+        if self.agent_type == 'DuelingDQN' or self.agent_type == 'DuelingDDQN':
+            self.model = DuelingDQN(kwargs)
+            self.target_model = DuelingDQN(kwargs)
+        else:
+            self.model = DQN(kwargs)
+            self.target_model = DQN(kwargs)
+
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
         self.replay_batch_size = int(kwargs['replay_batch_size'])
-        self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
-        self.value_loss_fn = nn.MSELoss(reduction='mean')
+        self.algorithm = self.agent_type
+        self.value_loss_fn = nn.SmoothL1Loss(reduction='none') # Huber loss for PER weighting
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
         self.device = kwargs['device']
 
+        # N-step returns
+        self.n_step = int(kwargs['n_step_rewards'])
+        self.n_step_buffer = deque()
 
-    def update_target_model(self):
-        self.target_model.load_state_dict(self.model.state_dict())
+        # PER
+        self.use_per = kwargs['use_per']
+        if self.use_per:
+            self.memory = PrioritizedReplayBuffer(
+                capacity=self.memory_size,
+                alpha=float(kwargs['per_alpha']),
+                beta=float(kwargs['per_beta'])
+            )
+        else:
+            self.memory = [None] * self.memory_size
+            self.memory_position = 0
+            self.memory_size_actual = 0
+
+        # Soft updates
+        self.use_soft_update = kwargs['use_soft_update']
+        self.tau = float(kwargs['tau'])
+
+
+    def update_target_model(self, soft=False):
+        if soft and self.use_soft_update:
+            for target_param, local_param in zip(self.target_model.parameters(), self.model.parameters()):
+                target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
+        elif not soft:
+            self.target_model.load_state_dict(self.model.state_dict())
 
 
     def remember(self, state, action, reward, next_state, done, step):
-        state_to_memorise = state.detach().clone()
-        # print(id(state_to_memorise.untyped_storage()))
-        next_state_to_memorise = next_state.detach().clone()
-        # print(id(next_state_to_memorise.untyped_storage()))
-        self.memory[self.memory_position] = (
-            state_to_memorise, 
-            action, 
-            reward, 
-            next_state_to_memorise,
-            done)
-        self.memory_position = (self.memory_position + 1) % self.memory_size
-        self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
+        self.n_step_buffer.append((state, action, reward, next_state, done))
+
+        if done:
+            # Episode ended, flush the entire buffer
+            while len(self.n_step_buffer) > 0:
+                # Compute n-step return for the oldest element in buffer
+                state_0, action_0, _, _, _ = self.n_step_buffer[0]
+                _, _, _, next_state_T, done_T = self.n_step_buffer[-1]
+
+                n_step_reward = torch.Tensor([0.0], device=self.device)
+                for i, (_, _, r, _, d) in enumerate(self.n_step_buffer):
+                    n_step_reward += (self.gamma ** i) * r
+                    if d:
+                        break
+
+                sample = (state_0.detach().clone(), action_0, n_step_reward, next_state_T.detach().clone(), done_T)
+                self._push_to_memory(sample)
+                self.n_step_buffer.popleft()
+        elif len(self.n_step_buffer) >= self.n_step:
+            # Buffer is full, push the oldest transition and pop it
+            state_0, action_0, _, _, _ = self.n_step_buffer[0]
+            _, _, _, next_state_n, done_n = self.n_step_buffer[-1]
+
+            n_step_reward = torch.Tensor([0.0], device=self.device)
+            for i, (_, _, r, _, d) in enumerate(self.n_step_buffer):
+                n_step_reward += (self.gamma ** i) * r
+
+            sample = (state_0.detach().clone(), action_0, n_step_reward, next_state_n.detach().clone(), done_n)
+            self._push_to_memory(sample)
+            self.n_step_buffer.popleft()
+
+    def _push_to_memory(self, sample):
+        if self.use_per:
+            self.memory.push(sample)
+        else:
+            if not hasattr(self, 'memory_position'):
+                self.memory_position = 0
+                self.memory_size_actual = 0
+            self.memory[self.memory_position] = sample
+            self.memory_position = (self.memory_position + 1) % self.memory_size
+            self.memory_size_actual = min(self.memory_size_actual + 1, self.memory_size)
 
 
     def act(self, state):
@@ -1025,21 +1085,30 @@ class ValueLearningAgent:
 
     def replay(self, step):
 
-        if self.memory_size_actual < self.replay_batch_size:
-            return
+        if self.use_per:
+            if len(self.memory) < self.replay_batch_size:
+                return
+            states, actions, rewards, next_states, dones, idxs, is_weights = self.memory.sample(self.replay_batch_size)
+            is_weights = is_weights.to(self.device)
+        else:
+            if self.memory_size_actual < self.replay_batch_size:
+                return
+            indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
+            minibatch = [self.memory[i] for i in indices]
+            states, actions, rewards, next_states, dones = zip(*minibatch)
+            states = torch.stack(states)
+            actions = torch.tensor(actions)
+            rewards = torch.tensor(rewards, dtype=torch.float32)
+            next_states = torch.stack(next_states)
+            dones = torch.tensor(dones, dtype=torch.bool)
+            is_weights = torch.ones(self.replay_batch_size).to(self.device)
 
-        indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
-        minibatch = [self.memory[i] for i in indices]
-
-        # Unpack and stack transitions
-        states, actions, rewards, next_states, dones = zip(*minibatch)
-        
-        # Convert to tensors and move to device
-        states      = torch.stack(states).to(self.device)              # shape: [B, state_dim]
-        actions     = torch.tensor(actions, dtype=torch.long, device=self.device)  # shape: [B]
-        rewards     = torch.tensor(rewards, dtype=torch.float32, device=self.device)  # shape: [B]
-        next_states = torch.stack(next_states).to(self.device)         # shape: [B, state_dim]
-        dones       = torch.tensor(dones, dtype=torch.bool, device=self.device)     # shape: [B]
+        # Move to device
+        states      = states.to(self.device)              # shape: [B, state_dim]
+        actions     = actions.to(self.device).long()      # shape: [B]
+        rewards     = rewards.to(self.device)             # shape: [B]
+        next_states = next_states.to(self.device)         # shape: [B, state_dim]
+        dones       = dones.to(self.device)               # shape: [B]
 
         # Compute Q-values for current states using online model
         q_values = self.model(states)                                  # shape: [B, action_dim]
@@ -1047,10 +1116,11 @@ class ValueLearningAgent:
 
         # Compute target Q-values
         with torch.no_grad():
-            if self.algorithm == 'DQN':
+            gamma_n = self.gamma ** self.n_step
+            if self.algorithm == 'DQN' or self.algorithm == 'DuelingDQN':
                 # Use target network to get max Q-values of next states
                 next_q_values = self.target_model(next_states).max(1)[0]  # shape: [B]
-            elif self.algorithm == 'DDQN':
+            elif self.algorithm == 'DDQN' or self.algorithm == 'DuelingDDQN':
                 # Action selection from online model
                 next_actions = self.model(next_states).max(1)[1]          # shape: [B]
                 # Evaluation from target model
@@ -1061,16 +1131,26 @@ class ValueLearningAgent:
             # Zero-out next Q-values for terminal states
             next_q_values[dones] = 0.0
 
-            # Bellman target
-            target_q_values = rewards + self.gamma * next_q_values  # shape: [B]
+            # Bellman target (using n-step return)
+            target_q_values = rewards + gamma_n * next_q_values  # shape: [B]
 
-        # Compute loss
-        loss = self.value_loss_fn(q_values, target_q_values)
+        # Compute loss with importance sampling weights
+        td_errors = q_values - target_q_values
+        loss = (self.value_loss_fn(q_values, target_q_values) * is_weights).mean()
+
+        # Update priorities in PER
+        if self.use_per:
+            for i in range(self.replay_batch_size):
+                self.memory.update(idxs[i], td_errors[i].abs().item())
 
         # Optimize model
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # Soft target update
+        if self.use_soft_update:
+            self.update_target_model(soft=True)
 
         # Log
         if self.wbl: 
