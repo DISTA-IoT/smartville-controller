@@ -247,6 +247,7 @@ class TigerBrain:
         agent_mapping = {
             'DQN': ValueLearningAgent,
             'DDQN': ValueLearningAgent,
+            'DuelingDQN': ValueLearningAgent,
             'DAI_P': DAIP_Agent,
             'DAI_A': DAIA_Agent,
             'DAI_SA': DAISA_Agent,

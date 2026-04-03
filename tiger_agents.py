@@ -1,4 +1,4 @@
-from smartController.neural_modules import DQN, PolicyNet, NEFENet, VariationalTransitionNet, NewTransitionNet
+from smartController.neural_modules import DQN, DuelingDQN, PolicyNet, NEFENet, VariationalTransitionNet, NewTransitionNet
 from smartController.replay_buffer import PrioritizedReplayBuffer
 import torch.optim as optim
 from collections import deque
@@ -975,27 +975,34 @@ class ValueLearningAgent:
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
         self.epsilon_min = float(kwargs['greedy_min'])
         self.epsilon_decay = float(kwargs['greedy_decay'])
-        self.model = DQN(kwargs)
-        self.target_model = DQN(kwargs)
+
+        self.agent_type = kwargs['agent']
+        if self.agent_type == 'DuelingDQN':
+            self.model = DuelingDQN(kwargs)
+            self.target_model = DuelingDQN(kwargs)
+        else:
+            self.model = DQN(kwargs)
+            self.target_model = DQN(kwargs)
+
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
         self.replay_batch_size = int(kwargs['replay_batch_size'])
-        self.algorithm = (kwargs['agent'] if 'agent' in kwargs else 'DQN') 
+        self.algorithm = self.agent_type
         self.value_loss_fn = nn.SmoothL1Loss(reduction='none') # Huber loss for PER weighting
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
         self.device = kwargs['device']
 
         # N-step returns
-        self.n_step = int(kwargs.get('n_step', 3))
+        self.n_step = int(kwargs['n_step'])
         self.n_step_buffer = deque()
 
         # PER
-        self.use_per = kwargs.get('use_per', True)
+        self.use_per = kwargs['use_per']
         if self.use_per:
             self.memory = PrioritizedReplayBuffer(
                 capacity=self.memory_size,
-                alpha=float(kwargs.get('per_alpha', 0.6)),
-                beta=float(kwargs.get('per_beta', 0.4))
+                alpha=float(kwargs['per_alpha']),
+                beta=float(kwargs['per_beta'])
             )
         else:
             self.memory = [None] * self.memory_size
@@ -1003,14 +1010,15 @@ class ValueLearningAgent:
             self.memory_size_actual = 0
 
         # Soft updates
-        self.tau = float(kwargs.get('tau', 0.005))
+        self.use_soft_update = kwargs['use_soft_update']
+        self.tau = float(kwargs['tau'])
 
 
     def update_target_model(self, soft=False):
-        if soft:
+        if soft and self.use_soft_update:
             for target_param, local_param in zip(self.target_model.parameters(), self.model.parameters()):
                 target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
-        else:
+        elif not soft:
             self.target_model.load_state_dict(self.model.state_dict())
 
 
@@ -1141,7 +1149,8 @@ class ValueLearningAgent:
         self.optimizer.step()
 
         # Soft target update
-        self.update_target_model(soft=True)
+        if self.use_soft_update:
+            self.update_target_model(soft=True)
 
         # Log
         if self.wbl: 
