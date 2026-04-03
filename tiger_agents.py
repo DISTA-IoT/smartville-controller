@@ -962,6 +962,7 @@ class ValueLearningAgent:
     
     def __init__(self, args):
 
+        self.device = args.device
         kwargs = args.intrusion_detection.to_dict()
         kwargs.update(args.neural_modules.to_dict())
         kwargs['use_packet_feats'] = args.use_packet_feats
@@ -990,7 +991,7 @@ class ValueLearningAgent:
         self.algorithm = self.agent_type
         self.value_loss_fn = nn.SmoothL1Loss(reduction='none') # Huber loss for PER weighting
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
-        self.device = kwargs['device']
+        
 
         # N-step returns
         self.n_step = int(kwargs['n_step_rewards'])
