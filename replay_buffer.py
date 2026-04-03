@@ -17,7 +17,128 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 import torch
 import random
+import numpy as np
 from collections import deque
+
+
+class SumTree:
+    """
+    A binary tree data structure where the parent node is the sum of its children.
+    Iterative implementation for better performance on CPU.
+    """
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.tree = np.zeros(2 * capacity - 1)
+        self.data = [None] * capacity
+        self.n_entries = 0
+        self.write = 0
+
+    def _propagate(self, idx, change):
+        parent = (idx - 1) // 2
+        while True:
+            self.tree[parent] += change
+            if parent == 0:
+                break
+            parent = (parent - 1) // 2
+
+    def _retrieve(self, idx, s):
+        while True:
+            left = 2 * idx + 1
+            right = left + 1
+
+            if left >= len(self.tree):
+                return idx
+
+            if s <= self.tree[left]:
+                idx = left
+            else:
+                s -= self.tree[left]
+                idx = right
+
+    def total(self):
+        return self.tree[0]
+
+    def add(self, p, data):
+        idx = self.write + self.capacity - 1
+        self.data[self.write] = data
+        self.update(idx, p)
+
+        self.write += 1
+        if self.write >= self.capacity:
+            self.write = 0
+
+        if self.n_entries < self.capacity:
+            self.n_entries += 1
+
+    def update(self, idx, p):
+        change = p - self.tree[idx]
+        self.tree[idx] = p
+        self._propagate(idx, change)
+
+    def get(self, s):
+        idx = self._retrieve(0, s)
+        data_idx = idx - self.capacity + 1
+        return idx, self.tree[idx], self.data[data_idx]
+
+
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity, alpha=0.6, beta=0.4, beta_increment=0.001, seed=42):
+        self.tree = SumTree(capacity)
+        self.capacity = capacity
+        self.alpha = alpha
+        self.beta = beta
+        self.beta_increment = beta_increment
+        self.epsilon = 0.01  # small amount to avoid zero priority
+        self.max_priority = 1.0
+        random.seed(seed)
+        np.random.seed(seed)
+
+    def _get_priority(self, error):
+        return (np.abs(error) + self.epsilon) ** self.alpha
+
+    def push(self, sample):
+        self.tree.add(self.max_priority, sample)
+
+    def sample(self, n):
+        batch = []
+        idxs = []
+        priorities = []
+
+        self.beta = np.min([1., self.beta + self.beta_increment])
+
+        # Optimized vectorized segment sampling
+        total_p = self.tree.total()
+        segment = total_p / n
+        s_vals = np.random.uniform(segment * np.arange(n), segment * np.arange(1, n + 1))
+
+        for s in s_vals:
+            (idx, p, data) = self.tree.get(s)
+            priorities.append(p)
+            batch.append(data)
+            idxs.append(idx)
+
+        sampling_probabilities = np.array(priorities) / (total_p + 1e-10)
+        is_weights = np.power(self.tree.n_entries * sampling_probabilities, -self.beta)
+        is_weights /= (is_weights.max() + 1e-10)
+
+        # Unpack batch
+        states, actions, rewards, next_states, dones = zip(*batch)
+
+        return (torch.stack(states),
+                torch.tensor(actions),
+                torch.tensor(rewards, dtype=torch.float32),
+                torch.stack(next_states),
+                torch.tensor(dones, dtype=torch.bool),
+                idxs,
+                torch.tensor(is_weights, dtype=torch.float32))
+
+    def update(self, idx, error):
+        p = self._get_priority(error)
+        self.tree.update(idx, p)
+        self.max_priority = max(self.max_priority, p)
+
+    def __len__(self):
+        return self.tree.n_entries
 
 
 class Batch():
@@ -45,54 +166,46 @@ class Batch():
 class ReplayBuffer():
     
     def __init__(self, capacity, batch_size, seed):
+        self.capacity = capacity
         self.batch_size = batch_size
-        self.buffer = deque(maxlen=capacity)
+        self.buffer = [None] * capacity
+        self.position = 0
+        self.size = 0
         random.seed(seed)
 
 
     def push(self, flow_state, packet_state, node_state, label, zda_label, test_zda_label):
-        self.buffer.append((flow_state, packet_state, node_state, label, zda_label, test_zda_label))
+        self.buffer[self.position] = (flow_state, packet_state, node_state, label, zda_label, test_zda_label)
+        self.position = (self.position + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
 
     def sample(self, num_of_samples):
+        if self.size < num_of_samples:
+            raise RuntimeError(f"Not enough samples in buffer: {self.size} < {num_of_samples}")
+
+        indices = random.sample(range(self.size), num_of_samples)
         
-        batch = random.sample(self.buffer, num_of_samples)
+        f_batch, p_batch, n_batch, l_batch, zl_batch, tzl_batch = [], [], [], [], [], []
 
-        flow_state_batch, packet_state_batch, node_state_batch, label_batch, zda_label_batch, test_zda_label_batch = zip(*batch)
+        for i in indices:
+            f, p, n, l, zl, tzl = self.buffer[i]
+            f_batch.append(f)
+            if p is not None: p_batch.append(p)
+            if n is not None: n_batch.append(n)
+            l_batch.append(l)
+            zl_batch.append(zl)
+            tzl_batch.append(tzl)
 
-        if packet_state_batch[0] is None:
-            if node_state_batch[0] is None:
-                return torch.vstack(flow_state_batch), \
-                    None, \
-                    None, \
-                        torch.vstack(label_batch), \
-                            torch.vstack(zda_label_batch), \
-                                torch.vstack(test_zda_label_batch)
-            else:
-                return torch.vstack(flow_state_batch), \
-                    None, \
-                    torch.vstack(node_state_batch), \
-                        torch.vstack(label_batch), \
-                            torch.vstack(zda_label_batch), \
-                                torch.vstack(test_zda_label_batch)             
-        else:
-            if node_state_batch[0] is None:
-                return torch.vstack(flow_state_batch), \
-                    torch.vstack(packet_state_batch), \
-                    None, \
-                        torch.vstack(label_batch), \
-                            torch.vstack(zda_label_batch), \
-                                torch.vstack(test_zda_label_batch)
-            else:
-                return torch.vstack(flow_state_batch), \
-                    torch.vstack(packet_state_batch), \
-                    torch.vstack(node_state_batch), \
-                        torch.vstack(label_batch), \
-                            torch.vstack(zda_label_batch), \
-                                torch.vstack(test_zda_label_batch)      
+        return torch.cat(f_batch, 0), \
+               (torch.cat(p_batch, 0) if p_batch else None), \
+               (torch.cat(n_batch, 0) if n_batch else None), \
+               torch.cat(l_batch, 0).unsqueeze(1), \
+               torch.cat(zl_batch, 0), \
+               torch.cat(tzl_batch, 0)
 
     def __len__(self):
-        return len(self.buffer)
+        return self.size
     
 
 
@@ -102,27 +215,39 @@ class RawReplayBuffer():
     instead, it will ask the zda labellings to the dynamic curriculum in the caller.
     """
     def __init__(self, capacity, seed):
-        self.buffer = deque(maxlen=capacity)
+        self.capacity = capacity
+        self.buffer = [None] * capacity
+        self.position = 0
+        self.size = 0
         random.seed(seed)
 
 
     def push(self, flow_state, packet_state, node_state, label):
-        self.buffer.append((flow_state, packet_state, node_state, label))
+        self.buffer[self.position] = (flow_state, packet_state, node_state, label)
+        self.position = (self.position + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
 
 
     def sample(self, num_of_samples):
-        try:
-            batch = random.sample(self.buffer, num_of_samples)
-        except:
-            raise RuntimeError("Error during sampling replay buffer. The buffer is probably empty.")
+        if self.size < num_of_samples:
+            raise RuntimeError(f"Error during sampling replay buffer. Not enough samples: {self.size} < {num_of_samples}")
 
-        flow_state_batch, packet_state_batch, node_state_batch, label_batch = zip(*batch)
+        indices = random.sample(range(self.size), num_of_samples)
+
+        f_batch, p_batch, n_batch, l_batch = [], [], [], []
+
+        for i in indices:
+            f, p, n, l = self.buffer[i]
+            f_batch.append(f)
+            if p is not None: p_batch.append(p)
+            if n is not None: n_batch.append(n)
+            l_batch.append(l)
         
-        return torch.vstack(flow_state_batch), \
-            (None if packet_state_batch[0] is None else torch.vstack(packet_state_batch)), \
-            (None if node_state_batch[0] is None else torch.vstack(node_state_batch)), \
-                torch.vstack(label_batch)
+        return torch.cat(f_batch, 0), \
+            (torch.cat(p_batch, 0) if p_batch else None), \
+            (torch.cat(n_batch, 0) if n_batch else None), \
+            torch.cat(l_batch, 0).unsqueeze(1)
 
 
     def __len__(self):
-        return len(self.buffer)
+        return self.size

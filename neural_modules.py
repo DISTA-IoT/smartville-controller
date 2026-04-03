@@ -94,6 +94,48 @@ class DQN(nn.Module):
         return self.fc3(x)
 
 
+class DuelingDQN(nn.Module):
+    def __init__(self, kwargs):
+        super(DuelingDQN, self).__init__()
+        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
+        self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
+        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
+
+        hidden_dim = 5 * (int(int(kwargs['hidden_size'])) // 5)
+
+        # Dueling streams
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, int(kwargs['action_size']))
+        )
+
+
+    def forward(self, x):
+        if len(x.shape)<2:
+            x = x.unsqueeze(0)
+        exteroceptive_part = x[:,:-6]
+        proprioceptive_part = x[:,-6:]
+        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
+        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
+        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
+        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
+        # concat the two parts
+        x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+
+        value = self.value_stream(x)
+        advantage = self.advantage_stream(x)
+
+        return value + (advantage - advantage.mean(dim=1, keepdim=True))
+
+
 class MLP(nn.Module):
     def __init__(self, input_size, output_size, dropout):
         super(MLP, self).__init__()
