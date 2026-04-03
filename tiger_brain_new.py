@@ -683,7 +683,7 @@ class TigerBrain:
         self.env.episode_rewards.append(classification_reward)
         self.env.episode_budgets.append(self.env.current_budget)
 
-        if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
+        if self.wbt:
             self.reporter.log_scalars({
                 AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
                 AGENT+'/'+'classification_reward': classification_reward,
@@ -789,24 +789,22 @@ class TigerBrain:
             rewards_per_accepted_clusters += reward_val if accepted_cluster else 0
             rewards_per_blocked_clusters += reward_val if not accepted_cluster else 0
 
-        if len(centroids[~missing]) > 0 and \
-            self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
-                
-                clustering_reward /= len(centroids[~missing])
-                epistemic_actions_taken /= len(centroids[~missing])
-                epistemic_costs /= len(centroids[~missing])
-                rewards_per_accepted_clusters /= len(centroids[~missing])
-                rewards_per_blocked_clusters /= len(centroids[~missing])
+        if len(centroids[~missing]) > 0 and self.wbt:    
+            clustering_reward /= len(centroids[~missing])
+            epistemic_actions_taken /= len(centroids[~missing])
+            epistemic_costs /= len(centroids[~missing])
+            rewards_per_accepted_clusters /= len(centroids[~missing])
+            rewards_per_blocked_clusters /= len(centroids[~missing])
 
-                self.reporter.log_scalars({
-                    AGENT+'/'+'generic_reward': clustering_reward,
-                    AGENT+'/'+'clustering_reward': clustering_reward,
-                    AGENT+'/'+'budget': self.env.current_budget,
-                    AGENT+'/'+'Epistemic Actions taken': epistemic_actions_taken,
-                    AGENT+'/'+'epistemic_costs': epistemic_costs,
-                    AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
-                    AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
-                }, step=self.wb_tracker.step_counter)
+            self.reporter.log_scalars({
+                AGENT+'/'+'generic_reward': clustering_reward,
+                AGENT+'/'+'clustering_reward': clustering_reward,
+                AGENT+'/'+'budget': self.env.current_budget,
+                AGENT+'/'+'Epistemic Actions taken': epistemic_actions_taken,
+                AGENT+'/'+'epistemic_costs': epistemic_costs,
+                AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
+                AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
+            }, step=self.wb_tracker.step_counter)
 
     def online_inference(self, online_batch):
         """
