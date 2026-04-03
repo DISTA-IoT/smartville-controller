@@ -364,6 +364,7 @@ class TigerBrain:
             raise RuntimeError(f"Required classifier {target_class} not found in models.py")
 
         try:
+            self.kwargs['neural_modules']['device'] = self.device
             self.classifier = model_classes[target_class](kwargs=self.kwargs['neural_modules'])
         except Exception as e:
             raise RuntimeError(f"Error initializing {target_class} classifier: {e}")
