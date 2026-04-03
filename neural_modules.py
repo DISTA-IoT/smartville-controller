@@ -77,7 +77,21 @@ class DQN(nn.Module):
         self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
         self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
-        self.fc3 = nn.Linear(5 * (int(int(kwargs['hidden_size'])) // 5), int(int(kwargs['action_size'])))
+
+        hidden_dim = 5 * (int(int(kwargs['hidden_size'])) // 5)
+
+        # Dueling streams
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, int(kwargs['action_size']))
+        )
 
 
     def forward(self, x):
@@ -91,7 +105,11 @@ class DQN(nn.Module):
         proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
         # concat the two parts
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
-        return self.fc3(x)
+
+        value = self.value_stream(x)
+        advantage = self.advantage_stream(x)
+
+        return value + (advantage - advantage.mean(dim=1, keepdim=True))
 
 
 class MLP(nn.Module):
