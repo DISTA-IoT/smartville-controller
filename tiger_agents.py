@@ -993,7 +993,7 @@ class ValueLearningAgent:
         self.device = kwargs['device']
 
         # N-step returns
-        self.n_step = int(kwargs['n_step'])
+        self.n_step = int(kwargs['n_step_rewards'])
         self.n_step_buffer = deque()
 
         # PER
@@ -1032,7 +1032,7 @@ class ValueLearningAgent:
                 state_0, action_0, _, _, _ = self.n_step_buffer[0]
                 _, _, _, next_state_T, done_T = self.n_step_buffer[-1]
 
-                n_step_reward = 0
+                n_step_reward = torch.Tensor([0.0], device=self.device)
                 for i, (_, _, r, _, d) in enumerate(self.n_step_buffer):
                     n_step_reward += (self.gamma ** i) * r
                     if d:
@@ -1046,7 +1046,7 @@ class ValueLearningAgent:
             state_0, action_0, _, _, _ = self.n_step_buffer[0]
             _, _, _, next_state_n, done_n = self.n_step_buffer[-1]
 
-            n_step_reward = 0
+            n_step_reward = torch.Tensor([0.0], device=self.device)
             for i, (_, _, r, _, d) in enumerate(self.n_step_buffer):
                 n_step_reward += (self.gamma ** i) * r
 
