@@ -42,7 +42,7 @@ from smartController.label_encoder import DynamicLabelEncoder
 from smartController.brain_utils import (
     efficient_cm, efficient_os_cm, get_balanced_accuracy,
     get_clusters, get_metrics_tensor,
-    TRAINING, INFERENCE, AGENT, OS_ACC, OS_LOSS, CS_ACC, CS_LOSS,
+    TRAINING, INFERENCE, EVALUATION, AGENT, OS_ACC, OS_LOSS, CS_ACC, CS_LOSS,
     KR_ARI, KR_NMI, KR_LOSS, ANOMALY_BALANCE,
     CONFIDENCE_DECODER_CLASS_NAME, KERNEL_REGRESSION_LOSS_CLASS_NAME,
     ONE_STREAM_MULTICLASS_FLOW_CLASSIFIER_CLASS_NAME,
@@ -339,7 +339,7 @@ class TigerBrain:
         self.confidence_decoder = model_classes[CONFIDENCE_DECODER_CLASS_NAME](device=self.device)
         
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
-        self.cs_criterion = nn.SmoothL1Loss(reduction='mean').to(self.device) if self.kwargs['intrusion_detection'].get('use_huber_cs', False) else nn.CrossEntropyLoss().to(self.device)
+        self.cs_criterion = nn.SmoothL1Loss(reduction='mean').to(self.device) if self.kwargs['intrusion_detection'].get('use_huber_cs') else nn.CrossEntropyLoss().to(self.device)
         
         if KERNEL_REGRESSION_LOSS_CLASS_NAME not in model_classes:
             raise RuntimeError(f"A class named {KERNEL_REGRESSION_LOSS_CLASS_NAME} was not found in your models.py file")
@@ -856,19 +856,23 @@ class TigerBrain:
 
         kr_metrics = {}
         if num_known > 0:
-            with self.profile("onl_inf_act_known"):
+            if self.agency:
                 self.act_on_known_traffic(num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards)
             
             if num_anom > 0:
                 with self.profile("onl_inf_CAD"):
                     clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
-                with self.profile("onl_inf_act_unknown"):
+                if self.agency:
                     self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
 
-        with self.profile("onl_inf_ER"):
-            self.mitigation_agent.replay(self.wb_tracker.step_counter)
+        if self.agency:
+            with self.profile("onl_inf_ER"):
+                self.mitigation_agent.replay(self.wb_tracker.step_counter)
 
-        self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
+        if self.agency:
+            self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
+        else:
+            self.logger_instance.info(f'Online {INFERENCE} CS ACC: {cs_acc} \n')
         
         if self.wbt and self.wb_tracker.step_counter % self.report_step_freq == 0:
             all_metrics = {
@@ -887,7 +891,7 @@ class TigerBrain:
         self.classifier.train()
         self.confidence_decoder.train()
 
-        if self.env.has_episode_ended(self.wb_tracker.step_counter): 
+        if self.agency and self.env.has_episode_ended(self.wb_tracker.step_counter): 
             if self.wbt:
                 self.reporter.log_scalars({
                     'episode_count': self.episode_count,
@@ -936,19 +940,23 @@ class TigerBrain:
                     self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
 
                     if self.batch_processing_allowed:
-                        if self.agency:
-                            with self.profile("online_inference_total"):
-                                self.online_inference(batch)
+                        with self.profile("online_inference_total"):
+                            self.online_inference(batch)
                 
-                        # we check again if batch_processing allowed because 
-                        # knowledge can change during online inference.
-                        if self.batch_processing_allowed:
-                            with self.profile("train_inf_module_single_batch"):
-                                self.train_inf_module_single_batch()
+                    # we check again if batch_processing allowed because 
+                    # knowledge can change during online inference.
+                    if self.batch_processing_allowed:
+                        with self.profile("train_inf_module_single_batch"):
+                            self.train_inf_module_single_batch()
 
                     if not self.agency:
+                        # If there's no agency, the step increments here, 
+                        # otherwise it increments with each action
                         self.wb_tracker.step_counter += 1
         
+        if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
+            self.mitigation_agent.update_target_model()
+
         if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
             self.mitigation_agent.update_target_model()
 
@@ -1105,8 +1113,8 @@ class TigerBrain:
         training_batch.zda_labels, training_batch.test_zda_labels = self.get_zda_labels(training_batch, mode=TRAINING)
         query_mask = self.get_canonical_query_mask(training_batch.class_labels.shape[0])
 
-        with self.profile("EL_forward_pass"):
-            logits, hiddens, pred_kernel = self.infer(self.classifier, training_batch, self.current_known_classes_count, query_mask=query_mask)
+        
+        logits, hiddens, pred_kernel = self.infer(self.classifier, training_batch, self.current_known_classes_count, query_mask=query_mask)
         
         one_hot_labels = self.get_oh_labels(training_batch, logits.shape[1])
         known_h_mask = self.get_known_classes_mask(training_batch, one_hot_labels)
@@ -1156,9 +1164,9 @@ class TigerBrain:
 
                 if self.save_models_flag:
                     self.check_progress_and_save(
-                        async_results[f'{INFERENCE}/Mean EVAL CS ACC'], 
-                        async_results[f'{INFERENCE}/Mean EVAL AD ACC'], 
-                        async_results[f'{INFERENCE}/Mean EVAL KR PREC'])
+                        async_results[f'{EVALUATION}/Mean EVAL CS ACC'], 
+                        async_results[f'{EVALUATION}/Mean EVAL AD ACC'], 
+                        async_results[f'{EVALUATION}/Mean EVAL KR PREC'])
 
     @epistemic_thread_safe 
     def perform_epistemic_action(self, current_action=0):      
@@ -1242,9 +1250,9 @@ class TigerBrain:
                 m_kr += kr_p / self.online_eval_rounds
                 l_logits, l_hiddens, l_labels, l_pred, l_q_mask, l_k_mask = logits, hiddens, eval_batch.class_labels, pred_cl, q_mask, k_mask
 
-        plots = self.reporter.report(l_logits[:, l_k_mask], l_hiddens, l_labels, l_pred, l_q_mask, INFERENCE, custom_cs_cm=l_cs_cm, custom_os_cm=l_os_cm)
+        plots = self.reporter.report(l_logits[:, l_k_mask], l_hiddens, l_labels, l_pred, l_q_mask, EVALUATION, custom_cs_cm=l_cs_cm, custom_os_cm=l_os_cm)
         self.eval_queue.put({
-            f'{INFERENCE}/Mean EVAL AD ACC': m_ad, f'{INFERENCE}/Mean EVAL CS ACC': m_cs, f'{INFERENCE}/Mean EVAL KR PREC': m_kr, **plots
+            f'{EVALUATION}/Mean EVAL AD ACC': m_ad, f'{EVALUATION}/Mean EVAL CS ACC': m_cs, f'{EVALUATION}/Mean EVAL KR PREC': m_kr, **plots
         })
 
     def get_profiling_stats_dict(self):

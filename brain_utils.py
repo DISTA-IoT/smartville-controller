@@ -41,6 +41,7 @@ AGENT = 'AGENT'
 # Constants for wandb monitoring:
 INFERENCE = 'Inference'
 TRAINING = 'Training'
+EVALUATION = 'Evaluation'
 CS_ACC = 'Acc'
 CS_LOSS = 'Loss'
 OS_ACC = 'AD Acc'
