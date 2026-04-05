@@ -1262,16 +1262,30 @@ class TigerBrain:
 
     def check_progress_and_save(self, curr_cs, curr_ad, curr_kr):
         """Checks if current performance is better than previous best and saves models."""
+        wandb_run_name = self.kwargs['wandb']['wb_run_name']
         if curr_cs > self.best_cs_accuracy:
             self.best_cs_accuracy = curr_cs
-            self.save_model(self.classifier, self.classifier_path + 'single.pt', "flow classifier")
+            self.save_model(
+                self.classifier,
+                self.classifier_path + 'single_'+wandb_run_name+'.pt',
+                "flow classifier")
         if curr_ad > self.best_AD_accuracy:
             self.best_AD_accuracy = curr_ad
-            self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'single.pt', "confidence decoder")
+            self.save_model(
+                self.confidence_decoder, 
+                self.confidence_decoder_path + 'single_'+wandb_run_name+'.pt',
+                "confidence decoder")
         if curr_kr > self.best_KR_accuracy:
             self.best_KR_accuracy = curr_kr
-            self.save_model(self.classifier, self.classifier_path + 'coupled.pt', "flow classifier (coupled)")
-            if self.multi_class: self.save_model(self.confidence_decoder, self.confidence_decoder_path + 'coupled.pt', "confidence decoder (coupled)")
+            self.save_model(
+                self.classifier,
+                self.classifier_path + 'coupled_'+wandb_run_name+'.pt',
+                "flow classifier (coupled)")
+            if self.multi_class: 
+                self.save_model(
+                    self.confidence_decoder,
+                    self.confidence_decoder_path + 'coupled'+wandb_run_name+'.pt', 
+                    "confidence decoder (coupled)")
 
     def save_model(self, model, path, name):
         """Saves a model's state dictionary to a file."""
