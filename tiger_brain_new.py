@@ -583,11 +583,26 @@ class TigerBrain:
         if number_of_predicted_known_samples == 0:
             self.cs_classif_confidence = torch.ones(1) * 10
         else:
-            non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
-            non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0 
-            mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
-            mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
-            self.cs_classif_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
+            strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
+
+            if strategy == 'entropy':
+                probs = torch.softmax(interest_logits_slice, dim=1)
+                self.cs_classif_confidence = (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
+            elif strategy == 'energy':
+                self.cs_classif_confidence = torch.logsumexp(interest_logits_slice, dim=1).mean().unsqueeze(-1)
+            elif strategy == 'margin':
+                probs = torch.softmax(interest_logits_slice, dim=1)
+                if probs.shape[1] > 1:
+                    top2 = torch.topk(probs, 2, dim=1).values
+                    self.cs_classif_confidence = (top2[:, 0] - top2[:, 1]).mean().unsqueeze(-1)
+                else:
+                    self.cs_classif_confidence = probs.mean().unsqueeze(-1)
+            else: # baseline
+                non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
+                non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0
+                mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
+                mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
+                self.cs_classif_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
             
         return known_correct_classification_mask, cs_acc
 
@@ -625,19 +640,34 @@ class TigerBrain:
         """
         Calculates confidence for anomaly detection.
         """
-        online_anomaly_logits = zda_predictions[-num_of_online_samples:]
-        online_non_anomaly_pred_logits = online_anomaly_logits[~predicted_online_zda_mask]
-        online_anomaly_pred_logits = online_anomaly_logits[predicted_online_zda_mask]
+        online_anomaly_probs = zda_predictions[-num_of_online_samples:]
 
-        conf_normalizer = 0
-        if online_non_anomaly_pred_logits.shape[0] > 0:
-            self.zda_confidence += (1 - online_non_anomaly_pred_logits).mean()
-            conf_normalizer += 1
-        if online_anomaly_pred_logits.shape[0] > 0:
-            self.zda_confidence += online_anomaly_pred_logits.mean()
-            conf_normalizer += 1
-        if conf_normalizer > 0:
-            self.zda_confidence /= conf_normalizer
+        strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
+
+        if strategy == 'entropy':
+            probs = torch.cat([1 - online_anomaly_probs, online_anomaly_probs], dim=1)
+            self.zda_confidence = (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
+        elif strategy == 'energy':
+            p = online_anomaly_probs.clamp(1e-10, 1-1e-10)
+            l = torch.log(p / (1 - p))
+            # Symmetric energy: log(exp(l) + exp(-l)) using logsumexp for stability
+            logits = torch.cat([-l, l], dim=1)
+            self.zda_confidence = torch.logsumexp(logits, dim=1).mean().unsqueeze(-1)
+        elif strategy == 'margin':
+            self.zda_confidence = torch.abs(2 * online_anomaly_probs - 1).mean().unsqueeze(-1)
+        else: # baseline
+            online_non_anomaly_pred_probs = online_anomaly_probs[~predicted_online_zda_mask]
+            online_anomaly_pred_probs = online_anomaly_probs[predicted_online_zda_mask]
+
+            conf_normalizer = 0
+            if online_non_anomaly_pred_probs.shape[0] > 0:
+                self.zda_confidence += (1 - online_non_anomaly_pred_probs).mean()
+                conf_normalizer += 1
+            if online_anomaly_pred_probs.shape[0] > 0:
+                self.zda_confidence += online_anomaly_pred_probs.mean()
+                conf_normalizer += 1
+            if conf_normalizer > 0:
+                self.zda_confidence /= conf_normalizer
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards):
         """
