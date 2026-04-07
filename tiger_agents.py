@@ -1,4 +1,7 @@
-from smartController.neural_modules import DQN, DuelingDQN, PolicyNet, NEFENet, VariationalTransitionNet, NewTransitionNet
+from smartController.neural_modules import (
+    DQN, DuelingDQN, PolicyNet, NEFENet,
+    VariationalTransitionNet, NewTransitionNet, ValueNet
+)
 from smartController.replay_buffer import PrioritizedReplayBuffer
 import torch.optim as optim
 from collections import deque
@@ -1163,3 +1166,176 @@ class ValueLearningAgent:
         # Epsilon decay
         if self.epsilon > self.epsilon_min:
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+
+class A2C_Agent:
+    def __init__(self, args):
+        self.device = args.device
+        kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        self.wbl = kwargs.get('wbl')
+        self.action_size = int(kwargs['action_size'])
+
+        self.actor = PolicyNet(kwargs).to(self.device)
+        self.critic = ValueNet(kwargs).to(self.device)
+
+        self.optimizer = optim.Adam([
+            {'params': self.actor.parameters(), 'lr': float(kwargs['learning_rate'])},
+            {'params': self.critic.parameters(), 'lr': float(kwargs['learning_rate'])}
+        ])
+
+        self.gamma = float(kwargs.get('agent_discount_rate', 0.99))
+        self.memory = []
+        self.batch_size = int(kwargs.get('replay_batch_size', 32))
+        self.entropy_coef = float(kwargs.get('entropy_reg_coefficient', 0.01))
+
+    def act(self, state):
+        with torch.no_grad():
+            probs = self.actor(state)
+            # Using torch.multinomial for better performance on CPU
+            action = torch.multinomial(probs, 1).item()
+        return action
+
+    def remember(self, state, action, reward, next_state, done, step):
+        self.memory.append((state.detach().clone(), action, reward, next_state.detach().clone(), done))
+
+    def update_target_model(self, soft=False):
+        pass
+
+
+    def replay(self, step):
+        if len(self.memory) < self.batch_size:
+            return
+
+        states, actions, rewards, next_states, dones = zip(*self.memory)
+        self.memory = [] # On-policy: clear after update
+
+        states = torch.stack(states).to(self.device)
+        actions = torch.tensor(actions, device=self.device).view(-1, 1)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).view(-1, 1)
+        next_states = torch.stack(next_states).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32, device=self.device).view(-1, 1)
+
+        # Critic Update
+        values = self.critic(states)
+        with torch.no_grad():
+            next_values = self.critic(next_states)
+            returns = rewards + self.gamma * next_values * (1 - dones)
+
+        advantages = returns - values
+        critic_loss = F.smooth_l1_loss(values, returns)
+
+        # Actor Update
+        probs = self.actor(states)
+        log_probs = torch.log(probs.gather(1, actions) + 1e-10)
+        entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=1).mean()
+
+        actor_loss = -(log_probs * advantages.detach()).mean() - self.entropy_coef * entropy
+
+        loss = actor_loss + 0.5 * critic_loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        if self.wbl:
+            self.wbl.log({
+                'active_inference/actor_loss': actor_loss.item(),
+                'active_inference/value_loss': critic_loss.item(),
+                'active_inference/actor_entropy': entropy.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item()
+            }, step=step)
+
+
+class PPO_Agent:
+    def __init__(self, args):
+        self.device = args.device
+        kwargs = args.intrusion_detection.to_dict()
+        kwargs.update(args.neural_modules.to_dict())
+        self.wbl = kwargs.get('wbl')
+        self.action_size = int(kwargs['action_size'])
+
+        self.actor = PolicyNet(kwargs).to(self.device)
+        self.critic = ValueNet(kwargs).to(self.device)
+        self.optimizer = optim.Adam([
+            {'params': self.actor.parameters(), 'lr': float(kwargs['learning_rate'])},
+            {'params': self.critic.parameters(), 'lr': float(kwargs['learning_rate'])}
+        ])
+
+        self.gamma = float(kwargs.get('agent_discount_rate', 0.99))
+        self.eps_clip = 0.2
+        self.epochs = 4
+        self.memory = []
+        self.batch_size = int(kwargs.get('replay_batch_size', 32))
+        self.entropy_coef = float(kwargs.get('entropy_reg_coefficient', 0.01))
+
+    def act(self, state):
+        with torch.no_grad():
+            probs = self.actor(state)
+            action = torch.multinomial(probs, 1).item()
+            self.last_log_prob = torch.log(probs[0, action] + 1e-10).item()
+        return action
+    
+    def update_target_model(self, soft=False):
+        pass
+
+    def remember(self, state, action, reward, next_state, done, step):
+        # Use the log_prob stored during the act() call to avoid redundant forward pass
+        log_prob = getattr(self, 'last_log_prob', None)
+        if log_prob is None:
+            with torch.no_grad():
+                probs = self.actor(state)
+                log_prob = torch.log(probs[0, action] + 1e-10).item()
+
+        self.memory.append((state.detach().clone(), action, log_prob, reward, next_state.detach().clone(), done))
+
+    def replay(self, step):
+        if len(self.memory) < self.batch_size:
+            return
+
+        states, actions, old_log_probs, rewards, next_states, dones = zip(*self.memory)
+        self.memory = []
+
+        states = torch.stack(states).to(self.device)
+        actions = torch.tensor(actions, device=self.device).view(-1, 1)
+        old_log_probs = torch.tensor(old_log_probs, device=self.device).view(-1, 1)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).view(-1, 1)
+        next_states = torch.stack(next_states).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32, device=self.device).view(-1, 1)
+
+        with torch.no_grad():
+            next_values = self.critic(next_states)
+            returns = rewards + self.gamma * next_values * (1 - dones)
+            values = self.critic(states)
+            advantages = returns - values
+            # Normalize advantages for stability
+            if advantages.size(0) > 1:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        for _ in range(self.epochs):
+            probs = self.actor(states)
+            curr_log_probs = torch.log(probs.gather(1, actions) + 1e-10)
+            entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=1).mean()
+
+            ratio = torch.exp(curr_log_probs - old_log_probs)
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
+
+            actor_loss = -torch.min(surr1, surr2).mean() - self.entropy_coef * entropy
+
+            curr_values = self.critic(states)
+            critic_loss = F.smooth_l1_loss(curr_values, returns)
+
+            loss = actor_loss + 0.5 * critic_loss
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+        if self.wbl:
+            self.wbl.log({
+                'active_inference/actor_loss': actor_loss.item(),
+                'active_inference/value_loss': critic_loss.item(),
+                'active_inference/actor_entropy': entropy.item(),
+                'active_inference/pragmatic_gain': rewards.mean().item()
+            }, step=step)

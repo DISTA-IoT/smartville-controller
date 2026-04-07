@@ -33,7 +33,7 @@ from smartController.wandb_tracker import WandBTracker
 from smartController.tiger_environment_new import NewTigerEnvironment
 from smartController.tiger_agents import (
     ValueLearningAgent, DAIP_Agent, DAIA_Agent,
-    DAIF_Agent, DAISA_Agent
+    DAIF_Agent, DAISA_Agent, PPO_Agent, A2C_Agent
 )
 from smartController.attr_dict import AttrDict
 
@@ -252,7 +252,9 @@ class TigerBrain:
             'DAI_P': DAIP_Agent,
             'DAI_A': DAIA_Agent,
             'DAI_SA': DAISA_Agent,
-            'DAI_F': DAIF_Agent
+            'DAI_F': DAIF_Agent,
+            'PPO': PPO_Agent,
+            'A2C': A2C_Agent
         }
         
         agent_type = args.intrusion_detection.agent
@@ -687,7 +689,7 @@ class TigerBrain:
         state_vec = self.assembly_state_vector(empty_state_vec, num_of_anomalies, num_known, self.env.current_budget)
 
         if self.intrusion_detection_kwargs['automatic_cs_acceptance']:
-            action_signal = torch.Tensor([0]).long()
+            action_signal = torch.tensor([0], device=self.device).long()
         else:
             action_signal = self.act(state_vec)
               
@@ -715,8 +717,8 @@ class TigerBrain:
         if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
             new_state = state_vec.detach().clone()
             new_state[-1] = self.env.current_budget 
-            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
-            self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.Tensor([classification_reward]), new_state, end_signal, self.wb_tracker.step_counter)
+            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], device=self.device, dtype=torch.long)
+            self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.tensor([classification_reward], device=self.device), new_state, end_signal, self.wb_tracker.step_counter)
 
         self.env.episode_rewards.append(classification_reward)
         self.env.episode_budgets.append(self.env.current_budget)
@@ -772,12 +774,22 @@ class TigerBrain:
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
 
+        greedy_cti = self.intrusion_detection_kwargs.get('greedy_cti')
+        cti_period = self.intrusion_detection_kwargs.get('cti_period')
+
         for idx, centroid in enumerate(centroids[~missing]):
             accepted_cluster = False
             epistemic_action = False
 
             state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
-            action = self.act(state_vec)
+
+            # Check for greedy or periodic CTI flags
+            is_periodic_step = (cti_period != -1 and self.wb_tracker.step_counter % int(cti_period) == 0)
+
+            if (greedy_cti or is_periodic_step) and self.env.epistemic_actions_available == 1:
+                action = torch.tensor([2], device=self.device).long()
+            else:
+                action = self.act(state_vec)
             current_reward = 0
 
             if action == 0:
@@ -813,7 +825,7 @@ class TigerBrain:
 
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
-            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], device=self.device, dtype=torch.long)
 
             self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
             self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
