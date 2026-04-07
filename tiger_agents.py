@@ -1199,6 +1199,10 @@ class A2C_Agent:
     def remember(self, state, action, reward, next_state, done, step):
         self.memory.append((state.detach().clone(), action, reward, next_state.detach().clone(), done))
 
+    def update_target_model(self, soft=False):
+        pass
+
+
     def replay(self, step):
         if len(self.memory) < self.batch_size:
             return
@@ -1271,6 +1275,9 @@ class PPO_Agent:
             action = torch.multinomial(probs, 1).item()
             self.last_log_prob = torch.log(probs[0, action] + 1e-10).item()
         return action
+    
+    def update_target_model(self, soft=False):
+        pass
 
     def remember(self, state, action, reward, next_state, done, step):
         # Use the log_prob stored during the act() call to avoid redundant forward pass
