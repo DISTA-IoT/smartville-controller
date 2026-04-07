@@ -392,18 +392,26 @@ class TigerBrain:
         if self.use_packet_feats: feats_str += "_packet"
         if self.use_node_feats: feats_str += "_node"
 
-        self.classifier_path = f"{self.pretrained_models_dir}multiclass_flow{feats_str}_classifier_pretrained_h{self.hidden_size}"
-        self.confidence_decoder_path = f"{self.pretrained_models_dir}flow{feats_str}_confidence_decoder_pretrained_h{self.hidden_size}"
+        if self.kwargs['neural_modules']['custom_inference_model_path']:
+            self.classifier_path = self.pretrained_models_dir +self.kwargs['neural_modules']['custom_classifier_path']
+            self.confidence_decoder_path = self.pretrained_models_dir + self.kwargs['neural_modules']['custom_confidence_decoder_path']
+        else:
+            self.classifier_path = f"{self.pretrained_models_dir}multiclass_flow{feats_str}_classifier_pretrained_h{self.hidden_size}.pt"
+            self.confidence_decoder_path = f"{self.pretrained_models_dir}flow{feats_str}_confidence_decoder_pretrained_h{self.hidden_size}.pt"
 
-        if self.load_pretrained_inference_module:
+        if self.load_pretrained_inference_module:               
             if os.path.exists(self.pretrained_models_dir):
-                if os.path.exists(self.classifier_path+'.pt'):
-                    self.classifier.load_state_dict(torch.load(self.classifier_path+'.pt', weights_only=True))
-                    self.logger_instance.info(f"Pre-trained weights loaded from {self.classifier_path}.pt")
+                if os.path.exists(self.classifier_path):
+                    self.classifier.load_state_dict(torch.load(self.classifier_path, weights_only=True))
+                    self.logger_instance.info(f"Pre-trained weights loaded from {self.classifier_path}")
+                else:
+                    self.logger_instance.error(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
                     
-                if self.multi_class and os.path.exists(self.confidence_decoder_path+'.pt'):
-                    self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path+'.pt', weights_only=True))
-                    self.logger_instance.info(f"Pre-trained weights loaded from {self.confidence_decoder_path}.pt")
+                if self.multi_class and os.path.exists(self.confidence_decoder_path):
+                    self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path, weights_only=True))
+                    self.logger_instance.info(f"Pre-trained weights loaded from {self.confidence_decoder_path}")
+                else:
+                    self.logger_instance.error(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
             else:
                 self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
 
@@ -1297,24 +1305,24 @@ class TigerBrain:
             self.best_cs_accuracy = curr_cs
             self.save_model(
                 self.classifier,
-                self.classifier_path + 'single_'+wandb_run_name+'.pt',
+                self.classifier_path[:-3] + 'single_'+wandb_run_name+'.pt',
                 "flow classifier")
         if curr_ad > self.best_AD_accuracy:
             self.best_AD_accuracy = curr_ad
             self.save_model(
                 self.confidence_decoder, 
-                self.confidence_decoder_path + 'single_'+wandb_run_name+'.pt',
+                self.confidence_decoder_path[:-3] + 'single_'+wandb_run_name+'.pt',
                 "confidence decoder")
         if curr_kr > self.best_KR_accuracy:
             self.best_KR_accuracy = curr_kr
             self.save_model(
                 self.classifier,
-                self.classifier_path + 'coupled_'+wandb_run_name+'.pt',
+                self.classifier_path[:-3] + 'coupled_'+wandb_run_name+'.pt',
                 "flow classifier (coupled)")
             if self.multi_class: 
                 self.save_model(
                     self.confidence_decoder,
-                    self.confidence_decoder_path + 'coupled'+wandb_run_name+'.pt', 
+                    self.confidence_decoder_path[:-3] + 'coupled'+wandb_run_name+'.pt', 
                     "confidence decoder (coupled)")
 
     def save_model(self, model, path, name):
