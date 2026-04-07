@@ -774,8 +774,8 @@ class TigerBrain:
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
 
-        greedy_cti = self.intrusion_detection_kwargs.get('greedy_cti', False)
-        cti_period = self.intrusion_detection_kwargs.get('cti_period', None)
+        greedy_cti = self.intrusion_detection_kwargs.get('greedy_cti')
+        cti_period = self.intrusion_detection_kwargs.get('cti_period')
 
         for idx, centroid in enumerate(centroids[~missing]):
             accepted_cluster = False
@@ -784,7 +784,7 @@ class TigerBrain:
             state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
 
             # Check for greedy or periodic CTI flags
-            is_periodic_step = (cti_period is not None and self.wb_tracker.step_counter % int(cti_period) == 0)
+            is_periodic_step = (cti_period != -1 and self.wb_tracker.step_counter % int(cti_period) == 0)
 
             if (greedy_cti or is_periodic_step) and self.env.epistemic_actions_available == 1:
                 action = torch.tensor([2], device=self.device).long()
