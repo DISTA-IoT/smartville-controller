@@ -27,7 +27,7 @@ class PolicyNet(nn.Module):
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
         self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
-        self.fc3 = nn.Linear(int(kwargs['hidden_size']), int(kwargs['action_size']))
+        self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), int(kwargs['action_size']))
 
     def forward(self, x):
         if len(x.shape)<2:
@@ -44,6 +44,29 @@ class PolicyNet(nn.Module):
         return x
 
 
+class ValueNet(nn.Module):
+    def __init__(self, kwargs):
+        super(ValueNet, self).__init__()
+        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
+        self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
+        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), 1)
+
+    def forward(self, x):
+        if len(x.shape)<2:
+            x = x.unsqueeze(0)
+        exteroceptive_part = x[:,:-6]
+        proprioceptive_part = x[:,-6:]
+        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
+        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
+        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
+        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
+        # concat the two parts
+        x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+        return self.fc3(x)
+
+
 class NEFENet(nn.Module):
     def __init__(self, kwargs):
         """
@@ -54,7 +77,7 @@ class NEFENet(nn.Module):
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
         self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
-        self.fc3 = nn.Linear(int(kwargs['hidden_size']), int(kwargs['action_size']))
+        self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), int(kwargs['action_size']))
 
     def forward(self, x):
         if len(x.shape)<2:
