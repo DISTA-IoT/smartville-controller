@@ -1,5 +1,4 @@
-import copy
-
+import random
 
 G2 = 'G2'
 NEW = 'NEW'
@@ -18,16 +17,18 @@ class NewTigerEnvironment:
         self.init_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in kwargs.knowledge.items()}
         self.logger = kwargs.logger
         self.max_episode_steps = int(kwargs.intrusion_detection.max_episode_steps)
-        self.cti_price_factor = float(kwargs.intrusion_detection.cti_price_factor)
-        self.cti_prices = self.get_cti_prices()
+        self.init_cti_price_factor = float(kwargs.intrusion_detection.cti_price_factor)
+        self.current_cti_price_factor = self.init_cti_price_factor
         self.useless_epistemic_penalty = int(kwargs.intrusion_detection.useless_epistemic_penalty)
+        self.seed = int(kwargs.intrusion_detection.seed)
 
     def reset_intelligence(self):
         
         self.current_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in self.init_knowledge.items()}
         self.current_knowledge['updated_labels'] = []
         self.update_cti_options()
-    
+        self.current_cti_price_factor = self.init_cti_price_factor
+        random.seed(self.seed)
         return {'current_knowledge': self.current_knowledge,
                 'updated_label': None,
                 'new_label': None,
@@ -38,7 +39,7 @@ class NewTigerEnvironment:
         try:
             return {
                 # the cti price is n times the cost or revenue of the corresponding flow
-                unknown: abs(self.flow_rewards_dict[unknown] * self.cti_price_factor)
+                unknown: abs(self.flow_rewards_dict[unknown] * self.init_cti_price_factor)
                 for unknown in self.init_knowledge['G2s']
             }
         except KeyError as e:
@@ -60,18 +61,12 @@ class NewTigerEnvironment:
             # do we still have so many unknowns?
             if idx < num_g2s:
                 label = g2s[idx]
-                self.current_cti_options[label] = self.cti_prices[label]
+                self.current_cti_options[label] = abs(self.flow_rewards_dict[label] * self.current_cti_price_factor)
                 self.epistemic_actions_available = 1
             else:
                 # if we do not have unknowns anymore, then lets put a placeholder in the state space (with high cost).
                 self.current_cti_options[f'placeholder_{idx}'] = 100 
                 self.epistemic_actions_available = 0
-
-    def get_intelligence_options(self):
-        """
-        returns n attack-specific technical CTI prices 
-        """
-        return list(self.current_cti_options.values())
 
 
     def has_episode_ended(self, current_steps):
@@ -81,6 +76,7 @@ class NewTigerEnvironment:
             return True
         return False
 
+
     def reset(self):
         self.logger.info('TIGER ENV: restarting episode!')
         self.episode_rewards = []
@@ -89,6 +85,9 @@ class NewTigerEnvironment:
         self.steps_done = 0
         self.restart_budget()
         self.reset_intelligence()
+
+    def price_decay(self):
+        self.current_cti_price_factor *= max(0.01, min(0.99, random.gauss(0.7,0.4)))
 
 
     def perform_epistemic_action(self, current_action=0):
@@ -115,7 +114,7 @@ class NewTigerEnvironment:
             self.current_knowledge['G2s'].remove(acquired_cti)
             self.current_knowledge['Knowns'].append(acquired_cti)
             self.current_knowledge['updated_labels'].append(acquired_cti)
-            price_payed = self.cti_prices[acquired_cti]
+            price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
             self.update_cti_options()
         else:
             acquired_cti = None

@@ -78,6 +78,7 @@ class WandBTracker():
             # Set the project where this run will be logged
             project=args.wandb.wb_project_name,
             name=args.wandb.wb_run_name,
+            group=args.wandb.wb_group_name,
             # Track hyperparameters and run metadata
             config=kwargs,
             mode=("online" if args.wandb.wb_tracking else "disabled"),
