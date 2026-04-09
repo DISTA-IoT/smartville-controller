@@ -683,7 +683,7 @@ class TigerBrain:
         """
         Assembly state and perform action for known traffic.
         """
-        self.env.price_decay()
+        if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
         classification_reward = 0
         empty_state_vec = -1 * torch.ones(1, hiddens.shape[1])
 
@@ -779,7 +779,7 @@ class TigerBrain:
         cti_period = self.intrusion_detection_kwargs.get('cti_period')
 
         for idx, centroid in enumerate(centroids[~missing]):
-            self.env.price_decay()
+            if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
             accepted_cluster = False
             epistemic_action = False
 
