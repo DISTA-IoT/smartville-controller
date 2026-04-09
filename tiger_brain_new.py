@@ -785,13 +785,27 @@ class TigerBrain:
 
             state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
 
-            # Check for greedy or periodic CTI flags
-            is_periodic_step = (cti_period != -1 and self.wb_tracker.step_counter % int(cti_period) == 0)
 
-            if (greedy_cti or is_periodic_step) and self.env.epistemic_actions_available == 1:
-                action = torch.tensor([2], device=self.device).long()
+            if cti_period != -1:
+                # this is a periodic CTI agent.
+                if self.wb_tracker.step_counter % int(cti_period) == 0:
+                    # time to tacke an epistemic action:
+                    action = torch.tensor([2], device=self.device).long()
+                else:
+                    action = self.act(state_vec)
+                    if action == 2: action = torch.tensor([1], device=self.device).long()
+                    
+            elif greedy_cti:
+                if self.env.epistemic_actions_available == 1:
+                    action = torch.tensor([2], device=self.device).long()
+                else:
+                    action = self.act(state_vec)
+                    if action == 2: action = torch.tensor([1], device=self.device).long()
+
             else:
                 action = self.act(state_vec)
+
+
             current_reward = 0
 
             if action == 0:
