@@ -804,6 +804,8 @@ class TigerBrain:
 
             else:
                 action = self.act(state_vec)
+                if self.intrusion_detection_kwargs['no_epistemic_actions'] and action == 2:
+                    action = torch.tensor([1], device=self.device).long()
 
 
             current_reward = 0
