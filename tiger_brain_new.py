@@ -926,11 +926,11 @@ class TigerBrain:
             if self.agency:
                 self.act_on_known_traffic(num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards)
             
-            if num_anom > 0:
-                with self.profile("onl_inf_CAD"):
-                    clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
-                if self.agency:
-                    self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
+        if num_anom > 0:
+            with self.profile("onl_inf_CAD"):
+                clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
+            if self.agency:
+                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
 
         if self.agency:
             with self.profile("onl_inf_ER"):
