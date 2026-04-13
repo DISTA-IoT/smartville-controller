@@ -718,7 +718,7 @@ class TigerBrain:
         if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
             new_state = state_vec.detach().clone()
             new_state[-1] = self.env.current_budget 
-            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], device=self.device, dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
             self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.tensor([classification_reward], device=self.device), new_state, end_signal, self.wb_tracker.step_counter)
 
         self.env.episode_rewards.append(classification_reward)
@@ -843,7 +843,7 @@ class TigerBrain:
 
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
-            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], device=self.device, dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
 
             self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
             self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
@@ -958,7 +958,7 @@ class TigerBrain:
         self.classifier.train()
         self.confidence_decoder.train()
 
-        if self.agency and self.env.has_episode_ended(self.wb_tracker.step_counter): 
+        if self.agency and self.env.has_episode_ended(): 
             if self.wbt:
                 self.reporter.log_scalars({
                     'episode_count': self.episode_count,

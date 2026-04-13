@@ -69,9 +69,9 @@ class NewTigerEnvironment:
                 self.epistemic_actions_available = 0
 
 
-    def has_episode_ended(self, current_steps):
+    def has_episode_ended(self):
         if self.current_budget < self.min_budget \
-                or current_steps % self.max_episode_steps == 0\
+                or self.steps_done % self.max_episode_steps == 0\
                 or self.current_budget > self.max_budget:
             return True
         return False
