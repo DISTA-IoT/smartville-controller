@@ -1150,6 +1150,7 @@ class ValueLearningAgent:
         # Optimize model
         self.optimizer.zero_grad()
         loss.backward()
+        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)  # clip gradients
         self.optimizer.step()
 
         # Soft target update
