@@ -825,6 +825,10 @@ class TigerBrain:
                 cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
                 f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
                 current_reward -= f * cost
+                uncertainty_penalty = float(
+                    self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0)
+                )
+                current_reward -= uncertainty_penalty
             
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
