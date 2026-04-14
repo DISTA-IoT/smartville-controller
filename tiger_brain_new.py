@@ -1024,8 +1024,6 @@ class TigerBrain:
         if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
             self.mitigation_agent.update_target_model()
 
-        if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
-            self.mitigation_agent.update_target_model()
 
     def _sample_from_frozen_buffers(self, frozen_buffers, frozen_int_to_label, frozen_knowledge, samples_per_class):
         """Helper for async evaluation thread to sample from buffers safely."""
