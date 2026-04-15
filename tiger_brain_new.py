@@ -718,7 +718,7 @@ class TigerBrain:
         if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
             new_state = state_vec.detach().clone()
             new_state[-1] = self.env.current_budget 
-            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], device=self.device, dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
             self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.tensor([classification_reward], device=self.device), new_state, end_signal, self.wb_tracker.step_counter)
 
         self.env.episode_rewards.append(classification_reward)
@@ -804,6 +804,8 @@ class TigerBrain:
 
             else:
                 action = self.act(state_vec)
+                if self.intrusion_detection_kwargs['no_epistemic_actions'] and action == 2:
+                    action = torch.tensor([1], device=self.device).long()
 
 
             current_reward = 0
@@ -823,6 +825,10 @@ class TigerBrain:
                 cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
                 f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
                 current_reward -= f * cost
+                uncertainty_penalty = float(
+                    self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0)
+                )
+                current_reward -= uncertainty_penalty
             
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
@@ -841,7 +847,7 @@ class TigerBrain:
 
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
-            end_signal = torch.tensor([self.env.has_episode_ended(self.wb_tracker.step_counter)], device=self.device, dtype=torch.long)
+            end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
 
             self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
             self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
@@ -924,11 +930,11 @@ class TigerBrain:
             if self.agency:
                 self.act_on_known_traffic(num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards)
             
-            if num_anom > 0:
-                with self.profile("onl_inf_CAD"):
-                    clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
-                if self.agency:
-                    self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
+        if num_anom > 0:
+            with self.profile("onl_inf_CAD"):
+                clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
+            if self.agency:
+                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
 
         if self.agency:
             with self.profile("onl_inf_ER"):
@@ -956,7 +962,7 @@ class TigerBrain:
         self.classifier.train()
         self.confidence_decoder.train()
 
-        if self.agency and self.env.has_episode_ended(self.wb_tracker.step_counter): 
+        if self.agency and self.env.has_episode_ended(): 
             if self.wbt:
                 self.reporter.log_scalars({
                     'episode_count': self.episode_count,
@@ -1022,8 +1028,6 @@ class TigerBrain:
         if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
             self.mitigation_agent.update_target_model()
 
-        if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
-            self.mitigation_agent.update_target_model()
 
     def _sample_from_frozen_buffers(self, frozen_buffers, frozen_int_to_label, frozen_knowledge, samples_per_class):
         """Helper for async evaluation thread to sample from buffers safely."""
