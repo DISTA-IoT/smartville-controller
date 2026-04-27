@@ -126,6 +126,11 @@ class SmartSwitch(EventMixin):
       self._expire_timer.cancel()
       self._expire_timer = None
 
+    # ADD THIS — same pattern for the sampling timer:
+    if hasattr(self, 'sampling_rules_timer') and self.sampling_rules_timer is not None:
+        self.sampling_rules_timer.cancel()
+        self.sampling_rules_timer = None
+
     # Weights and Biases:
     self.flow_expires = defaultdict(int)
     self.flow_creates = defaultdict(int)
