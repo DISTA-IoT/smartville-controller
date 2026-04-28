@@ -1,4 +1,6 @@
+# This file is part of the "Smartville" project.
 # Simplified tiger_server for scientific ablation of epistemic actions.
+
 import os
 import torch
 import numpy as np
@@ -11,8 +13,9 @@ import signal
 import atexit
 from threading import Lock
 
-# We'll use the real components where possible, or their simplified versions
 from smartController.wandb_tracker import WandBTracker
+from smartController.tiger_brain_simple import TigerBrainSimple
+from smartController.attr_dict import AttrDict
 
 # Mock classes to replace POX and real flow logging
 class MockFlow:
@@ -33,38 +36,26 @@ class SimpleSmartSwitch:
         self.brain = brain
         self.args = args
         self.running = False
-        self.thread = None
-        self.lock = Lock()
-
-        self.dim = int(args['intrusion_detection'].get('blob_dim', 100)) # Default to 100 as requested
-        self.separability = float(args['intrusion_detection'].get('separability', 0.1)) # Low separability makes it hard
-        self.batch_size = int(args['intrusion_detection'].get('batch_size', 32))
+        self.dim = int(args['intrusion_detection'].get('blob_dim', 100))
+        self.separability = float(args['intrusion_detection'].get('separability', 0.1))
 
         # Initialize cluster centers
         self.centers = {}
         knowledge = args['knowledge']
         all_classes = knowledge['Knowns'] + knowledge['G1s'] + knowledge['G2s']
 
-        # The user's desired logic:
-        # unknown anomalies (G2s) that are very hard to distinguish from normal traffic
-        # without the specific CTI-label-driven training should be perfect.
-
-        # Let's define a "Benign" center
         benign_center = np.zeros(self.dim)
 
         for i, cls_name in enumerate(all_classes):
             np.random.seed(i)
-            # Random direction
             direction = np.random.randn(self.dim)
             direction /= np.linalg.norm(direction)
 
-            if cls_name in ['echo', 'doorlock', 'hue']: # Benign patterns from user
+            if cls_name in ['echo', 'doorlock', 'hue']: # Benign patterns
                 distance = 0.5 * self.separability
             elif cls_name in knowledge['G2s']:
-                # G2s are close to benign area
                 distance = 1.0 * self.separability
             else:
-                # Knowns and G1s are further away
                 distance = 5.0 * self.separability
 
             center = benign_center + direction * distance
@@ -74,8 +65,6 @@ class SimpleSmartSwitch:
         flows = []
         knowledge = self.args['knowledge']
         all_classes = knowledge['Knowns'] + knowledge['G1s'] + knowledge['G2s']
-
-        # Sample 5 random classes for this "window"
         selected_classes = np.random.choice(all_classes, size=min(len(all_classes), 5), replace=False)
 
         seq_len_flow = int(self.args['intrusion_detection']['flows_per_sample'])
@@ -86,113 +75,111 @@ class SimpleSmartSwitch:
             center = self.centers[cls_name]
             num_flows = np.random.randint(1, 5)
             for _ in range(num_flows):
-                # Flow features (seq_len, dim)
                 noise = torch.randn(seq_len_flow, self.dim) * 0.05
                 flow_feat = center.unsqueeze(0).repeat(seq_len_flow, 1) + noise
-
-                # Packet features (dummy)
                 packet_feat = torch.randn(seq_len_packet, packet_dim) * 0.01
-
                 flows.append(MockFlow(flow_feat, packet_feat, cls_name))
-
         return flows
 
-    def loop(self):
-        self.args['logger'].info("Starting SimpleSmartSwitch loop")
-        while self.running:
-            flows = self.generate_batch()
-
-            # Mock node feats
-            node_feats = {}
-            if self.args.get('health_monitoring'):
-                node_feats["1.2.3.4"] = {m: 0.5 for m in self.args['health']['probe_metrics']}
-
-            try:
-                self.brain.process_input(flows, node_feats)
-            except Exception as e:
-                self.args['logger'].error(f"Error in brain.process_input: {e}")
-
-            time.sleep(float(self.args['intrusion_detection'].get('flowstats_freq_secs', 1.0)))
-
-    def start(self):
-        self.running = True
-        self.thread = threading.Thread(target=self.loop, daemon=True)
-        self.thread.start()
-
-    def stop(self):
-        self.running = False
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=5)
-
-app = FastAPI(title="Simple SmartSwitch API")
+logger = logging.getLogger("SmartvilleControllerSimple")
+app_thread = None
+app = None
+args = None
 controller_brain = None
 wb_tracker = None
 smart_switch = None
-args = None
+stop_tiger_threads = True
+inference_thread = None
 
-@app.get("/")
-async def root():
-    return {"msg": "Hello World from the Simple SmartSwitch!"}
+tiger_lock = Lock()
 
-@app.post("/initialize")
-async def initialize(init_controller_args: dict):
-    global controller_brain, wb_tracker, smart_switch, args
-
+def run_server():
+    global app
     try:
-        args = init_controller_args
-        # Setup logger
-        logger = logging.getLogger("SimpleSmartSwitch")
-        logger.setLevel(logging.INFO)
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        args['logger'] = logger
-
-        logger.info("Initializing Simple SmartSwitch...")
-
-        wb_tracker = WandBTracker(args)
-
-        from smartController.tiger_brain_simple import TigerBrainSimple
-        brain_class = TigerBrainSimple
-
-        controller_brain = brain_class(args, wb_tracker=wb_tracker)
-
-        smart_switch = SimpleSmartSwitch(controller_brain, args)
-        smart_switch.start()
-
-        logger.info("Initialization complete.")
-        return {"msg": "Simple SmartSwitch initialized successfully", "status_code": 200}
+        port = int(os.environ.get("SERVER_PORT"))
     except Exception as e:
-        import traceback
-        error_msg = traceback.format_exc()
-        if 'logger' in locals():
-            logger.error(f"Initialization failed: {error_msg}")
-        return {"status_code": 500, "msg": f"Error: {e}", "trace": error_msg}
+        logger.error(f"Error parsing SERVER_PORT: {e}")
+        return
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
-@app.post("/stop")
-async def shutdown():
-    global smart_switch, controller_brain
-    if smart_switch:
-        smart_switch.stop()
+def smart_check():
+    global args, wb_tracker, controller_brain, smart_switch
+    logger.info("Starting Simple SmartSwitch inference loop")
+
+    while not stop_tiger_threads:
+        with tiger_lock:
+            if smart_switch and controller_brain:
+                flows = smart_switch.generate_batch()
+                node_feats = {}
+                if args.get('health_monitoring'):
+                    node_feats["1.2.3.4"] = {m: 0.5 for m in args['health']['probe_metrics']}
+
+                try:
+                    controller_brain.process_input(flows, node_feats)
+                except Exception as e:
+                    logger.error(f"Error in brain.process_input: {e}")
+
+        time.sleep(float(args['intrusion_detection'].get('flowstats_freq_secs', 1.0)))
+
+def shutdown_process():
+    global stop_tiger_threads, inference_thread, controller_brain
+    stop_tiger_threads = True
+    if inference_thread:
+        inference_thread.join(timeout=5)
     if controller_brain:
         controller_brain.shutdown()
-    return {"status_code": 200, "msg": "Simple SmartSwitch stopped"}
 
-@app.post("/sync_wandb")
-async def sync_wandb():
-    # Keep consistent with real server
-    return {"status_code": 200, "msg": "Wandb sync triggered (mocked)"}
+def launch(**kwargs):
+    global app, app_thread, openflow_connection, smart_switch
+    global controller_brain, args
 
-def cleanup():
-    if smart_switch:
-        smart_switch.stop()
-    if controller_brain:
-        controller_brain.shutdown()
+    app = FastAPI(title="SmartSwitch API (Simple)")
 
-atexit.register(cleanup)
+    @app.post("/initialize")
+    async def initialize(init_controller_args: dict):
+        global args, controller_brain, wb_tracker, smart_switch, stop_tiger_threads, inference_thread
+
+        try:
+            logger.info("Initialization command received")
+            args = init_controller_args
+            args['logger'] = logger
+
+            wb_tracker = WandBTracker(args)
+            controller_brain = TigerBrainSimple(args, wb_tracker=wb_tracker)
+            smart_switch = SimpleSmartSwitch(controller_brain, args)
+
+            stop_tiger_threads = False
+            inference_thread = threading.Thread(target=smart_check, daemon=True)
+            inference_thread.start()
+
+            return {"msg": "Simple SmartSwitch initialized successfully", "status_code": 200}
+        except Exception as e:
+            logger.error(f"Error during initialization: {e}")
+            return {"status_code": 500, "msg": f"Error: {e}"}
+
+    @app.post("/stop")
+    async def shutdown():
+        shutdown_process()
+        return {"status_code": 200, "msg": "Simple SmartSwitch stopped"}
+
+    @app.post("/sync_wandb")
+    async def sync_wandb():
+        return {"status_code": 200, "msg": "Wandb sync triggered (mocked)"}
+
+    logger.info("Simple SmartSwitch is starting...")
+    if app_thread is None or not app_thread.is_alive():
+        app_thread = threading.Thread(target=run_server, daemon=True)
+        app_thread.start()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("SERVER_PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    logging.basicConfig(level=logging.INFO)
+    # Mocking SERVER_PORT if not present for standalone run
+    if "SERVER_PORT" not in os.environ:
+        os.environ["SERVER_PORT"] = "8000"
+    launch()
+    # Keep alive
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
