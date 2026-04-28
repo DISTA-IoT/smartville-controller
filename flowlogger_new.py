@@ -19,6 +19,7 @@ from pox.core import core
 from pox.openflow.of_json import flow_stats_to_list
 from smartController.flow import Flow
 from smartController.attr_dict import AttrDict
+from smartController.brain_utils import get_synthetic_blob
 import torch
 import torch.nn.functional as F
 from pox.lib.packet.ipv4 import ipv4
@@ -52,6 +53,10 @@ class FlowLogger(object):
       self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
       self.flows_per_sample = int(args.intrusion_detection.flows_per_sample)
       self.use_packet_feats = args.use_packet_feats
+      self.synthetic_data = bool(kwargs.get('synthetic_data', False))
+      self.separability = float(kwargs.get('separability', 1.0))
+      self.traffic_dict = kwargs.get('traffic_dict', {})
+      self.ips_containers = kwargs.get('ips_containers', {})
 
 
     def reset(self):
@@ -60,8 +65,22 @@ class FlowLogger(object):
        self.packet_buffers = {}
 
 
-    def extract_flow_feature_tensor(self, flow, sender_ip_addr):
+    def extract_flow_feature_tensor(self, flow, sender_ip_addr, element_class=None):
        
+      if self.synthetic_data and element_class is not None:
+        blob = get_synthetic_blob(element_class, self.flow_feat_dim, self.separability, seed_offset=1)
+        if self.wb_tracker is not None:
+          self.wb_tracker.wb_run.log(
+             {
+               f'flowfeats_byte_count/{sender_ip_addr}': blob[0].item(),
+               f'flowfeats_duration_nsec/{sender_ip_addr}': blob[1].item(),
+               f'flowfeats_duration_sec/{sender_ip_addr}': blob[2].item(),
+               f'flowfeats_packet_count/{sender_ip_addr}': blob[3].item()
+             },
+             step=self.wb_tracker.step_counter
+          )
+        return blob
+
       if self.wb_tracker is not None:
        self.wb_tracker.wb_run.log(
           {
@@ -80,7 +99,24 @@ class FlowLogger(object):
             flow['packet_count']]).to(torch.float32)
 
 
-    def build_packet_tensor(self, packet):
+    def _resolve_class(self, src_ip, dst_ip):
+        """
+        Resolves the class name from traffic_dict based on src and dst IPs.
+        """
+        for hostname, info in self.traffic_dict.items():
+            if info.get('src_ip') == src_ip and info.get('dest_ip') == dst_ip:
+                return info.get('pattern')
+        return None
+
+
+    def build_packet_tensor(self, packet, element_class=None):
+        if self.synthetic_data:
+            if element_class is None and hasattr(packet, 'srcip') and hasattr(packet, 'dstip'):
+                element_class = self._resolve_class(str(packet.srcip), str(packet.dstip))
+
+            if element_class is not None:
+                return get_synthetic_blob(element_class, self.packet_feat_dim, self.separability, seed_offset=2)
+
         # packet is an ipv4 object
         # Extract the first self.packet_feat_dim bytes of the packet
         raw = bytearray(packet.raw[:self.packet_feat_dim])
@@ -127,7 +163,11 @@ class FlowLogger(object):
 
         if flows:
             # Extract packet tensor (only once for all matching flows)
-            packet_tensor = self.build_packet_tensor(packet=packet.next)
+            element_class = flows[0].element_class if hasattr(flows[0], 'element_class') else None
+            if element_class is None:
+                element_class = self._resolve_class(str(src_ip), str(dst_ip))
+
+            packet_tensor = self.build_packet_tensor(packet=packet.next, element_class=element_class)
             
             for flow in flows:
                # Add packet to the buffer
@@ -189,7 +229,7 @@ class FlowLogger(object):
          flow.zda = flow.test_zda or flow_info['pattern'] in current_knowledge['G1s'] # these change
          
          # flow feature extraction ( packet feature circular buffer is updated asychonously...)
-         curr_flow_stats_vec = self.extract_flow_feature_tensor(flow=of_flowstats_obj, sender_ip_addr=sender_ip_addr)
+         curr_flow_stats_vec = self.extract_flow_feature_tensor(flow=of_flowstats_obj, sender_ip_addr=sender_ip_addr, element_class=flow.element_class)
          # update the flow feature circular buffer
          flow.flow_feat_circular_buffer.add(curr_flow_stats_vec)
 

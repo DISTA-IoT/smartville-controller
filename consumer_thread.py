@@ -17,11 +17,13 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 from confluent_kafka import Consumer, KafkaError, KafkaException
 from confluent_kafka.admin import AdminClient
+from smartController.brain_utils import get_synthetic_blob
 import threading
 import math
 import string
 import random
 import json
+import torch
 
 RAM = 'RAM'
 CPU = 'CPU'
@@ -74,6 +76,8 @@ class ConsumerThread(threading.Thread):
         self.exit_signal = threading.Event()
         self.controller_metrics_dict = controller_metrics_dict
         self.kwargs = kwargs
+        self.synthetic_data = bool(kwargs.get('synthetic_data', False))
+        self.separability = float(kwargs.get('separability', 1.0))
         self.logger = kwargs['logger']
         self.wb_tracker = wb_tracker
 
@@ -150,6 +154,13 @@ class ConsumerThread(threading.Thread):
 
         self.received_messages += 1
         self.wb_metrics_dict = {}
+
+        if self.synthetic_data:
+            # Overwrite message with synthetic data
+            metrics_to_monitor = self.kwargs['health']['probe_metrics']
+            blob = get_synthetic_blob(self.topic_name, len(metrics_to_monitor), self.separability, seed_offset=3)
+            for i, metric in enumerate(metrics_to_monitor):
+                message[self.topic_name + "_" + metric] = blob[i].item()
 
         if CPU in self.kwargs['health']['probe_metrics']:
             if self.topic_name+"_"+CPU in message.keys():

@@ -17,6 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 
 import torch
+import hashlib
 
 # List of colors
 colors = [
@@ -175,3 +176,30 @@ def get_metrics_tensor(metrics_dict, ip, health_args):
     else:
         time_window_len = health_args['node_features_time_window']
         return torch.full((time_window_len, len(metrics_to_monitor)), -1.0, dtype=torch.float32)
+
+
+def get_synthetic_blob(class_name, dim, separability, seed_offset=0):
+    """
+    Generates a synthetic Gaussian blob for a given class.
+    """
+    # Use hashlib for a portable hash
+    h = hashlib.md5((class_name + str(seed_offset)).encode()).digest()
+    # Create a seed from the hash
+    seed = int.from_bytes(h, 'big') % (2**32)
+
+    # Use a local random generator to avoid affecting global state
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    # Generate a centroid. Each dimension in [-1, 1]
+    centroid = (torch.rand(dim, generator=generator) * 2 - 1) * separability * 10.0
+
+    # Standard deviation - ellipsoids, same for all classes
+    # We use a fixed seed for the stds to keep them consistent across classes
+    std_generator = torch.Generator()
+    std_generator.manual_seed(42 + seed_offset)
+    stds = torch.rand(dim, generator=std_generator) * 0.5 + 0.1 # stds in [0.1, 0.6]
+
+    # Generate the sample
+    sample = torch.randn(dim, generator=generator) * stds + centroid
+    return sample
