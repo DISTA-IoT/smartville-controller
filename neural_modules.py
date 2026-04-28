@@ -879,3 +879,6 @@ class GraphAttentionV2Layer(nn.Module):
         a = a.clamp(min=0, max=1)
 
         return hiddens, a
+class OneStreamMulticlassFlowClassifier(MultiClassFlowClassifier):
+    def __init__(self, input_size, hidden_size, dropout_prob, kr_heads=8, device='cpu', kwargs=None):
+        super().__init__(input_size, hidden_size, dropout_prob, kr_heads, device, kwargs)
