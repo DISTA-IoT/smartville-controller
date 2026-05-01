@@ -71,7 +71,7 @@ class NewTigerEnvironment:
 
     def has_episode_ended(self):
         if self.current_budget < self.min_budget \
-                or self.steps_done >= self.max_episode_steps == 0\
+                or self.steps_done >= self.max_episode_steps \
                 or self.current_budget > self.max_budget:
             return True
         return False
