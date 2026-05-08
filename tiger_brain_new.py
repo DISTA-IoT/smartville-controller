@@ -373,9 +373,16 @@ class TigerBrain:
 
         self.check_pretrained()
 
-        params_for_optimizer = \
-            list(self.confidence_decoder.parameters()) + \
-            list(self.classifier.parameters())
+        if self.kwargs['neural_modules']['frozen_decoder']:
+            self.confidence_decoder.eval()
+            for param in self.confidence_decoder.parameters():
+                param.requires_grad = False
+            self.logger_instance.info(f"Using CONFIDENCE DECODER in FROZEN mode!")
+            params_for_optimizer = list(self.classifier.parameters())
+        else:
+            params_for_optimizer = \
+                list(self.confidence_decoder.parameters()) + \
+                list(self.classifier.parameters())
 
         self.classifier.to(self.device)
         self.optimizer = optim.Adam(params_for_optimizer, lr=self.learning_rate)
