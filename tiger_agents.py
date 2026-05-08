@@ -193,7 +193,7 @@ class DAIF_Agent:
                 # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
                 # Analytical KL divergence.
                 perceptive_epistemic_gains = 0.5 * torch.sum(
-                    (1 / eps_var) + ((next_proprioceptive_states - eps_means) ** 2) / eps_var - 1 - eps_logvars,
+                    (1 / eps_var) + ((next_proprioceptive_states - eps_means) ** 2) / eps_var - 1 + eps_logvars,
                     dim=1, keepdim=True)
             else:
                 perceptive_epistemic_gains = 0.5 * torch.sum((next_proprioceptive_states - predicted_observations) ** 2, dim=1, keepdim=True)
@@ -228,26 +228,13 @@ class DAIF_Agent:
         # perceptive and policy model training through VFE:
         self.neg_efe_net.eval()
         
-        # The following corresponds Q(a_t | s_t) in eq. (6)
-        if self.surrogate_policy_consistency:
-            target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
-            policy_consistency = -0.5 * ((policy_probabilities - target_policy) ** 2).sum(dim=1).mean()
-        else:
-            # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
-            # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
-            efe_actions_log = torch.log_softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
-            # The following loc corresponds to the first term in eq (7), i.e.:
-            # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
-            # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
-            # We need to maximise this energy by minimising VFE which is the negative of this fella.
-            policy_consistency = torch.sum(policy_probabilities * efe_actions_log, dim=1).mean()
-                    
-        # The following 2 loc's correspond to the second term in eq (7), i.e.:
-        # -E_{Q(s)}\{ H[Q(a|s)] \}
-        # Also here, we want to maximise the entropy, that's why substract it from the loss.
+        # train the policy network using MSE loss (Equation 18)
+        target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
+        actor_loss = F.mse_loss(policy_probabilities, target_policy)
+
         policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
         policy_entropy = -(policy_probabilities * policy_log_probs).sum(1).mean()
-        actor_loss = -policy_consistency - self.entropy_reg_coefficient * policy_entropy
+        policy_consistency = -actor_loss # for logging
         
         if self.variational_t_model:
             # Gaussian Log-likelihood.
@@ -413,23 +400,16 @@ class DAIP_Agent:
         # The following 2 loc's correspond p(a|s) according to eq. (8) in the same paper (Boltzman sampling)
         # i.e.: p(a|s) = \sigma(- \gamma G(s,a))
         estimated_neg_efe_values = self.neg_efe_net(states).detach()
-        efe_actions = torch.log_softmax(
-            self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
+        target_policy = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values, dim=1)
 
-        # The following 2 loc's correspond to the first term in eq (7), i.e.:
-        # -E_{Q(s)}[ \int Q(a|s) logp(a|s) da]
-        # This is the negative of the energy, i.e. the consitency of Q w.r.t p.
-        # We need to maximise this energy by minimising VFE which is the negative of this fella.
-        energies = torch.sum(policy_probabilities * efe_actions, dim=1)
-        vfe -= energies.mean()
+        # Policy network optimization using MSE loss (Equation 18)
+        vfe = F.mse_loss(policy_probabilities, target_policy)
 
-        # The following 2 loc's correspond to the second term in eq (7), i.e.:
-        # -E_{Q(s)}\{ H[Q(a|s)] \}
-        # Also here, we want to maximise the entropy, that's why substract it from the loss.
+        # For logging
         policy_log_probs = torch.log(torch.clamp(policy_probabilities, min=1e-8))
         policy_entropy = -(policy_probabilities * policy_log_probs).sum(1)
         expected_policy_entropy = policy_entropy.mean()
-        vfe -= self.entropy_reg_coefficient * expected_policy_entropy
+        energies = -vfe # placeholder for logging consistent with previous version
 
         self.policynet_optimizer.zero_grad()
         vfe.backward()
@@ -487,7 +467,7 @@ class DAIP_Agent:
                 # eps_means <- Q(s_t|a_t, s_{t-1})  {is a  reparameterisation in the variational setting} This is the "variational posterior's prior"
                 # next_proprioceptive_states <- Q(s) {is interpreted as a sample from a spherical Gaussian centred on s in the variational setting}. This is the "variational posterior's posterior"
                 # Analytical KL divergence.
-                epistemic_gains = 0.5 * torch.sum((1 / eps_var) + ((next_proprioceptive_states - eps_means) ** 2) / eps_var - 1 - eps_logvars, dim=1, keepdim=True)
+                epistemic_gains = 0.5 * torch.sum((1 / eps_var) + ((next_proprioceptive_states - eps_means) ** 2) / eps_var - 1 + eps_logvars, dim=1, keepdim=True)
             else:
                 predicted_observations = self.transitionnet(transition_inputs)
                 epistemic_gains = 0.5 * torch.sum((next_proprioceptive_states - predicted_observations) ** 2, dim=1, keepdim=True)
@@ -524,17 +504,8 @@ class DAIP_Agent:
     
         if self.transitionnet is not None and self.epistemic_regularisation_factor > 0:
             if self.variational_t_model:
-                if self.variational_variational_transition_loss:
-                    reconstruction_loss = F.mse_loss(eps_means, next_proprioceptive_states, reduction='mean')
-                    kl_div = 0.5 * torch.sum(eps_var + eps_means**2 - 1. - eps_logvars, dim=1).mean()
-                    transition_loss = reconstruction_loss + self.kl_divergence_regularisation_factor * kl_div
-                    if self.wbl:
-                        self.wbl.log({
-                            'active_inference/state_reconstruction_loss': reconstruction_loss.item(),
-                            'active_inference/state kl_div': kl_div.item()
-                        }, step=step)
-                else:
-                    transition_loss = self.state_loss_fn(sample_next, next_proprioceptive_states)
+                # Equation 17: Supervised loss assuming unit variance
+                transition_loss = self.state_loss_fn(eps_means, next_proprioceptive_states)
             else:
                 transition_loss = self.state_loss_fn(predicted_observations, next_proprioceptive_states)
 
@@ -648,49 +619,6 @@ class DAIA_Agent:
     
 
     def train_actor(self, step):
-        # this trains not the actor but the perceptive model
-        vfe = 0
-        
-        # batching the states
-        states = torch.stack(list(self.sequential_memory))
-        proprioceptive_states = states[:, -self.proprioceptive_state_size:]
-        estimated_neg_efe_values = self.neg_efe_net(states).detach()
-        efe_actions = torch.argmax(estimated_neg_efe_values, dim=1)
-        action_onehots = torch.nn.functional.one_hot(efe_actions, self.action_size).float()
-        transition_inputs = torch.cat([states, action_onehots], dim=1)
-
-        self.transitionnet.train()
-        
-        if self.variational_t_model:
-            _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
-            # Gaussian Log-likelihood.
-            perceptive_consistency = -0.5 * torch.sum(
-                ((proprioceptive_states[1:] - eps_means[:-1]) ** 2) / torch.exp(eps_logvars)
-                + eps_logvars  + 1.837877, # 1.837877 is log(2*pi)
-                dim=1,
-            ).mean()
-            # Batch variance
-            batch_var = eps_logvars.exp().mean(dim=0) + 1e-6
-        else:
-            predicted_observations = self.transitionnet(transition_inputs)
-            # Perception consistency (cross entropy ≈ −MSE/2)
-            perceptive_consistency = -0.5 * ((proprioceptive_states[1:] - predicted_observations[:-1]) ** 2).sum(dim=1).mean()
-            # Perception neutrality (entropy proxy using batch variance)
-            batch_var = predicted_observations.var(dim=0) + 1e-6
-
-        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * proprioceptive_states.shape[1] * 2.837877 # 2.837877 is log(2*pi*e)
-
-        vfe = - perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
-        if self.wbl:
-            self.wbl.log({
-                'active_inference/perceptive_entropy': perceptive_entropy.item(),
-                'active_inference/perceptive_consistency': perceptive_consistency.item(),
-                'active_inference/perceptive_loss': vfe.item()
-            }, step=step)
-
-        self.transitionnet_optimizer.zero_grad()
-        vfe.backward()
-        self.transitionnet_optimizer.step()
         self.reset_sequential_memory()
 
 
@@ -784,13 +712,36 @@ class DAIA_Agent:
         value_loss.backward()
         self.efe_net_optimizer.step()
     
-        # train the policy network:
+        # train the policy network (Equation 18):
         target_logits = self.temperature_for_action_sampling * self.neg_efe_net(states).detach()
         target_policy = torch.softmax(target_logits, dim=1)
-        policy_loss = -(target_policy * (action_probs_prior.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
+        policy_loss = F.mse_loss(action_probs_prior, target_policy)
+
+        # train the transition network (Equation 17):
+        self.transitionnet.train()
+        action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
+        transition_inputs = torch.cat([states, action_onehots], dim=1)
+
+        if self.variational_t_model:
+            _, eps_means, eps_logvars = self.transitionnet(transition_inputs)
+            # Gaussian Log-likelihood.
+            perceptive_consistency = -0.5 * torch.sum(((next_proprioceptive_states - eps_means) ** 2) / torch.exp(eps_logvars) + eps_logvars + 1.837877, dim=1).mean()
+            # Batch variance
+            batch_var = eps_logvars.exp().mean(dim=0) + 1e-6
+        else:
+            predicted_observations = self.transitionnet(transition_inputs)
+            # Perception consistency (cross entropy ≈ −MSE/2)
+            perceptive_consistency = -0.5 * ((next_proprioceptive_states - predicted_observations) ** 2).sum(dim=1).mean()
+            # Perception neutrality (entropy proxy using batch variance)
+            batch_var = predicted_observations.var(dim=0) + 1e-6
+
+        perceptive_entropy = 0.5 * torch.sum(torch.log(batch_var)) + 0.5 * next_proprioceptive_states.shape[1] * 2.837877
+        perceptive_loss = -perceptive_entropy * self.entropy_reg_coefficient - perceptive_consistency
 
         self.policynet_optimizer.zero_grad()
-        policy_loss.backward()
+        self.transitionnet_optimizer.zero_grad()
+        (policy_loss + perceptive_loss).backward()
+        self.transitionnet_optimizer.step()
         self.policynet_optimizer.step()
         
         if self.wbl: 
@@ -798,7 +749,10 @@ class DAIA_Agent:
                 'active_inference/policy_loss': policy_loss.item(),
                 'active_inference/pragmatic_gain': rewards.mean().item(),
                 'active_inference/value_loss': value_loss.item(),
-                'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item()
+                'active_inference/active_epistemic_gain': active_epistemic_gains.mean().item(),
+                'active_inference/perceptive_loss': perceptive_loss.item(),
+                'active_inference/perceptive_entropy': perceptive_entropy.item(),
+                'active_inference/perceptive_consistency': perceptive_consistency.item()
             }, step=step)
 
 class DAISA_Agent:
@@ -945,9 +899,9 @@ class DAISA_Agent:
         self.efe_net_optimizer.step()
     
 
-        # train the policy network:
+        # train the policy network (Equation 18):
         target_policy_vfe = torch.softmax(self.temperature_for_action_sampling * estimated_neg_efe_values.detach(), dim=1)
-        policy_loss = -(target_policy_vfe * (predicted_actions.clamp_min(1e-8).log())).sum(dim=1).mean()  # cross-entropy
+        policy_loss = F.mse_loss(predicted_actions, target_policy_vfe)
         self.policynet_optimizer.zero_grad()
         policy_loss.backward()
         self.policynet_optimizer.step()
