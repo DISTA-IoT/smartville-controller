@@ -1,3 +1,15 @@
+import sys
+import os
+
+# Support 'smartController' prefix regardless of how the directory is named
+# or where the script is run from.
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if 'smartController' not in sys.modules:
+    from types import ModuleType
+    smart_controller_module = ModuleType('smartController')
+    smart_controller_module.__path__ = [current_dir]
+    sys.modules['smartController'] = smart_controller_module
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -239,11 +251,11 @@ class SyntheticEnvironment:
                 return 0, None
             for cluster in predicted_anomalous_clusters_info:
                 # Correctly blocking an anomalous cluster: +abs(mean reward of members)
-                # Incorrectly blocking a benign cluster: mean reward of members (negative)
+                # Incorrectly blocking a benign cluster: -abs(mean reward of members) (penalty)
                 if cluster['is_actually_anomalous']:
                     total_reward += abs(cluster['mean_gt_reward'])
                 else:
-                    total_reward += cluster['mean_gt_reward']
+                    total_reward -= abs(cluster['mean_gt_reward'])
             total_reward /= num_clusters
 
         elif action == 1: # Pass all
@@ -466,6 +478,7 @@ def simulation_loop():
     best_cs_acc = 0
     best_ad_acc = 0
     best_kr_ari = 0
+    max_observed_dist = 1.0
 
     epistemic_actions_count = 0
     epistemic_costs_sum = 0
@@ -509,9 +522,16 @@ def simulation_loop():
 
         logits, hiddens, predicted_kernel = classifier(features, encoded_labels.unsqueeze(1), num_known, query_mask)
 
+        # Subset everything to query part to match logits/clusters
+        query_features = features[query_mask]
+        query_gt_labels = [gt_labels[i] for i, m in enumerate(query_mask) if m]
+        query_zda_labels = zda_labels[query_mask]
+        query_hiddens = hiddens[query_mask]
+        query_kernel = predicted_kernel[query_mask][:, query_mask]
+
         # 3. Detect anomalous clusters
-        # predicted_kernel is [N_query, N_query]
-        predicted_clusters = get_clusters(predicted_kernel) # [N_query]
+        # predicted_clusters will be [N_query]
+        predicted_clusters = get_clusters(query_kernel)
         num_predicted_clusters = predicted_clusters.max().item() + 1
 
         # 4. Compute per-cluster uncertainty signals
@@ -521,9 +541,6 @@ def simulation_loop():
 
         # Cluster-level info assembly
         cluster_infos = []
-        query_hiddens = hiddens
-        query_gt_labels = [gt_labels[i] for i, m in enumerate(query_mask) if m]
-        query_zda_labels = zda_labels[query_mask]
 
         # known prototypes (centroids)
         # classifier.classifier.get_centroids(...)
@@ -548,6 +565,7 @@ def simulation_loop():
         else:
             known_prototypes = None
 
+        raw_dists = []
         for c_idx in range(int(num_predicted_clusters)):
             c_mask = predicted_clusters == c_idx
             if not c_mask.any(): continue
@@ -559,11 +577,11 @@ def simulation_loop():
             uncertainty = compute_uncertainty(c_logits, use_energy).mean().item()
 
             # Distance to nearest known prototype
+            dist_to_known = 0.0
             if known_prototypes is not None:
                 dists = torch.norm(known_prototypes - c_centroid, dim=1)
                 dist_to_known = dists.min().item()
-            else:
-                dist_to_known = 0.0
+            raw_dists.append(dist_to_known)
 
             size_norm = c_mask.float().sum().item() / query_mask.float().sum().item()
 
@@ -577,12 +595,20 @@ def simulation_loop():
             cluster_infos.append({
                 'centroid': c_centroid,
                 'uncertainty': uncertainty,
-                'dist_to_known': dist_to_known,
+                'dist_to_known': dist_to_known, # placeholder, normalized below
                 'size_norm': size_norm,
                 'dominant_gt_label': dominant_gt_label,
                 'is_actually_anomalous': is_actually_anomalous,
                 'mean_gt_reward': mean_gt_reward
             })
+
+        # Distance normalization across the whole step
+        if raw_dists:
+            step_max_dist = max(raw_dists)
+            if step_max_dist > max_observed_dist:
+                max_observed_dist = step_max_dist
+            for i, info in enumerate(cluster_infos):
+                info['dist_to_known'] /= max_observed_dist
 
         # Sort clusters by uncertainty (descending) to give agent priority
         cluster_infos.sort(key=lambda x: x['uncertainty'], reverse=True)
