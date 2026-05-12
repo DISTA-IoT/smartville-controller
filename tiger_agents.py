@@ -62,7 +62,6 @@ class DAIF_Agent:
         self.replay_batch_size = int(kwargs['replay_batch_size'])
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
-        self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
         self.use_critic_to_act = kwargs['use_critic_to_act']
         self._action_eye = torch.eye(self.action_size)
 
