@@ -1225,16 +1225,18 @@ class TigerBrain:
             all_metrics.update(ad_metrics)
             all_metrics.update(kr_metrics)
             all_metrics.update(cs_metrics)
-            self.reset_train_cms()
             self.reporter.log_scalars(all_metrics, step=self.wb_tracker.step_counter)
 
         if self.wb_tracker.step_counter % self.plot_step_freq == 0:
             plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
             if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
+
+        if self.wb_tracker.step_counter % self.report_step_freq == 0:
+            self.reset_train_cms()
         
         if self.online_evaluation and self.wb_tracker.step_counter % self.online_eval_step_freq == 0:
             self.start_async_evaluation()
-
+            # consume results from the last completed evaluation
             while not self.eval_queue.empty():
                 async_results = self.eval_queue.get()
                 if self.wbt: self.reporter.log_scalars(async_results, step=self.wb_tracker.step_counter)
