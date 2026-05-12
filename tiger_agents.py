@@ -309,10 +309,14 @@ class DAIP_Agent:
                 
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
-        self.policynet = PolicyNet(kwargs)
-        self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
+        if not kwargs['use_critic_to_act']:
+            self.policynet = PolicyNet(kwargs)
+            self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
+        else: 
+            self.policynet = None
+            self.policynet_optimizer = None
+            
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
-        self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = [None] * self.memory_size
@@ -775,7 +779,6 @@ class DAISA_Agent:
         self.policynet = PolicyNet(kwargs)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
-        self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = [None] * self.memory_size
