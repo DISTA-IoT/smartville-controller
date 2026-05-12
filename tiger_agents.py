@@ -37,16 +37,14 @@ class DAIF_Agent:
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
         
-        if kwargs['use_transition_model']:
-
-            if self.variational_t_model:
-                self.transitionnet = VariationalTransitionNet(kwargs)
-                self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
-                self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
-            else:
-                self.transitionnet = NewTransitionNet(kwargs)
-                
-            self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
+        if self.variational_t_model:
+            self.transitionnet = VariationalTransitionNet(kwargs)
+            self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
+            self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
+        else:
+            self.transitionnet = NewTransitionNet(kwargs)
+            
+        self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
         self.policynet = PolicyNet(kwargs)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
