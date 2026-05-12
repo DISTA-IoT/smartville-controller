@@ -151,12 +151,15 @@ class TigerBrain:
         self.encoder = DynamicLabelEncoder()
         self.reporter = TigerReporter(kwargs, self.wb_run, self.encoder, self.logger_instance, self.seed)
 
-        self.init_agents(args)
-        self.init_intelligence()
+        
 
         # Agency and Persistency
+        self._current_episode_id = -1
+        self.init_agents(args)
+        self.init_intelligence()
         self.agency = args.intrusion_detection.agency
         self.save_models_flag = args.intrusion_detection.save_models
+        
 
         # Performance profiling
         self.profiling_stats = {}
@@ -210,11 +213,13 @@ class TigerBrain:
         
         self.reset_environment()
 
+
     @epistemic_thread_safe
     def reset_environment(self):
         """
         Resets the environment and initializes inference modules.
         """
+        self._current_episode_id += 1
         self.env.reset()    
         # Reset inference context:
         self.current_known_classes_count = 0
@@ -1238,17 +1243,18 @@ class TigerBrain:
             self.start_async_evaluation()
             # consume results from the last completed evaluation
             while not self.eval_queue.empty():
-                async_results = self.eval_queue.get()
+                ep_id, async_results = self.eval_queue.get()
                 if self.wbt: self.reporter.log_scalars(async_results, step=self.wb_tracker.step_counter)
                 # Reset evaluation confusion matrices after reporting
                 self.reset_test_cms()
 
-                if self.save_models_flag:
+                if self.save_models_flag and ep_id == self._current_episode_id:
                     self.check_progress_and_save(
                         async_results[f'{EVALUATION}/Mean EVAL CS ACC'], 
                         async_results[f'{EVALUATION}/Mean EVAL AD ACC'], 
                         async_results[f'{EVALUATION}/Mean EVAL KR PREC'])
-
+            
+              
     @epistemic_thread_safe 
     def perform_epistemic_action(self, current_action=0):      
         """Acquires a CTI label, updating the knowledge base and replay buffers."""
@@ -1266,10 +1272,10 @@ class TigerBrain:
     def start_async_evaluation(self):
         """Starts a background thread for model evaluation."""
         if hasattr(self, '_eval_thread') and self._eval_thread.is_alive(): return
-        self._eval_thread = threading.Thread(target=self._async_evaluate_models, args=(self.current_known_classes_count,))
+        self._eval_thread = threading.Thread(target=self._async_evaluate_models, args=(self.current_known_classes_count, self._current_episode_id))
         self._eval_thread.start()
 
-    def _async_evaluate_models(self, known_count):
+    def _async_evaluate_models(self, known_count, episode_id):
         """Background worker for lock-free model evaluation."""
         with self._epistemic_lock:
             frozen_buffers = dict(self.replay_buffers)
@@ -1332,7 +1338,7 @@ class TigerBrain:
                 l_logits, l_hiddens, l_labels, l_pred, l_q_mask, l_k_mask = logits, hiddens, eval_batch.class_labels, pred_cl, q_mask, k_mask
 
         plots = self.reporter.report(l_logits[:, l_k_mask], l_hiddens, l_labels, l_pred, l_q_mask, EVALUATION, custom_cs_cm=l_cs_cm, custom_os_cm=l_os_cm)
-        self.eval_queue.put({
+        self.eval_queue.put(episode_id, {
             f'{EVALUATION}/Mean EVAL AD ACC': m_ad, f'{EVALUATION}/Mean EVAL CS ACC': m_cs, f'{EVALUATION}/Mean EVAL KR PREC': m_kr, **plots
         })
 
