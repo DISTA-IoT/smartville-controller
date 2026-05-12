@@ -204,15 +204,10 @@ class TigerBrain:
         Initializes metrics, confusion matrices, and the environment.
         """
         self.eval_queue = queue.Queue()
-        self.current_known_classes_count = 0
-        self.current_test_known_classes_count = 0
-        self.batch_processing_allowed = False
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
-        self.reset_train_cms()
-        self.reset_test_cms()
-        self.replay_buffers = {}
+        
         self.reset_environment()
 
     @epistemic_thread_safe
@@ -221,6 +216,14 @@ class TigerBrain:
         Resets the environment and initializes inference modules.
         """
         self.env.reset()    
+        # Reset inference context:
+        self.current_known_classes_count = 0
+        self.current_test_known_classes_count = 0
+        self.batch_processing_allowed = False
+        self.encoder = DynamicLabelEncoder()
+        self.replay_buffers = {}
+        self.reset_train_cms()
+        self.reset_test_cms()
         self.init_inference_neural_modules()
         self.episode_count += 1
         
