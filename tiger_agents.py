@@ -309,7 +309,8 @@ class DAIP_Agent:
                 
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
-        if not kwargs['use_critic_to_act']:
+        self.use_critic_to_act = kwargs['use_critic_to_act']
+        if not self.use_critic_to_act:
             self.policynet = PolicyNet(kwargs)
             self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         else: 
@@ -328,7 +329,7 @@ class DAIP_Agent:
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.state_loss_fn = nn.MSELoss(reduction='mean')
-        self.use_critic_to_act = kwargs['use_critic_to_act']
+       
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.sequential_memory_size)
