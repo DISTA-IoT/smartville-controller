@@ -68,6 +68,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+# Populated in main() from --device arg; referenced by all classes via CFG.
+_DEVICE: torch.device = torch.device('cpu')
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 0.  Global hyper-parameters
 # ──────────────────────────────────────────────────────────────────────────────
@@ -319,6 +322,7 @@ class InferenceModule(nn.Module):
         self.anomaly_threshold = cfg['anomaly_threshold']
         self.n_known_initial   = n_k
         self.n_unknown         = n_u
+        self.device            = torch.device(cfg.get('device', 'cpu'))
 
         # Encoder: 2-D → hidden
         self.encoder = nn.Sequential(
@@ -337,6 +341,8 @@ class InferenceModule(nn.Module):
         # Running stats for proprioceptive state
         self.register_buffer('unk_conf',    torch.zeros(n_u))
         self.register_buffer('unk_size',    torch.zeros(n_u))
+
+        self.to(self.device)
 
     # ------------------------------------------------------------------
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -399,7 +405,7 @@ class InferenceModule(nn.Module):
             xs = np.random.normal(data_gen.UNKNOWN_MEANS[u],
                                   data_gen.UNKNOWN_STDS[u] * 1.5,
                                   size=(n_samples, 2))
-            h = self.encode(torch.FloatTensor(xs))
+            h = self.encode(torch.tensor(xs, dtype=torch.float32, device=self.device))
             self.unk_protos[u] = h.mean(0)
 
     def reset_episode_state(self, original_n_known: int, data_gen: DataGenerator):
@@ -433,8 +439,8 @@ def pretrain_inference(inf: InferenceModule, dg: DataGenerator, cfg: dict) -> fl
     opt = optim.Adam(inf.parameters(), lr=cfg['pretrain_lr'])
     inf.train()
     X_np, y_np = dg.sample_known_batch(cfg['pretrain_n_per_class'])
-    X = torch.FloatTensor(X_np)
-    y = torch.LongTensor(y_np)
+    X = torch.tensor(X_np, dtype=torch.float32, device=inf.device)
+    y = torch.tensor(y_np, dtype=torch.long,    device=inf.device)
     final_loss = float('nan')
     for _ in range(cfg['pretrain_epochs']):
         perm = torch.randperm(len(X))
@@ -487,6 +493,7 @@ class SyntheticLIONEnv:
         self.cfg    = cfg
         self.n_unk  = cfg['n_unknown']
         self.prices = cfg['label_prices']
+        self.device = inf_mod.device
 
         # Store pretrained known-proto count for episode reset
         self._pretrained_n_known = inf_mod.known_protos.shape[0]
@@ -504,7 +511,7 @@ class SyntheticLIONEnv:
     def _step_flow(self):
         """Sample next flow and run inference.  Caches result."""
         x, cid, is_k, uid, ctype = self.dg.sample()
-        xt = torch.FloatTensor(x).unsqueeze(0)
+        xt = torch.tensor(x, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             r = self.inf(xt)
 
@@ -536,9 +543,9 @@ class SyntheticLIONEnv:
         anorm_norm      = min(f['anorm_score'] / 5.0, 1.0)
 
         if f['unknown_id'] is not None:
-            up = self.inf.unk_protos[f['cid']].detach().numpy()
+            up = self.inf.unk_protos[f['cid']].detach().cpu().numpy()
         else:
-            up = self.inf.known_protos[f['pred_k']].detach().numpy()
+            up = self.inf.known_protos[f['pred_k']].detach().cpu().numpy()
         proto_x = float(up[0]) / 5.0
         proto_y = float(up[1]) / 5.0
 
@@ -556,7 +563,7 @@ class SyntheticLIONEnv:
         extero  = [known_pred_norm, known_conf_norm, anorm_norm, proto_x, proto_y]
         proprio = [unk_cconf, n_labels_frac, budget_frac, price_frac, time_frac, known_conf_norm]
 
-        return torch.FloatTensor(extero + proprio)
+        return torch.tensor(extero + proprio, dtype=torch.float32, device=self.device)
 
     # ------------------------------------------------------------------
     def step(self, action: int) -> Tuple[torch.Tensor, float, bool, dict]:
@@ -731,9 +738,10 @@ class DDQNAgent:
         self.temperature = cfg['temperature']
         self.target_upd  = cfg['target_update']
         self.min_mem     = cfg['min_memory_to_train']
+        self.device      = torch.device(cfg.get('device', 'cpu'))
 
-        self.net    = TwoStreamNet()
-        self.target = TwoStreamNet()
+        self.net    = TwoStreamNet().to(self.device)
+        self.target = TwoStreamNet().to(self.device)
         self.target.load_state_dict(self.net.state_dict())
         self.target.eval()
         self.opt    = optim.Adam(self.net.parameters(), lr=cfg['lr'])
@@ -742,24 +750,25 @@ class DDQNAgent:
 
     def act(self, state: torch.Tensor) -> int:
         with torch.no_grad():
-            q     = self.net(state).squeeze()
+            q     = self.net(state.to(self.device)).squeeze()
             probs = F.softmax(self.temperature * q, dim=-1)
         return torch.multinomial(probs, 1).item()
 
     def push(self, s, a, r, s2, done):
-        self.buf.push(s, torch.tensor(a), torch.tensor(r, dtype=torch.float32),
-                      s2, torch.tensor(done, dtype=torch.bool))
+        # Store on CPU to save GPU memory; moved to device at training time.
+        self.buf.push(s.cpu(), torch.tensor(a), torch.tensor(r, dtype=torch.float32),
+                      s2.cpu(), torch.tensor(done, dtype=torch.bool))
 
     def train_step(self) -> Optional[Dict[str, float]]:
         if len(self.buf) < self.min_mem:
             return None
         states, actions, rewards, next_states, dones = self.buf.sample(self.batch_size)
 
-        S  = torch.stack(list(states))
-        A  = torch.stack(list(actions))
-        R  = torch.stack(list(rewards)).unsqueeze(1)
-        S2 = torch.stack(list(next_states))
-        D  = torch.stack(list(dones)).unsqueeze(1)
+        S  = torch.stack(list(states)).to(self.device)
+        A  = torch.stack(list(actions)).to(self.device)
+        R  = torch.stack(list(rewards)).unsqueeze(1).to(self.device)
+        S2 = torch.stack(list(next_states)).to(self.device)
+        D  = torch.stack(list(dones)).unsqueeze(1).to(self.device)
 
         with torch.no_grad():
             a_next       = self.net(S2).argmax(1, keepdim=True)
@@ -810,40 +819,42 @@ class DAIPAgent:
         self.target_upd  = cfg['target_update']
         self.min_mem     = cfg['min_memory_to_train']
         self.eps_w       = cfg['epistemic_weight']
+        self.device      = torch.device(cfg.get('device', 'cpu'))
 
-        self.efe_net    = TwoStreamNet()
-        self.efe_target = TwoStreamNet()
+        self.efe_net    = TwoStreamNet().to(self.device)
+        self.efe_target = TwoStreamNet().to(self.device)
         self.efe_target.load_state_dict(self.efe_net.state_dict())
         self.efe_target.eval()
         self.efe_opt    = optim.Adam(self.efe_net.parameters(), lr=cfg['lr'])
 
-        self.trans_net  = TransitionNet()
+        self.trans_net  = TransitionNet().to(self.device)
         self.trans_opt  = optim.Adam(self.trans_net.parameters(), lr=cfg['lr'])
 
         self.buf    = ReplayBuffer(cfg['memory_size'])
         self._steps = 0
-        self._eye   = torch.eye(ACTION_SIZE)
+        self._eye   = torch.eye(ACTION_SIZE, device=self.device)
 
     def act(self, state: torch.Tensor) -> int:
         with torch.no_grad():
-            nefe  = self.efe_net(state).squeeze()
+            nefe  = self.efe_net(state.to(self.device)).squeeze()
             probs = F.softmax(self.temperature * nefe, dim=-1)
         return torch.multinomial(probs, 1).item()
 
     def push(self, s, a, r, s2, done):
-        self.buf.push(s, torch.tensor(a), torch.tensor(r, dtype=torch.float32),
-                      s2, torch.tensor(done, dtype=torch.bool))
+        # Store on CPU to save GPU memory; moved to device at training time.
+        self.buf.push(s.cpu(), torch.tensor(a), torch.tensor(r, dtype=torch.float32),
+                      s2.cpu(), torch.tensor(done, dtype=torch.bool))
 
     def train_step(self) -> Optional[Dict[str, float]]:
         if len(self.buf) < self.min_mem:
             return None
         states, actions, rewards, next_states, dones = self.buf.sample(self.batch_size)
 
-        S   = torch.stack(list(states))
-        A   = torch.stack(list(actions))
-        R   = torch.stack(list(rewards)).unsqueeze(1)
-        S2  = torch.stack(list(next_states))
-        D   = torch.stack(list(dones)).unsqueeze(1)
+        S   = torch.stack(list(states)).to(self.device)
+        A   = torch.stack(list(actions)).to(self.device)
+        R   = torch.stack(list(rewards)).unsqueeze(1).to(self.device)
+        S2  = torch.stack(list(next_states)).to(self.device)
+        D   = torch.stack(list(dones)).unsqueeze(1).to(self.device)
         AOH = self._eye[A]                         # one-hot actions  (B, 3)
 
         next_proprio = S2[:, STATE_DIM - PROPRIO_DIM:]
@@ -1284,14 +1295,31 @@ def main():
                         help='Path to .env file for WANDB_API_KEY (default .env)')
     parser.add_argument('--plot-path',     type=str,  default='synthetic_lion_results.png',
                         help='Output path for results figure')
+    parser.add_argument('--device',        type=str,  default=None,
+                        help='Compute device: "cpu", "cuda", "cuda:0", "mps", … '
+                             '(auto-detects GPU if omitted)')
     args = parser.parse_args()
 
     # Load WANDB_API_KEY (and any other vars) from .env before touching wandb
     load_dotenv(args.env_file)
 
+    # ── Device selection ────────────────────────────────────────────────────
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
+    CFG['device'] = str(device)
+    global _DEVICE
+    _DEVICE = device
+
     print('=' * 65)
     print(' Synthetic LION experiment')
     print(f'  Episodes : {args.episodes}   Seeds : {args.seeds}')
+    print(f'  Device   : {device}')
     if args.wandb_project:
         print(f'  W&B      : project={args.wandb_project}  '
               f'entity={args.wandb_entity or "(default)"}')
