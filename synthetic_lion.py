@@ -6,6 +6,14 @@ on a 2-D Gaussian CTI curriculum-learning task.
 Self-contained: no smartville imports.  Run with:
     python synthetic_lion.py [--episodes 300] [--seeds 5] [--no-plot]
 
+Weights & Biases logging
+-------------------------
+    echo "WANDB_API_KEY=<your_key>" > .env
+    python synthetic_lion.py --wandb-project synthetic-lion [--wandb-entity <team>]
+
+The script creates one W&B run per (seed × agent) so the UI can aggregate
+statistics across seeds with its built-in grouping feature.
+
 Why DAI-P should beat DDQN here
 ---------------------------------
 Unknown class A (malicious) overlaps in 2-D with Known Benign 0, so the
@@ -45,11 +53,14 @@ Architecture overview
 from __future__ import annotations
 
 import argparse
+import os
+import pathlib
 import random
 import math
+import time
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -125,6 +136,96 @@ CFG = dict(
     pretrain_n_per_class = 200,
     pretrain_lr          = 1e-3,
 )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 0b. .env loader + W&B helper
+# ──────────────────────────────────────────────────────────────────────────────
+
+def load_dotenv(path: str = '.env') -> None:
+    """
+    Minimal .env parser — no python-dotenv dependency required.
+    Supports KEY=value, KEY="value", KEY='value'.  Ignores comments and blanks.
+    Only sets variables that are not already present in the environment.
+    """
+    p = pathlib.Path(path)
+    if not p.exists():
+        return
+    for raw in p.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        k, _, v = line.partition('=')
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
+class _WandbLogger:
+    """
+    Thread-safe optional wrapper around wandb.
+
+    Creates one W&B run per (seed, agent_name) under a shared `group` so
+    the W&B UI can aggregate statistics across seeds automatically.
+    Falls back to a no-op if wandb is not installed or WANDB_API_KEY is absent.
+    """
+
+    def __init__(self, project: Optional[str], entity: Optional[str],
+                 group: str, agent_name: str, seed: int, cfg: dict):
+        self._run = None
+        if project is None:
+            return
+
+        api_key = os.environ.get('WANDB_API_KEY', '')
+        if not api_key:
+            print('[wandb] WANDB_API_KEY not set — logging disabled. '
+                  'Add it to your .env file or environment.')
+            return
+
+        try:
+            import wandb as _w
+            self._w = _w
+            self._run = _w.init(
+                project=project,
+                entity=entity or None,
+                group=group,
+                job_type=agent_name,
+                name=f'{agent_name}_seed{seed}',
+                config={**cfg, 'seed': seed, 'agent': agent_name},
+                reinit=True,
+            )
+        except ImportError:
+            print('[wandb] package not installed — logging disabled. '
+                  'Run: pip install wandb')
+
+    # ------------------------------------------------------------------
+    def log(self, metrics: dict, step: int) -> None:
+        if self._run is not None:
+            self._w.log(metrics, step=step)
+
+    def summary(self, metrics: dict) -> None:
+        if self._run is not None:
+            for k, v in metrics.items():
+                self._run.summary[k] = v
+
+    def log_artifact(self, path: str, name: str, atype: str = 'result') -> None:
+        if self._run is not None:
+            try:
+                art = self._w.Artifact(name, type=atype)
+                art.add_file(str(path))
+                self._run.log_artifact(art)
+            except Exception as exc:
+                print(f'[wandb] artifact upload failed: {exc}')
+
+    def finish(self) -> None:
+        if self._run is not None:
+            self._run.finish()
+            self._run = None
+
+    @property
+    def active(self) -> bool:
+        return self._run is not None
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1.  Data generator
@@ -214,10 +315,10 @@ class InferenceModule(nn.Module):
         d_h   = cfg['hidden_dim']
         n_k   = cfg['n_known']
         n_u   = cfg['n_unknown']
-        self.proto_temp       = cfg['proto_temp']
+        self.proto_temp        = cfg['proto_temp']
         self.anomaly_threshold = cfg['anomaly_threshold']
-        self.n_known_initial  = n_k
-        self.n_unknown        = n_u
+        self.n_known_initial   = n_k
+        self.n_unknown         = n_u
 
         # Encoder: 2-D → hidden
         self.encoder = nn.Sequential(
@@ -306,22 +407,20 @@ class InferenceModule(nn.Module):
         Roll back added prototypes + re-initialise unknown cluster protos.
         Called at the start of every episode.
         """
-        # Trim known protos back to the original pretrained set
         with torch.no_grad():
             self.known_protos = nn.Parameter(
                 self.known_protos.detach()[:original_n_known].clone()
             )
         self.known_types_list = list(data_gen.KNOWN_TYPES[:original_n_known])
-        # Warm-start unknown protos so flows map to correct clusters from step 1
         self.init_unk_protos_with_data(data_gen)
         self.unk_conf.zero_()
         self.unk_size.zero_()
 
     def forward(self, x: torch.Tensor) -> dict:
-        h                          = self.encode(x)
-        pred_k, conf_k, dists_k   = self.known_classify(h)
-        anorm_score, is_anom       = self.anomaly_detect(dists_k)
-        cid, cconf, cweights       = self.unk_cluster(h)
+        h                        = self.encode(x)
+        pred_k, conf_k, dists_k = self.known_classify(h)
+        anorm_score, is_anom     = self.anomaly_detect(dists_k)
+        cid, cconf, cweights     = self.unk_cluster(h)
         return dict(
             h=h, pred_k=pred_k, conf_k=conf_k, dists_k=dists_k,
             anorm_score=anorm_score, is_anom=is_anom,
@@ -329,13 +428,14 @@ class InferenceModule(nn.Module):
         )
 
 
-def pretrain_inference(inf: InferenceModule, dg: DataGenerator, cfg: dict) -> None:
-    """Supervised prototypical loss on known classes."""
+def pretrain_inference(inf: InferenceModule, dg: DataGenerator, cfg: dict) -> float:
+    """Supervised prototypical loss on known classes.  Returns final loss."""
     opt = optim.Adam(inf.parameters(), lr=cfg['pretrain_lr'])
     inf.train()
     X_np, y_np = dg.sample_known_batch(cfg['pretrain_n_per_class'])
     X = torch.FloatTensor(X_np)
     y = torch.LongTensor(y_np)
+    final_loss = float('nan')
     for _ in range(cfg['pretrain_epochs']):
         perm = torch.randperm(len(X))
         X, y = X[perm], y[perm]
@@ -346,7 +446,9 @@ def pretrain_inference(inf: InferenceModule, dg: DataGenerator, cfg: dict) -> No
         opt.zero_grad()
         loss.backward()
         opt.step()
+        final_loss = loss.item()
     inf.eval()
+    return final_loss
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -406,8 +508,6 @@ class SyntheticLIONEnv:
         with torch.no_grad():
             r = self.inf(xt)
 
-        # If is_known: use the (possibly extended) known-proto set
-        # uid == None  → known class; otherwise unknown cluster
         self._flow = dict(
             x=x, class_id=cid, is_known=is_k,
             unknown_id=uid, class_type=ctype,
@@ -419,7 +519,6 @@ class SyntheticLIONEnv:
             cid=r['cid'].item() if uid is not None else -1,
             cconf=r['cconf'].item() if uid is not None else r['conf_k'].item(),
         )
-        # If unknown, update cluster EMA with this sample
         if uid is not None:
             cid_t = r['cid']
             self.inf.update_unk_proto(r['h'], cid_t.item(), self.cfg['proto_ema'])
@@ -432,9 +531,9 @@ class SyntheticLIONEnv:
         n_u = self.n_unk
 
         # Exteroceptive
-        known_pred_norm    = f['pred_k'] / max(self.inf.known_protos.shape[0] - 1, 1)
-        known_conf_norm    = f['conf_k']                           # already 0-1
-        anorm_norm         = min(f['anorm_score'] / 5.0, 1.0)
+        known_pred_norm = f['pred_k'] / max(self.inf.known_protos.shape[0] - 1, 1)
+        known_conf_norm = f['conf_k']
+        anorm_norm      = min(f['anorm_score'] / 5.0, 1.0)
 
         if f['unknown_id'] is not None:
             up = self.inf.unk_protos[f['cid']].detach().numpy()
@@ -444,17 +543,17 @@ class SyntheticLIONEnv:
         proto_y = float(up[1]) / 5.0
 
         # Proprioceptive
-        unk_cconf      = f['cconf']
-        n_labels_frac  = sum(self.labels_bought) / n_u
-        budget_frac    = self.budget / cfg['init_budget']
-        uid            = f['unknown_id']
+        unk_cconf     = f['cconf']
+        n_labels_frac = sum(self.labels_bought) / n_u
+        budget_frac   = self.budget / cfg['init_budget']
+        uid           = f['unknown_id']
         if uid is not None and not self.labels_bought[uid]:
             price_frac = self.prices[uid] / cfg['init_budget']
         else:
             price_frac = 0.0
-        time_frac      = self.t / cfg['max_steps']
+        time_frac = self.t / cfg['max_steps']
 
-        extero = [known_pred_norm, known_conf_norm, anorm_norm, proto_x, proto_y]
+        extero  = [known_pred_norm, known_conf_norm, anorm_norm, proto_x, proto_y]
         proprio = [unk_cconf, n_labels_frac, budget_frac, price_frac, time_frac, known_conf_norm]
 
         return torch.FloatTensor(extero + proprio)
@@ -478,7 +577,6 @@ class SyntheticLIONEnv:
                 reward = -price * 0.05          # tiny immediate cost signal
                 self.budget -= price
                 self.labels_bought[uid] = True
-                # Promote cluster prototype → known
                 self.inf.add_known_proto(
                     self.inf.unk_protos[uid],
                     self.dg.UNKNOWN_TYPES[uid]
@@ -487,30 +585,29 @@ class SyntheticLIONEnv:
         # ── Action 0: block ──────────────────────────────────────────
         elif action == 0:
             if f['is_known']:
-                ctype = self.inf.known_types_list[f['pred_k']]
+                ctype  = self.inf.known_types_list[f['pred_k']]
                 reward = (cfg['r_block_malicious_informed'] if ctype == 'malicious'
                           else cfg['r_block_benign_informed'])
             elif uid is not None and self.labels_bought[uid]:
-                ctype = self.dg.UNKNOWN_TYPES[uid]
+                ctype  = self.dg.UNKNOWN_TYPES[uid]
                 reward = (cfg['r_block_malicious_informed'] if ctype == 'malicious'
                           else cfg['r_block_benign_informed'])
             else:
-                # Uninformed block of unknown cluster
-                key = f'r_block_{self.dg.UNKNOWN_NAMES[uid][0]}_uninformed'
+                key    = f'r_block_{self.dg.UNKNOWN_NAMES[uid][0]}_uninformed'
                 reward = cfg.get(key, 0.5)
 
         # ── Action 1: accept ─────────────────────────────────────────
         elif action == 1:
             if f['is_known']:
-                ctype = self.inf.known_types_list[f['pred_k']]
+                ctype  = self.inf.known_types_list[f['pred_k']]
                 reward = (cfg['r_accept_benign_informed'] if ctype == 'benign'
                           else cfg['r_accept_malicious_informed'])
             elif uid is not None and self.labels_bought[uid]:
-                ctype = self.dg.UNKNOWN_TYPES[uid]
+                ctype  = self.dg.UNKNOWN_TYPES[uid]
                 reward = (cfg['r_accept_benign_informed'] if ctype == 'benign'
                           else cfg['r_accept_malicious_informed'])
             else:
-                key = f'r_accept_{self.dg.UNKNOWN_NAMES[uid][0]}_uninformed'
+                key    = f'r_accept_{self.dg.UNKNOWN_NAMES[uid][0]}_uninformed'
                 reward = cfg.get(key, -1.0)
 
         self.budget += reward
@@ -521,20 +618,19 @@ class SyntheticLIONEnv:
             or self.budget >= cfg['max_budget']
             or self.t     >= cfg['max_steps']
         )
-        win  = self.budget >= cfg['max_budget']
+        win = self.budget >= cfg['max_budget']
 
-        # Hard clamp budget so it doesn't drift wildly
         self.budget = max(cfg['min_budget'], min(self.budget, cfg['max_budget'] + 5.0))
 
         if not done:
             self._step_flow()
 
         info = dict(
-            budget       = self.budget,
-            win          = win,
-            labels       = list(self.labels_bought),
-            n_labels     = sum(self.labels_bought),
-            reward       = reward,
+            budget   = self.budget,
+            win      = win,
+            labels   = list(self.labels_bought),
+            n_labels = sum(self.labels_bought),
+            reward   = reward,
         )
         return self._state(), reward, done, info
 
@@ -570,7 +666,6 @@ class TwoStreamNet(nn.Module):
         e = F.relu(self.ext_fc2(e))
         p = F.relu(self.pro_fc1(p))
         p = F.relu(self.pro_fc2(p))
-        # take first half of p stream
         p = p[:, :self._h2]
         return self.out(torch.cat([e, p], dim=-1))
 
@@ -655,9 +750,9 @@ class DDQNAgent:
         self.buf.push(s, torch.tensor(a), torch.tensor(r, dtype=torch.float32),
                       s2, torch.tensor(done, dtype=torch.bool))
 
-    def train_step(self):
+    def train_step(self) -> Optional[Dict[str, float]]:
         if len(self.buf) < self.min_mem:
-            return
+            return None
         states, actions, rewards, next_states, dones = self.buf.sample(self.batch_size)
 
         S  = torch.stack(list(states))
@@ -667,9 +762,8 @@ class DDQNAgent:
         D  = torch.stack(list(dones)).unsqueeze(1)
 
         with torch.no_grad():
-            # DDQN: online net selects, target net evaluates
-            a_next  = self.net(S2).argmax(1, keepdim=True)
-            q_next  = self.target(S2).gather(1, a_next)
+            a_next       = self.net(S2).argmax(1, keepdim=True)
+            q_next       = self.target(S2).gather(1, a_next)
             targets_full = self.net(S).detach()
             targets_full[range(self.batch_size), A] = (
                 R.squeeze() + self.gamma * q_next.squeeze() * ~D.squeeze()
@@ -684,6 +778,8 @@ class DDQNAgent:
         self._steps += 1
         if self._steps % self.target_upd == 0:
             self.target.load_state_dict(self.net.state_dict())
+
+        return {'loss': loss.item()}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -708,14 +804,14 @@ class DAIPAgent:
     """
 
     def __init__(self, cfg: dict):
-        self.gamma        = cfg['gamma']
-        self.batch_size   = cfg['batch_size']
-        self.temperature  = cfg['temperature']
-        self.target_upd   = cfg['target_update']
-        self.min_mem      = cfg['min_memory_to_train']
-        self.eps_w        = cfg['epistemic_weight']
+        self.gamma       = cfg['gamma']
+        self.batch_size  = cfg['batch_size']
+        self.temperature = cfg['temperature']
+        self.target_upd  = cfg['target_update']
+        self.min_mem     = cfg['min_memory_to_train']
+        self.eps_w       = cfg['epistemic_weight']
 
-        self.efe_net    = TwoStreamNet()           # critic (−EFE values)
+        self.efe_net    = TwoStreamNet()
         self.efe_target = TwoStreamNet()
         self.efe_target.load_state_dict(self.efe_net.state_dict())
         self.efe_target.eval()
@@ -738,9 +834,9 @@ class DAIPAgent:
         self.buf.push(s, torch.tensor(a), torch.tensor(r, dtype=torch.float32),
                       s2, torch.tensor(done, dtype=torch.bool))
 
-    def train_step(self):
+    def train_step(self) -> Optional[Dict[str, float]]:
         if len(self.buf) < self.min_mem:
-            return
+            return None
         states, actions, rewards, next_states, dones = self.buf.sample(self.batch_size)
 
         S   = torch.stack(list(states))
@@ -752,14 +848,13 @@ class DAIPAgent:
 
         next_proprio = S2[:, STATE_DIM - PROPRIO_DIM:]
 
-        # ── 1. Compute perceptive epistemic gain (no gradient through trans_net here) ──
+        # ── 1. Compute perceptive epistemic gain ──────────────────────────────
         with torch.no_grad():
             pred_next = self.trans_net(S, AOH)
-            epist = 0.5 * ((next_proprio - pred_next) ** 2).sum(dim=1, keepdim=True)
+            epist     = 0.5 * ((next_proprio - pred_next) ** 2).sum(dim=1, keepdim=True)
 
         # ── 2. Build EFE targets ──────────────────────────────────────────────
         with torch.no_grad():
-            # DDQN-style: online net selects next action
             a_next      = self.efe_net(S2).argmax(1, keepdim=True)
             q_next      = self.efe_target(S2).gather(1, a_next)
             efe_targets = self.efe_net(S).detach().clone()
@@ -776,10 +871,10 @@ class DAIPAgent:
         efe_loss.backward()
         self.efe_opt.step()
 
-        # ── 4. Train transition network (supervised, next proprio) ───────────
+        # ── 4. Train transition network ───────────────────────────────────────
         self.trans_net.train()
-        pred_next2  = self.trans_net(S, AOH)
-        trans_loss  = F.mse_loss(pred_next2, next_proprio)
+        pred_next2 = self.trans_net(S, AOH)
+        trans_loss = F.mse_loss(pred_next2, next_proprio)
         self.trans_opt.zero_grad()
         trans_loss.backward()
         self.trans_opt.step()
@@ -787,6 +882,8 @@ class DAIPAgent:
         self._steps += 1
         if self._steps % self.target_upd == 0:
             self.efe_target.load_state_dict(self.efe_net.state_dict())
+
+        return {'loss': efe_loss.item(), 'trans_loss': trans_loss.item()}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -815,45 +912,36 @@ class BreakEvenAgent:
         f   = env._flow
         uid = f['unknown_id']
 
-        # Known or labelled-unknown flow: use inference prediction
         if f['is_known'] or (uid is not None and env.labels_bought[uid]):
             inf_type = env.inf.known_types_list[f['pred_k']]
             return 0 if inf_type == 'malicious' else 1
 
-        # Unknown, not yet labelled
         if uid is None:
-            return 1  # shouldn't happen
+            return 1
 
-        # Check if we can and should buy a label
         avail_uids = [i for i in range(env.n_unk) if not env.labels_bought[i]]
         if avail_uids:
-            # Pick the unlabelled cluster with HIGHEST anomaly score as proxy for danger
-            scores = {i: env.inf.unk_conf[i].item() for i in avail_uids}
-            # Use running average anomaly distance instead of cluster confidence
             unk_anom_scores = {}
             for i in avail_uids:
-                # Proxy: distance of cluster's prototype to nearest known proto
                 up = env.inf.unk_protos[i].unsqueeze(0)
                 with torch.no_grad():
                     d = torch.cdist(up, env.inf.known_protos).min().item()
                 unk_anom_scores[i] = d
             best_uid = max(unk_anom_scores, key=unk_anom_scores.__getitem__)
             price    = env.prices[best_uid]
-            # Buy if the current flow belongs to the best cluster AND we can afford
             if uid == best_uid and env.budget >= price + 2.0:
                 return 2
 
-        # Default: block if anomaly score suggests danger, else accept
         if f['anorm_score'] > env.cfg['anomaly_threshold'] * 0.8:
-            return 0    # block anomalous-looking flow
+            return 0
         else:
-            return 1    # accept benign-looking flow (this is the trap for cluster A!)
+            return 1    # Accept — this is the trap for cluster A!
 
     def push(self, *args):
         pass
 
-    def train_step(self):
-        pass
+    def train_step(self) -> None:
+        return None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -862,17 +950,23 @@ class BreakEvenAgent:
 
 @dataclass
 class EpisodeStats:
-    total_reward: float = 0.0
-    n_steps:      int   = 0
-    win:          bool  = False
-    n_labels:     int   = 0
-    labels:       List[bool] = field(default_factory=lambda: [False]*4)
-    budget_final: float = 0.0
+    total_reward:   float = 0.0
+    n_steps:        int   = 0
+    win:            bool  = False
+    n_labels:       int   = 0
+    labels:         List[bool]  = field(default_factory=lambda: [False] * 4)
+    budget_final:   float = 0.0
+    # label buy events: list of (step_idx, unknown_uid) tuples
+    label_buy_steps: List[Tuple[int, int]] = field(default_factory=list)
+    # training losses (averaged over all gradient steps in the episode)
+    mean_loss:       float = 0.0
+    mean_trans_loss: float = 0.0  # DAI-P only
 
 
 def run_episode(agent, env: SyntheticLIONEnv, train: bool = True) -> EpisodeStats:
     state = env.reset()
     stats = EpisodeStats()
+    losses, trans_losses = [], []
 
     while True:
         if isinstance(agent, BreakEvenAgent):
@@ -880,20 +974,32 @@ def run_episode(agent, env: SyntheticLIONEnv, train: bool = True) -> EpisodeStat
         else:
             action = agent.act(state)
 
+        prev_labels = list(env.labels_bought)
+
         next_state, reward, done, info = env.step(action)
         stats.total_reward += reward
 
+        # Record label-purchase events (step index inside episode)
+        for uid, (before, after) in enumerate(zip(prev_labels, info['labels'])):
+            if not before and after:
+                stats.label_buy_steps.append((env.t, uid))
+
         if train:
             agent.push(state, action, reward, next_state, done)
-            agent.train_step()
+            loss_info = agent.train_step()
+            if loss_info:
+                if 'loss'       in loss_info: losses.append(loss_info['loss'])
+                if 'trans_loss' in loss_info: trans_losses.append(loss_info['trans_loss'])
 
         state = next_state
         if done:
-            stats.n_steps     = env.t
-            stats.win         = info['win']
-            stats.n_labels    = info['n_labels']
-            stats.labels      = list(info['labels'])
-            stats.budget_final = info['budget']
+            stats.n_steps        = env.t
+            stats.win            = info['win']
+            stats.n_labels       = info['n_labels']
+            stats.labels         = list(info['labels'])
+            stats.budget_final   = info['budget']
+            stats.mean_loss      = float(np.mean(losses))      if losses      else 0.0
+            stats.mean_trans_loss = float(np.mean(trans_losses)) if trans_losses else 0.0
             break
 
     return stats
@@ -913,6 +1019,7 @@ def smooth(xs: List[float], w: int = 15) -> List[float]:
 
 AGENTS = ['DDQN', 'DAI-P', 'Break-Even']
 
+
 def make_agent(name: str, cfg: dict):
     if name == 'DDQN':
         return DDQNAgent(cfg)
@@ -922,17 +1029,42 @@ def make_agent(name: str, cfg: dict):
         return BreakEvenAgent()
 
 
-def run_experiment(n_episodes: int, seeds: List[int], cfg: dict, verbose: bool = True):
-    """Run all agents across all seeds.  Returns dict of results per agent."""
+def run_experiment(
+    n_episodes:    int,
+    seeds:         List[int],
+    cfg:           dict,
+    verbose:       bool = True,
+    log_interval:  int  = 50,
+    wandb_project: Optional[str] = None,
+    wandb_entity:  Optional[str] = None,
+    wandb_group:   Optional[str] = None,
+) -> dict:
+    """
+    Run all agents across all seeds.
+
+    Parameters
+    ----------
+    n_episodes    : episodes per (seed × agent)
+    seeds         : list of integer seeds
+    cfg           : hyperparameter dict
+    verbose       : print seed-level summaries
+    log_interval  : print per-agent running stats every N episodes (0 = off)
+    wandb_project : W&B project name; None disables W&B logging
+    wandb_entity  : W&B entity (team/user); None uses default
+    wandb_group   : W&B group tag shared across all runs in this experiment;
+                    auto-generated from timestamp if None
+    """
     results = {name: {'rewards': [], 'wins': [], 'n_labels': [],
                       'label_A': [], 'budget': []}
                for name in AGENTS}
 
+    if wandb_group is None:
+        wandb_group = f'synthetic-lion-{int(time.time())}'
+
     for seed in seeds:
         if verbose:
-            print(f"\n── Seed {seed} ──────────────────────────────────────────")
+            print(f'\n── Seed {seed} ──────────────────────────────────────────')
 
-        # Build shared data generator and inference module (one per seed)
         dg  = DataGenerator(seed=seed)
         inf = InferenceModule(cfg)
 
@@ -940,42 +1072,102 @@ def run_experiment(n_episodes: int, seeds: List[int], cfg: dict, verbose: bool =
         np.random.seed(seed)
         random.seed(seed)
 
-        pretrain_inference(inf, dg, cfg)
+        pretrain_loss = pretrain_inference(inf, dg, cfg)
         if verbose:
-            print(f"  Pretraining done.")
+            print(f'  Pretraining done  (final loss={pretrain_loss:.4f})')
 
         for agent_name in AGENTS:
-            # Fresh agent + fresh env per (seed, agent) run
-            torch.manual_seed(seed + 1000 * AGENTS.index(agent_name))
-            random.seed(seed + 1000 * AGENTS.index(agent_name))
-            np.random.seed(seed + 1000 * AGENTS.index(agent_name))
+            agent_idx = AGENTS.index(agent_name)
+            torch.manual_seed(seed + 1000 * agent_idx)
+            random.seed(seed + 1000 * agent_idx)
+            np.random.seed(seed + 1000 * agent_idx)
 
             agent = make_agent(agent_name, cfg)
             env   = SyntheticLIONEnv(dg, deepcopy(inf), cfg)
 
             ep_rewards, ep_wins, ep_labels, ep_labelA, ep_budget = [], [], [], [], []
 
+            wlog = _WandbLogger(
+                project    = wandb_project,
+                entity     = wandb_entity,
+                group      = wandb_group,
+                agent_name = agent_name,
+                seed       = seed,
+                cfg        = cfg,
+            )
+            if wlog.active:
+                print(f'  [wandb] run started: {agent_name} / seed {seed} '
+                      f'(group={wandb_group})')
+
             for ep in range(n_episodes):
                 stats = run_episode(agent, env, train=True)
                 ep_rewards.append(stats.total_reward)
                 ep_wins.append(int(stats.win))
                 ep_labels.append(stats.n_labels)
-                ep_labelA.append(int(stats.labels[0]))  # Unknown A (index 0)
+                ep_labelA.append(int(stats.labels[0]))
                 ep_budget.append(stats.budget_final)
+
+                # ── console: label-buy events ──────────────────────────────
+                for step_idx, uid in stats.label_buy_steps:
+                    uname = dg.UNKNOWN_NAMES[uid]
+                    utype = dg.UNKNOWN_TYPES[uid]
+                    print(f'    [BUY] ep={ep:4d} seed={seed} {agent_name:10s} '
+                          f'→ label uid={uid} ({uname}/{utype}) '
+                          f'at step {step_idx:3d}, '
+                          f'budget_after={stats.budget_final:.2f}')
+
+                # ── console: periodic running summary ──────────────────────
+                if log_interval > 0 and (ep + 1) % log_interval == 0:
+                    w  = log_interval
+                    sl = slice(max(0, ep + 1 - w), ep + 1)
+                    print(f'    [ep {ep+1:4d}] {agent_name:10s} seed={seed} '
+                          f'rew={np.mean(ep_rewards[sl]):+7.2f}  '
+                          f'win={np.mean(ep_wins[sl]):.2f}  '
+                          f'lA={np.mean(ep_labelA[sl]):.2f}  '
+                          f'loss={stats.mean_loss:.4f}'
+                          + (f'  tloss={stats.mean_trans_loss:.4f}'
+                             if agent_name == 'DAI-P' else ''))
+
+                # ── wandb: per-episode metrics ─────────────────────────────
+                wandb_metrics = {
+                    'reward':        stats.total_reward,
+                    'win':           int(stats.win),
+                    'n_labels':      stats.n_labels,
+                    'label_A':       int(stats.labels[0]),
+                    'budget_final':  stats.budget_final,
+                    'n_steps':       stats.n_steps,
+                    'loss':          stats.mean_loss,
+                }
+                if agent_name == 'DAI-P':
+                    wandb_metrics['trans_loss'] = stats.mean_trans_loss
+                wlog.log(wandb_metrics, step=ep)
+
+            # ── console: per-(seed, agent) summary ────────────────────────
+            if verbose:
+                late = slice(-50, None)
+                print(f'  {agent_name:10s}  '
+                      f'mean_rew={np.mean(ep_rewards[late]):.2f}  '
+                      f'win_rate={np.mean(ep_wins[late]):.2f}  '
+                      f'label_A_rate={np.mean(ep_labelA[late]):.2f}  '
+                      f'mean_labels={np.mean(ep_labels[late]):.2f}')
+
+            # ── wandb: run summary ─────────────────────────────────────────
+            for phase, sl in [('early', slice(0, 50)), ('late', slice(-50, None))]:
+                arr_r  = np.array(ep_rewards)[sl]
+                arr_w  = np.array(ep_wins)[sl]
+                arr_la = np.array(ep_labelA)[sl]
+                wlog.summary({
+                    f'{phase}/mean_reward':   float(arr_r.mean()),
+                    f'{phase}/win_rate':      float(arr_w.mean()),
+                    f'{phase}/label_A_rate':  float(arr_la.mean()),
+                })
+            wlog.finish()
 
             results[agent_name]['rewards'].append(ep_rewards)
             results[agent_name]['wins'].append(ep_wins)
             results[agent_name]['n_labels'].append(ep_labels)
             results[agent_name]['label_A'].append(ep_labelA)
             results[agent_name]['budget'].append(ep_budget)
-
-            if verbose:
-                late = slice(-50, None)
-                print(f"  {agent_name:10s}  "
-                      f"mean_rew={np.mean(ep_rewards[late]):.2f}  "
-                      f"win_rate={np.mean(ep_wins[late]):.2f}  "
-                      f"label_A_rate={np.mean(ep_labelA[late]):.2f}  "
-                      f"mean_labels={np.mean(ep_labels[late]):.2f}")
 
     return results
 
@@ -984,14 +1176,15 @@ def run_experiment(n_episodes: int, seeds: List[int], cfg: dict, verbose: bool =
 # 11. Plotting
 # ──────────────────────────────────────────────────────────────────────────────
 
-def plot_results(results: dict, n_episodes: int, out_path: str = 'synthetic_lion_results.png'):
+def plot_results(results: dict, n_episodes: int,
+                 out_path: str = 'synthetic_lion_results.png') -> str:
     try:
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
     except ImportError:
-        print("matplotlib not available – skipping plot.")
-        return
+        print('matplotlib not available – skipping plot.')
+        return ''
 
     colours  = {'DDQN': '#2196F3', 'DAI-P': '#E91E63', 'Break-Even': '#4CAF50'}
     ls_map   = {'DDQN': '--',       'DAI-P': '-',       'Break-Even': ':'}
@@ -1015,16 +1208,13 @@ def plot_results(results: dict, n_episodes: int, out_path: str = 'synthetic_lion
 
     for key, title, ylabel, ax in metrics:
         for name in AGENTS:
-            arr = np.array(results[name][key], dtype=float)   # (seeds, episodes)
+            arr = np.array(results[name][key], dtype=float)
             mu  = arr.mean(0)
             se  = arr.std(0) / max(1, math.sqrt(arr.shape[0]))
-            smu = np.array(smooth(list(mu),   smooth_w))
-            sse = np.array(smooth(list(se),   smooth_w))
-            ax.plot(xs, smu, label=name, color=colours[name],
-                    lw=2.2, ls=ls_map[name])
-            ax.fill_between(xs, smu - sse, smu + sse,
-                            alpha=0.18, color=colours[name])
-        # Mark the "early phase" boundary
+            smu = np.array(smooth(list(mu), smooth_w))
+            sse = np.array(smooth(list(se), smooth_w))
+            ax.plot(xs, smu, label=name, color=colours[name], lw=2.2, ls=ls_map[name])
+            ax.fill_between(xs, smu - sse, smu + sse, alpha=0.18, color=colours[name])
         ax.axvline(50, color='grey', lw=0.8, ls='--', alpha=0.6)
         ax.text(52, ax.get_ylim()[0], 'ep 50', fontsize=7, color='grey')
         ax.set_title(title, fontsize=10)
@@ -1033,32 +1223,31 @@ def plot_results(results: dict, n_episodes: int, out_path: str = 'synthetic_lion
         ax.legend(fontsize=8)
         ax.grid(alpha=0.3)
 
-    # Annotated explanation panel
     axes[1, 2].axis('off')
     txt = (
-        "Experimental design\n"
-        "───────────────────\n"
-        "7 Gaussian classes:\n"
-        "  K0,K1 benign  K2 malicious (known)\n"
-        "  A malicious overlapping K0  ← TRAP\n"
-        "  B malicious separated\n"
-        "  C benign  separated\n"
-        "  D benign  near K2\n\n"
-        "Budget 15 < total label cost 19:\n"
-        "  must choose ≤ 3 labels wisely.\n\n"
-        "Uninformed A-flow accepted → −7\n"
-        "After label-A: blocked     → +2.5\n\n"
-        "Break-Even: buys highest-anomaly\n"
-        "  cluster first (always = B).\n"
-        "  A has LOW anomaly score.\n"
-        "  → A purchased last or never.\n\n"
-        "DAI-P epistemic gain:\n"
-        "  buy-label-A causes largest\n"
-        "  proprioceptive state flip\n"
-        "  (known-conf benign→malicious)\n"
-        "  → highest prediction error\n"
-        "  → highest intrinsic value.\n"
-        "  → faster early convergence.\n"
+        'Experimental design\n'
+        '───────────────────\n'
+        '7 Gaussian classes:\n'
+        '  K0,K1 benign  K2 malicious (known)\n'
+        '  A malicious overlapping K0  ← TRAP\n'
+        '  B malicious separated\n'
+        '  C benign  separated\n'
+        '  D benign  near K2\n\n'
+        'Budget 15 < total label cost 19:\n'
+        '  must choose ≤ 3 labels wisely.\n\n'
+        'Uninformed A-flow accepted → −7\n'
+        'After label-A: blocked     → +2.5\n\n'
+        'Break-Even: buys highest-anomaly\n'
+        '  cluster first (always = B).\n'
+        '  A has LOW anomaly score.\n'
+        '  → A purchased last or never.\n\n'
+        'DAI-P epistemic gain:\n'
+        '  buy-label-A causes largest\n'
+        '  proprioceptive state flip\n'
+        '  (known-conf benign→malicious)\n'
+        '  → highest prediction error\n'
+        '  → highest intrinsic value.\n'
+        '  → faster early convergence.\n'
     )
     axes[1, 2].text(0.04, 0.97, txt, transform=axes[1, 2].transAxes,
                     fontsize=8.5, va='top', fontfamily='monospace',
@@ -1066,7 +1255,8 @@ def plot_results(results: dict, n_episodes: int, out_path: str = 'synthetic_lion
 
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     plt.savefig(out_path, dpi=130, bbox_inches='tight')
-    print(f"Plot saved → {out_path}")
+    print(f'Plot saved → {out_path}')
+    return out_path
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1075,65 +1265,96 @@ def plot_results(results: dict, n_episodes: int, out_path: str = 'synthetic_lion
 
 def main():
     parser = argparse.ArgumentParser(description='Synthetic LION experiment')
-    parser.add_argument('--episodes', type=int, default=300,
+    parser.add_argument('--episodes',      type=int,  default=300,
                         help='Episodes per agent per seed (default 300)')
-    parser.add_argument('--seeds',    type=int, default=5,
+    parser.add_argument('--seeds',         type=int,  default=5,
                         help='Number of random seeds (default 5)')
-    parser.add_argument('--no-plot',  action='store_true',
+    parser.add_argument('--no-plot',       action='store_true',
                         help='Skip matplotlib output')
-    parser.add_argument('--verbose',  action='store_true', default=True)
+    parser.add_argument('--verbose',       action='store_true', default=True)
+    parser.add_argument('--log-interval',  type=int,  default=50,
+                        help='Print running stats every N episodes per agent (0=off, default 50)')
+    parser.add_argument('--wandb-project', type=str,  default=None,
+                        help='W&B project name (enables wandb logging)')
+    parser.add_argument('--wandb-entity',  type=str,  default=None,
+                        help='W&B entity (team or user); uses default if omitted')
+    parser.add_argument('--wandb-group',   type=str,  default=None,
+                        help='W&B run group tag (auto-generated if omitted)')
+    parser.add_argument('--env-file',      type=str,  default='.env',
+                        help='Path to .env file for WANDB_API_KEY (default .env)')
+    parser.add_argument('--plot-path',     type=str,  default='synthetic_lion_results.png',
+                        help='Output path for results figure')
     args = parser.parse_args()
 
-    print("=" * 65)
-    print(" Synthetic LION experiment")
-    print(f"  Episodes : {args.episodes}   Seeds : {args.seeds}")
-    print("=" * 65)
+    # Load WANDB_API_KEY (and any other vars) from .env before touching wandb
+    load_dotenv(args.env_file)
+
+    print('=' * 65)
+    print(' Synthetic LION experiment')
+    print(f'  Episodes : {args.episodes}   Seeds : {args.seeds}')
+    if args.wandb_project:
+        print(f'  W&B      : project={args.wandb_project}  '
+              f'entity={args.wandb_entity or "(default)"}')
+    print('=' * 65)
     print()
-    print("Data layout:")
+    print('Data layout:')
     dg = DataGenerator()
     for k in range(dg.N_KNOWN):
-        print(f"  Known  {k} ({dg.KNOWN_TYPES[k]:8s}): μ={dg.KNOWN_MEANS[k]}")
+        print(f'  Known  {k} ({dg.KNOWN_TYPES[k]:8s}): μ={dg.KNOWN_MEANS[k]}')
     for u in range(dg.N_UNKNOWN):
-        print(f"  Unknown {dg.UNKNOWN_NAMES[u]:20s}: μ={dg.UNKNOWN_MEANS[u]}"
-              f"  price={CFG['label_prices'][u]}")
+        print(f'  Unknown {dg.UNKNOWN_NAMES[u]:20s}: μ={dg.UNKNOWN_MEANS[u]}'
+              f'  price={CFG["label_prices"][u]}')
     print()
-    print("When is AI expected to win?")
-    print("  Unknown-A looks BENIGN to the uninformed inference module")
-    print("  → accepted → −7 per flow.  After buying label-A the module")
+    print('When is AI expected to win?')
+    print('  Unknown-A looks BENIGN to the uninformed inference module')
+    print('  → accepted → −7 per flow.  After buying label-A the module')
     print("    flips to 'malicious A' → blocked → +2.5 per flow.")
-    print("  Buying label-A produces the LARGEST one-step proprioceptive")
-    print("  state change → highest perceptive-epistemic gain in DAI-P.")
-    print("  Break-Even de-prioritises A because its anomaly score is LOW.")
+    print('  Buying label-A produces the LARGEST one-step proprioceptive')
+    print('  state change → highest perceptive-epistemic gain in DAI-P.')
+    print('  Break-Even de-prioritises A because its anomaly score is LOW.')
     print()
 
-    seeds = list(range(args.seeds))
-    results = run_experiment(args.episodes, seeds, CFG, verbose=args.verbose)
+    t0      = time.time()
+    seeds   = list(range(args.seeds))
+    results = run_experiment(
+        n_episodes    = args.episodes,
+        seeds         = seeds,
+        cfg           = CFG,
+        verbose       = args.verbose,
+        log_interval  = args.log_interval,
+        wandb_project = args.wandb_project,
+        wandb_entity  = args.wandb_entity,
+        wandb_group   = args.wandb_group,
+    )
+    elapsed = time.time() - t0
 
     # ── Summary tables ─────────────────────────────────────────────────────
-    early = slice(0, 50)
-    late  = slice(-50, None)
-    header = (f"{'Agent':12s}  {'MeanRew':>9}  {'WinRate':>8}  "
-              f"{'LabelA':>8}  {'±σ WinRate':>11}")
+    header = (f'{"Agent":12s}  {"MeanRew":>9}  {"WinRate":>8}  '
+              f'{"LabelA":>8}  {"±σ WinRate":>11}')
 
-    for label, slc in [('EARLY (ep 1-50)', early), ('LATE (ep last 50)', late)]:
+    for label, slc in [('EARLY (ep 1-50)', slice(0, 50)),
+                        ('LATE  (ep last 50)', slice(-50, None))]:
         print()
-        print("─" * 65)
-        print(f"  {label}")
-        print("─" * 65)
+        print('─' * 65)
+        print(f'  {label}')
+        print('─' * 65)
         print(header)
-        print("─" * 65)
+        print('─' * 65)
         for name in AGENTS:
-            rews   = np.array(results[name]['rewards'])[:, slc].mean()
-            arr_w  = np.array(results[name]['wins'])[:, slc]
-            wins   = arr_w.mean()
-            wins_sd = arr_w.mean(axis=1).std()
-            labelA = np.array(results[name]['label_A'])[:, slc].mean()
-            print(f"{name:12s}  {rews:>9.2f}  {wins:>8.3f}  "
-                  f"{labelA:>8.3f}  {wins_sd:>11.3f}")
-        print("─" * 65)
+            rews     = np.array(results[name]['rewards'])[:, slc].mean()
+            arr_w    = np.array(results[name]['wins'])[:, slc]
+            wins     = arr_w.mean()
+            wins_sd  = arr_w.mean(axis=1).std()
+            labelA   = np.array(results[name]['label_A'])[:, slc].mean()
+            print(f'{name:12s}  {rews:>9.2f}  {wins:>8.3f}  '
+                  f'{labelA:>8.3f}  {wins_sd:>11.3f}')
+        print('─' * 65)
 
+    print(f'\nTotal wall-clock time: {elapsed:.1f}s')
+
+    # ── Plot ────────────────────────────────────────────────────────────────
     if not args.no_plot:
-        plot_results(results, args.episodes)
+        plot_path = plot_results(results, args.episodes, out_path=args.plot_path)
 
 
 if __name__ == '__main__':
