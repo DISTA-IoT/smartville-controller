@@ -121,6 +121,7 @@ class TigerBrain:
         self.wrong_inference_penalisation = args.intrusion_detection.wrong_inference_penalisation
         self.bad_classif_cost_factor = float(args.intrusion_detection.bad_classif_cost_factor)
         self.bad_clustering_cost_factor = float(args.intrusion_detection.bad_clustering_cost_factor)
+        self.uncertainty_blocking_penalty = float(args.intrusion_detection.uncertainty_blocking_penalty)
         self.online_eval_rounds = int(args.intrusion_detection.online_evaluation_rounds)
         self.load_pretrained_inference_module = args.intrusion_detection.pretrained_inference
         self.clustering_loss_backprop = args.intrusion_detection.clustering_loss_backprop
@@ -831,19 +832,21 @@ class TigerBrain:
                 epistemic_action = True
                 accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
 
+            f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
+
             if accepted_cluster: 
                 cost = cost_if_acc[~missing][idx]
-                f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
+                # penalise the agent for accepting bad unknowns
                 current_reward += f * cost
+                # reward the agent for accepting good unknowns
                 current_reward += benign_per_cluster[~missing][idx].item()
             else:
-                cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
-                f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
-                current_reward -= f * cost
-                uncertainty_penalty = float(
-                    self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0)
-                )
-                current_reward -= uncertainty_penalty
+                cost = -self.uncertainty_blocking_penalty * benign_per_cluster[~missing][idx]
+                # penalise the agent for blocking good unknowns
+                current_reward += f * cost
+                # we are NOT rewarding (nor penalising) the agent for blocking bad unknowns
+                
+                
             
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
