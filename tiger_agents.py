@@ -441,7 +441,7 @@ class DAIP_Agent:
         self.neg_efe_net.eval()
         self.target_neg_efe_net.eval()
         if self.transitionnet is not None: self.transitionnet.train()
-        self.policynet.eval()
+        if not self.use_critic_to_act: self.policynet.eval()
 
         indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
         minibatch = [self.memory[i] for i in indices]
