@@ -148,7 +148,6 @@ class ConsumerThread(threading.Thread):
     
     def process_message(self, message):
 
-        self.received_messages += 1
         self.wb_metrics_dict = {}
 
         if CPU in self.kwargs['health']['probe_metrics']:
@@ -347,8 +346,6 @@ class ConsumerThread(threading.Thread):
         conf = {'bootstrap.servers': self.bootstrap_servers}
         admin_client = AdminClient(conf)
         
-        self.received_messages = 0       
-
         consumer.subscribe([self.topic_name])
 
         try:

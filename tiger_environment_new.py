@@ -1,8 +1,5 @@
 import random
 
-G2 = 'G2'
-NEW = 'NEW'
-
 
 class NewTigerEnvironment:
 
@@ -33,17 +30,6 @@ class NewTigerEnvironment:
                 'updated_label': None,
                 'new_label': None,
                 'reset' : True}
-
-
-    def get_cti_prices(self):
-        try:
-            return {
-                # the cti price is n times the cost or revenue of the corresponding flow
-                unknown: abs(self.flow_rewards_dict[unknown] * self.init_cti_price_factor)
-                for unknown in self.init_knowledge['G2s']
-            }
-        except KeyError as e:
-            raise RuntimeError(f'Error during CTI processing... {e}')
 
 
     def update_cti_options(self, n_options=1):

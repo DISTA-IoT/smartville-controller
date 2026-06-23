@@ -206,15 +206,3 @@ class FlowLogger(object):
            ips_containers=ips_containers)
       
 
-    def reset_all_flows_metadata(self):
-       self.flows_dict = {}
-       self.ip_pair_to_flows = defaultdict(list)
-
-
-    def reset_single_flow_metadata(self, flow_id):
-       flow = self.flows_dict.get(flow_id)
-       if flow:
-           ip_pair = (flow.source_ip, flow.dest_ip)
-           if flow in self.ip_pair_to_flows[ip_pair]:
-               self.ip_pair_to_flows[ip_pair].remove(flow)
-           del self.flows_dict[flow_id]
