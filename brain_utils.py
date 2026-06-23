@@ -18,24 +18,7 @@
 
 import torch
 
-# List of colors
-colors = [
-    'red', 'blue', 'green', 'purple', 'orange', 'pink', 'cyan',  'brown', 'yellow',
-    'olive', 'lime', 'teal', 'maroon', 'navy', 'fuchsia', 'aqua', 'silver', 'sienna', 'gold',
-    'indigo', 'violet', 'turquoise', 'tomato', 'orchid', 'slategray', 'peru', 'magenta', 'limegreen',
-    'royalblue', 'coral', 'darkorange', 'darkviolet', 'darkslateblue', 'dodgerblue', 'firebrick',
-    'lightseagreen', 'mediumorchid', 'orangered', 'powderblue', 'seagreen', 'springgreen', 'tan', 'wheat',
-    'burlywood', 'chartreuse', 'crimson', 'darkgoldenrod', 'darkolivegreen', 'darkseagreen', 'indianred',
-    'lavender', 'lightcoral', 'lightpink', 'lightsalmon', 'limegreen', 'mediumseagreen', 'mediumpurple',
-    'midnightblue', 'palegreen', 'rosybrown', 'saddlebrown', 'salmon', 'slateblue', 'steelblue',
-]
-
 # Domain constants
-RAM = 'RAM'
-CPU = 'CPU'
-INBOUND = 'INBOUND'
-OUTBOUND = 'OUTBOUND'
-RTT = 'RTT'
 AGENT = 'AGENT'
 
 # Constants for wandb monitoring:
@@ -49,7 +32,6 @@ OS_LOSS = 'AD Loss'
 KR_LOSS = 'KR_LOSS'
 KR_ARI = 'KR_ARI'
 KR_NMI = 'KR_NMI'
-STEP_LABEL = 'step'
 ANOMALY_BALANCE = 'ANOMALY_BALANCE'
 CLOSED_SET = 'CS'
 ANOMALY_DETECTION = 'AD'
