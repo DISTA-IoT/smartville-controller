@@ -15,11 +15,7 @@
 
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
-from prometheus_client import start_http_server, Gauge, CollectorRegistry, generate_latest
-from prometheus_api_client import PrometheusConnect
 from smartController.consumer_thread import ConsumerThread
-from smartController.dashgenerator import DashGenerator
-from smartController.graphgenerator import GraphGenerator
 from grafana_api.grafana_face import GrafanaFace
 from confluent_kafka import KafkaException
 from confluent_kafka.admin import AdminClient
@@ -27,12 +23,6 @@ from collections import deque
 import time
 import socket
 import threading
-
-RAM = 'RAM'
-CPU = 'CPU'
-inbound_MBps = 'inbound_MBps'
-outbound_MBps = 'outbound_MBps'
-external_http_rtt = 'external_http_rtt'
 
 
 
@@ -48,7 +38,6 @@ class MetricsLogger:
         self.topic_list = []
         self.consumer_threads = []
         self.working_threads_count = 0
-        self.sortcount = 0
         self.kafka_admin_client = None
         self.max_conn_retries = kwargs['health']['max_conn_retries'] 
         self.metrics_to_monitor = kwargs['health']['probe_metrics']
@@ -59,8 +48,6 @@ class MetricsLogger:
                 host=kwargs['monitor_ip']+':'+str(kwargs['grafana']['port']))
         self.logger = kwargs['logger']
         self.consumer_thread_manager = None
-        self.prometheus_httpd = None
-        self.prometheus_server_thread = None
         self.wb_tracker = wb_tracker
         # Defining metric Gauges in Prometheus
         self.CPU_metric = None
@@ -71,22 +58,7 @@ class MetricsLogger:
 
     def init(self):
 
-        if self.init_kafka_connection():    
-            """ 
-            self.init_prometheus_server()
-            try:
-                self.dash_generator = DashGenerator(self.grafana_connection, self.logger, self.max_conn_retries)
-            except Exception as e:
-                self.logger.error(f"Error during dashboard generation: {e}")
-                raise RuntimeError(f"Error during dashboard generation: {e}")
-            try:
-                self.graph_generator = GraphGenerator(
-                    grafana_connection=self.grafana_connection,
-                    prometheus_connection=self.prometheus_connection)
-            except Exception as e:
-                self.logger.error(f"Error during graph generation: {e}")
-                raise RuntimeError(f"Error during graph generation: {e}")
-            """
+        if self.init_kafka_connection():
             self.consumer_thread_manager = threading.Thread(
                 target=self.start_consuming, 
                 args=())
@@ -155,37 +127,6 @@ class MetricsLogger:
         return False
     
 
-    def init_prometheus_server(self):
-        registry = CollectorRegistry()
-        self.prometheus_registry = registry
-
-        self.prometheus_httpd, self.prometheus_server_thread = start_http_server(
-            port=self.kwargs['prometheus']['clientport'], 
-            addr=self.kwargs['prometheus']['clienthost'],
-            registry=registry
-        )
-        
-        if CPU in self.kwargs['health']['probe_metrics']:
-            self.CPU_metric = Gauge(CPU, CPU, ['label_name'],  registry=registry)
-
-        if RAM in self.kwargs['health']['probe_metrics']:
-            self.RAM_metric = Gauge(RAM, RAM, ['label_name'],  registry=registry)
-        
-        if external_http_rtt in self.kwargs['health']['probe_metrics']:
-            self.RTT_metric = Gauge(external_http_rtt, external_http_rtt, ['label_name'],  registry=registry)
-        
-        if inbound_MBps in self.kwargs['health']['probe_metrics']:
-            self.INBOUND_metric = Gauge(inbound_MBps, inbound_MBps, ['label_name'],  registry=registry)
-        
-        if outbound_MBps in self.kwargs['health']['probe_metrics']:
-            self.OUTBOUND_metric = Gauge(outbound_MBps, outbound_MBps, ['label_name'],  registry=registry)
-        
-
-        # prometheus_connection will permit the graph generator 
-        # to organize graphs...  
-        self.prometheus_connection = PrometheusConnect(self.kwargs['grafana']['datasource_url'])
-
-
     def shutdown(self):
         self.active = False
         
@@ -201,13 +142,6 @@ class MetricsLogger:
         if self.consumer_thread_manager:
             self.consumer_thread_manager.join(timeout=2.0)
             self.logger.info("Consumer thread stopped")
-        if self.prometheus_httpd is not None:
-            self.prometheus_httpd.shutdown()
-            self.prometheus_httpd.server_close()
-            self.logger.info("Prometheus server stopped")
-        if self.prometheus_server_thread is not None:
-            self.prometheus_server_thread.join()
-            self.logger.info("Prometheus server thread stopped")
         self.logger.info("MetricsLogger gracefully shutdown")
 
 
@@ -234,8 +168,6 @@ class MetricsLogger:
             # Per ciascun topic nuovo, viene avviato un thread dedicato alla lettura delle metriche
             for topic_name in to_add_topic_list:
 
-                # self.graph_generator.generate_all_graphs(topic_name)
-
                 self.metrics_dict[topic_name] = {}
                 for metric in self.metrics_to_monitor:
                     self.metrics_dict[topic_name][metric] = deque([-1] * self.node_features_time_window, maxlen=self.node_features_time_window)
@@ -258,12 +190,3 @@ class MetricsLogger:
                 self.consumer_threads.append(thread)
                 thread.start()
                 self.logger.info(f"Consumer Thread for topic {topic_name} commencing")
-
-            """
-            if (self.sortcount>=12):     # Ogni minuto (5 secs * 12)
-                self.logger.info(f"Organizing dashboard priorities...")
-                self.graph_generator.sort_all_graphs()
-                self.sortcount = 0
-
-            self.sortcount +=1
-            """
