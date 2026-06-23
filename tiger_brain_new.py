@@ -205,7 +205,6 @@ class TigerBrain:
         """
         self.eval_queue = queue.Queue()
         self.current_known_classes_count = 0
-        self.current_test_known_classes_count = 0
         self.batch_processing_allowed = False
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0

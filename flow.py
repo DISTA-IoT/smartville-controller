@@ -40,35 +40,6 @@ class CircularBuffer:
             self.is_full = True
             self.curr_elements = self.buffer_size
 
-    def get_buffer(self):
-        return self.buffer
-    
-
-class PacketCircularBuffer:
-    def __init__(self, buffer_size=10, feature_size=4):
-        self.buffer_size = buffer_size
-        self.feature_size = feature_size
-        self.buffer = torch.zeros(buffer_size, feature_size)
-        self.is_full = False
-        self.calls_to_add = 0
-        self.curr_elements = 0
-
-
-    def add(self, new_tensor):
-        # Roll the buffer up by 1 along the first dimension
-        self.buffer = torch.roll(self.buffer, shifts=-1, dims=0)
-        # Add new tensor to the last row
-        self.buffer[-1] = new_tensor
-        self.calls_to_add += 1
-        self.curr_elements += 1
-        if self.calls_to_add >= self.buffer_size:
-            self.is_full = True
-            self.curr_elements = self.buffer_size
-
-    def get_buffer(self):
-        return self.buffer
-    
-
 class Flow():
     def __init__(
         self, 
@@ -99,7 +70,6 @@ class Flow():
         self.element_class = BENIGN
         self.zda = False
         self.test_zda = False
-        self.sampling = False
 
 
     def get_flow_features(self):
@@ -107,6 +77,3 @@ class Flow():
     
     def get_packet_features(self):
         return self.packet_feat_circular_buffer.buffer[-self.packets_per_sample:]
-
-    def toogle_sampling(self):
-        self.sampling = not self.sampling
