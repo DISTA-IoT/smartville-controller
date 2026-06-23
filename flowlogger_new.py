@@ -41,7 +41,6 @@ class FlowLogger(object):
       self.wb_tracker = wb_tracker
       self.flows_dict = {}
       self.ip_pair_to_flows = defaultdict(list)
-      self.packet_buffers = {}
       self.logger_instance = core.getLogger()
       self.logger_instance.name = "FlowLogger"
       self.logger_instance.setLevel(kwargs.get("flow_logger_log_level").upper())
@@ -57,7 +56,6 @@ class FlowLogger(object):
     def reset(self):
        self.flows_dict = {}
        self.ip_pair_to_flows = defaultdict(list)
-       self.packet_buffers = {}
 
 
     def extract_flow_feature_tensor(self, flow, sender_ip_addr):
@@ -206,15 +204,3 @@ class FlowLogger(object):
            ips_containers=ips_containers)
       
 
-    def reset_all_flows_metadata(self):
-       self.flows_dict = {}
-       self.ip_pair_to_flows = defaultdict(list)
-
-
-    def reset_single_flow_metadata(self, flow_id):
-       flow = self.flows_dict.get(flow_id)
-       if flow:
-           ip_pair = (flow.source_ip, flow.dest_ip)
-           if flow in self.ip_pair_to_flows[ip_pair]:
-               self.ip_pair_to_flows[ip_pair].remove(flow)
-           del self.flows_dict[flow_id]

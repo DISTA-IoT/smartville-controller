@@ -224,7 +224,6 @@ class TigerBrain:
         self.env.reset()    
         # Reset inference context:
         self.current_known_classes_count = 0
-        self.current_test_known_classes_count = 0
         self.batch_processing_allowed = False
         self.encoder = DynamicLabelEncoder()
         self.replay_buffers = {}
