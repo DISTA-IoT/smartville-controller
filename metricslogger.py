@@ -16,7 +16,6 @@
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
 from smartController.consumer_thread import ConsumerThread
-from grafana_api.grafana_face import GrafanaFace
 from confluent_kafka import KafkaException
 from confluent_kafka.admin import AdminClient
 from collections import deque
@@ -43,9 +42,6 @@ class MetricsLogger:
         self.metrics_to_monitor = kwargs['health']['probe_metrics']
         self.metrics_dict = {}
         self.node_features_time_window = kwargs['health']['node_features_time_window']
-        self.grafana_connection = GrafanaFace(
-                auth=(kwargs['grafana']['user'], kwargs['grafana']['password']), 
-                host=kwargs['monitor_ip']+':'+str(kwargs['grafana']['port']))
         self.logger = kwargs['logger']
         self.consumer_thread_manager = None
         self.wb_tracker = wb_tracker
