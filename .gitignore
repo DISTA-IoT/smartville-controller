@@ -2,3 +2,4 @@ __pycache__
 wandb
 PrometheusLogs
 *.log
+tiger_data_collection
