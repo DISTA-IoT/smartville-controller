@@ -32,6 +32,6 @@ ARG CODE_BUST=1
 
 ARG CODE_BRANCH=TIGER_PAPER_DO_NOT_DELETE
 
-RUN git clone --branch ${CODE_BRANCH} https://github.com/DISTA-IoT/smartville-controller.git pox/smartController -b new_smartville
+RUN git clone --branch ${CODE_BRANCH} https://github.com/DISTA-IoT/smartville-controller.git pox/smartController
 
 WORKDIR /pox/pox/smartController
