@@ -25,6 +25,7 @@ import random
 import time
 import copy
 import queue
+import traceback
 from functools import wraps
 from contextlib import contextmanager
 
@@ -36,6 +37,7 @@ from smartController.tiger_agents import (
     DAIF_Agent, DAISA_Agent, PPO_Agent, A2C_Agent
 )
 from smartController.attr_dict import AttrDict
+from smartController.data_recorder import FlowDataRecorder
 
 # Local imports
 from smartController.label_encoder import DynamicLabelEncoder
@@ -164,6 +166,61 @@ class TigerBrain:
         self._g1_codes_tensor = None
         self._g2_codes_tensor = None
 
+        # Data collection (offline-replay capture mode)
+        self.data_collection_mode = bool(args.intrusion_detection.get('data_collection_mode', False))
+        self.data_collection_skip_training = bool(args.intrusion_detection.get('data_collection_skip_training', True))
+        self.data_recorder = None
+        if self.data_collection_mode:
+            self.logger_instance.info(
+                "[TigerBrain] data_collection_mode=True: every batch seen by process_input "
+                "will be recorded to disk instead of (or in addition to) being used for "
+                f"training. data_collection_skip_training={self.data_collection_skip_training}."
+            )
+            try:
+                self.data_recorder = FlowDataRecorder(
+                    out_dir=args.intrusion_detection.get('data_collection_dir', '/tmp/tiger_data_collection/'),
+                    logger=self.logger_instance,
+                    shard_size=args.intrusion_detection.get('data_collection_shard_size', 2000),
+                    flush_interval_secs=args.intrusion_detection.get('data_collection_flush_interval_secs', 30),
+                    use_packet_feats=bool(args.intrusion_detection.get('data_collection_use_packet_feats', False)) and self.use_packet_feats,
+                    use_node_feats=bool(args.intrusion_detection.get('data_collection_use_node_feats', False)) and self.use_node_feats,
+                    run_metadata=self._build_data_collection_manifest(),
+                )
+            except Exception:
+                self.logger_instance.error(
+                    "[TigerBrain] Failed to initialize FlowDataRecorder; disabling "
+                    "data_collection_mode for this run so process_input falls back to "
+                    "normal training behavior."
+                )
+                self.data_collection_mode = False
+                self.data_recorder = None
+
+    def _build_data_collection_manifest(self):
+        """
+        Snapshot of everything an offline replay script would need to reconstruct
+        this exact TigerBrain/NewTigerEnvironment deterministically. Written once
+        per collection run by FlowDataRecorder, alongside the shards themselves.
+        """
+        try:
+            return {
+                "intrusion_detection": self.kwargs.get('intrusion_detection', {}),
+                "neural_modules": self.kwargs.get('neural_modules', {}),
+                "knowledge": self.kwargs.get('knowledge', {}),
+                "rewards": self.kwargs.get('rewards', {}),
+                "health": self.kwargs.get('health', {}),
+                "traffic_dict": self.traffic_dict,
+                "use_packet_feats": self.use_packet_feats,
+                "use_node_feats": self.use_node_feats,
+                "flow_feat_dim": self.flow_feat_dim,
+                "packet_feat_dim": self.packet_feat_dim,
+                "hidden_size": self.hidden_size,
+            }
+        except Exception:
+            self.logger_instance.error(
+                f"[TigerBrain] Failed to build data collection manifest: {traceback.format_exc()}"
+            )
+            return {}
+
     @contextmanager
     def profile(self, name):
         """Elegant context manager for timing code blocks. Appends to lists for mean calculation."""
@@ -188,13 +245,19 @@ class TigerBrain:
 
     def shutdown(self):
         """
-        Shuts down monitoring threads and WandB tracker.
+        Shuts down monitoring threads, WandB tracker, and the data recorder
+        (if data collection mode is active -- flushes the final partial shard
+        so no in-flight samples are lost when an experiment is stopped).
         """
         if hasattr(self, '_stop_monitoring'):
             self._stop_monitoring.set()
             for t in self._monitoring_threads:
                 if t.is_alive():
                     t.join(timeout=2.0)
+
+        if self.data_recorder is not None:
+            self.logger_instance.info("[TigerBrain] Shutting down: closing data recorder.")
+            self.data_recorder.close()
 
         if self.wb_tracker:
             self.wb_tracker.shutdown()
@@ -1003,8 +1066,23 @@ class TigerBrain:
         """Main entry point for processing new network flows."""
         if len(flows) > 0:
             with self.profile("process_input_total"):
-                with self.profile("input_assembly"):
-                    batch = self.assembly_input_tensor(flows, node_feats)
+                if self.data_collection_mode and self.data_recorder is not None:
+                    with self.profile("input_assembly"):
+                        batch = self.stack_flow_tensors(flows, node_feats)
+                    tick = self.wb_tracker.step_counter
+                    self._record_flows_for_data_collection(batch, flows, tick)
+                    if self.data_collection_skip_training:
+                        if not self.agency:
+                            self.wb_tracker.step_counter += 1
+                        return
+                    # data collection + training both run: still need encoded labels.
+                    # (get_labels must NOT be called while holding self._lock: it can
+                    # call add_class_to_knowledge_base, which is @thread_safe and would
+                    # deadlock re-acquiring the same non-reentrant lock.)
+                    batch.class_labels = self.get_labels(flows)
+                else:
+                    with self.profile("input_assembly"):
+                        batch = self.assembly_input_tensor(flows, node_feats)
 
                 with self._lock:
                     self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
@@ -1378,10 +1456,41 @@ class TigerBrain:
         labels = [f.element_class for f in flows]
         for cl in self.encoder.fit(labels): self.add_class_to_knowledge_base(cl)
         return self.encoder.transform(labels).to(torch.long)
-    
-    def assembly_input_tensor(self, flows, node_feats):
-        """Assemblies a batch from current flow observations."""
+
+    def stack_flow_tensors(self, flows, node_feats):
+        """
+        Stacks the per-flow feature tensors into a batch, with no side effects
+        on the dynamic label encoder (unlike assembly_input_tensor). Used both
+        by the normal training path (assembly_input_tensor wraps this and adds
+        class_labels) and by data collection mode, which records raw tensors
+        and string labels without mutating encoder/replay-buffer state.
+        """
         f_batch = torch.stack([f.get_flow_features() for f in flows])
         p_batch = torch.stack([f.get_packet_features() for f in flows]) if self.use_packet_feats else None
         n_batch = torch.stack([get_metrics_tensor(node_feats, f.dest_ip, self.kwargs['health']) for f in flows]) if self.use_node_feats else None
-        return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch, class_labels=self.get_labels(flows))
+        return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch)
+
+    def assembly_input_tensor(self, flows, node_feats):
+        """Assemblies a batch from current flow observations."""
+        batch = self.stack_flow_tensors(flows, node_feats)
+        batch.class_labels = self.get_labels(flows)
+        return batch
+
+    def _record_flows_for_data_collection(self, batch, flows, tick):
+        """
+        Hands a freshly-assembled batch (tensors only, no encoder side effects)
+        plus the raw ground-truth labels off to the FlowDataRecorder. Never
+        records flow.zda/flow.test_zda: those are derived from this run's
+        curriculum state (current_knowledge['G1s'/'G2s']), which mutates as
+        the agent buys CTI -- see NewTigerEnvironment.perform_epistemic_action.
+        Only element_class (a fact about the traffic, not the curriculum) is
+        persisted; zda/test_zda must be recomputed at replay time.
+        """
+        element_classes = [f.element_class for f in flows]
+        flow_ids = [f.flow_id for f in flows]
+        try:
+            self.data_recorder.record(batch, element_classes, tick=tick, flow_ids=flow_ids)
+        except Exception:
+            self.logger_instance.error(
+                f"[TigerBrain] data recorder failed on tick={tick}: {traceback.format_exc()}"
+            )
