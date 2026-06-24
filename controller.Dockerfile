@@ -10,21 +10,26 @@ RUN apt-get update && \
     net-tools iputils-ping  tcpdump socat && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --upgrade pip
-
-RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu
-
 RUN git clone https://github.com/DISTA-IoT/pox /pox
 
 WORKDIR /pox
 
 RUN rm -r .git
 
+# Full rebuild bust: pass CACHE_BUST=<timestamp> to re-run pip installs
 ARG CACHE_BUST=1
+
+RUN pip3 install --upgrade pip
+
+RUN pip3 install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Install requirements before cloning to cache them
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Code-only bust: pass CODE_BUST=<timestamp> to re-run only the git clone, keeping pip cached.
+ARG CODE_BUST=1
+
 RUN git clone https://github.com/DISTA-IoT/smartville-controller.git pox/smartController -b new_smartville
 
 WORKDIR /pox/pox/smartController
-
-RUN pip install -r requirements.txt
-
-
