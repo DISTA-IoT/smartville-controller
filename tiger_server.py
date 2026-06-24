@@ -175,8 +175,8 @@ def smart_check():
       
       if check_count % 100 == 0:
         report_dict = {}
-        for key in flow_logger.flows_dict.keys():
-          curr_packetcount = flow_logger.flows_dict[key].packet_feat_circular_buffer.calls_to_add
+        for key, flow in list(flow_logger.flows_dict.items()):
+          curr_packetcount = flow.packet_feat_circular_buffer.calls_to_add
           report_dict[f'packetcounts/{key}'] = curr_packetcount
           logger.info(f"Packets seen for {key}: {curr_packetcount}")
 
