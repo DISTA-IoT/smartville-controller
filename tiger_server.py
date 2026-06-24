@@ -183,6 +183,10 @@ def smart_check():
         profiling_metrics = controller_brain.get_profiling_stats_dict()
         report_dict.update(profiling_metrics)
 
+        if controller_brain.data_recorder is not None:
+          report_dict.update(controller_brain.data_recorder.get_status_dict())
+          logger.info(f"[DataRecorder] status: {controller_brain.data_recorder.get_status_dict()}")
+
         wb_tracker.wb_run.log(report_dict, step=wb_tracker.step_counter)
 
           
