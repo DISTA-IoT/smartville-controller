@@ -22,6 +22,9 @@
             "program": "offline_replay.py",
             "args": [
                 "/pox/pox/smartController/tiger_data_collection/run_20260625_142450/",
+                "--wandb",
+                "--wandb-run-name",
+                "offline_training"
             ],
             "justMyCode": true
         },
