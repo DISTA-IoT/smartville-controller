@@ -105,6 +105,14 @@ class TigerBrain:
         self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
         self.packets_per_sample = int(args.intrusion_detection.packets_per_sample)
+        # Caps how many packet-feature samples a single flow can inject into
+        # one tick's batch (see stack_flow_tensors). Without this, a flow
+        # with a deep backlog (e.g. a dense burst the controller fell behind
+        # on) could blow a single batch up to thousands of rows, which is
+        # quadratic-ish death for the kernel-regression/prototypical step and
+        # can OOM the process. Excess backlog just drains over later ticks.
+        self.max_packet_samples_per_flow_per_tick = int(
+            args.intrusion_detection.get('max_packet_samples_per_flow_per_tick', 32))
         self.hidden_size = int(args.neural_modules.hidden_size)
         self.multi_class = args.intrusion_detection.multi_class
         self.kernel_regression = args.intrusion_detection.kernel_regression
@@ -1552,15 +1560,22 @@ class TigerBrain:
 
             packet_chunks = []
             if self.use_packet_feats:
-                packet_chunks = flow.drain_packet_feature_chunks(self.packets_per_sample)
+                packet_chunks = flow.drain_packet_feature_chunks(
+                    self.packets_per_sample, max_chunks=self.max_packet_samples_per_flow_per_tick)
                 if packet_chunks:
                     n_pending = len(flow.pending_packet_feats)
+                    backlog_note = (
+                        f"; {n_pending} packet(s) still backlogged "
+                        f"(capped at {self.max_packet_samples_per_flow_per_tick} sample(s)/tick, "
+                        f"will drain over subsequent ticks)"
+                        if n_pending >= self.packets_per_sample
+                        else f"; {n_pending} packet(s) left queued (incomplete chunk)")
                     self.logger_instance.info(
                         f"[TigerBrain] flow {flow.flow_id}: consumed {len(packet_chunks)} "
                         f"freshly-captured packet sample(s) "
                         f"({len(packet_chunks) * self.packets_per_sample} packet(s) total, "
                         f"packets_per_sample={self.packets_per_sample}) against current "
-                        f"flow_feat window; {n_pending} packet(s) left queued (incomplete chunk)")
+                        f"flow_feat window{backlog_note}")
                 else:
                     # Nothing freshly captured this tick: fall back to the
                     # sticky last-known packet so the flow still contributes.

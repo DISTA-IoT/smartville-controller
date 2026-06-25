@@ -89,14 +89,21 @@ class Flow():
         """Called once per packet captured during a sampling burst."""
         self.pending_packet_feats.append(packet_tensor)
 
-    def drain_packet_feature_chunks(self, chunk_size):
+    def drain_packet_feature_chunks(self, chunk_size, max_chunks=None):
         """
-        Pops as many complete, in-arrival-order chunks of `chunk_size` packets
-        as are currently queued, leaving any incomplete trailing chunk queued
-        for the next call (so no captured packet is ever silently dropped).
+        Pops up to max_chunks complete, in-arrival-order chunks of
+        `chunk_size` packets (all available chunks if max_chunks is None),
+        leaving any remainder -- incomplete trailing chunk and/or chunks
+        beyond the cap -- queued for the next call. This bounds how many
+        rows a single flow can inject into one tick's batch (a flow with a
+        deep backlog, e.g. mid-burst, drains it gradually over several ticks
+        instead of all at once), while still guaranteeing every captured
+        packet eventually becomes a sample.
         Returns a (possibly empty) list of [chunk_size, packet_feat_dim] tensors.
         """
         n_chunks = len(self.pending_packet_feats) // chunk_size
+        if max_chunks is not None:
+            n_chunks = min(n_chunks, max_chunks)
         chunks = []
         for _ in range(n_chunks):
             chunk = self.pending_packet_feats[:chunk_size]
