@@ -49,11 +49,23 @@ import os
 import sys
 import time
 import traceback
+import types
 from collections import Counter
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Under POX, this repo's checkout directory is itself named/mounted as
+# "smartController", which is why every internal module here imports its
+# siblings as `smartController.X` (e.g. tiger_brain_new.py's own imports).
+# Running this script directly (no POX) means no such package exists on
+# sys.path, so register a fake one whose __path__ points at this directory.
+# That lets tiger_brain_new.py's unmodified `smartController.X` imports
+# resolve exactly as they do under POX.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if "smartController" not in sys.modules:
+    _smart_controller_pkg = types.ModuleType("smartController")
+    _smart_controller_pkg.__path__ = [_THIS_DIR]
+    sys.modules["smartController"] = _smart_controller_pkg
 
 from smartController.tiger_brain_new import TigerBrain
 from smartController.wandb_tracker import WandBTracker
