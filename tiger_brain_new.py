@@ -26,6 +26,7 @@ import time
 import copy
 import queue
 import traceback
+from collections import Counter
 from functools import wraps
 from contextlib import contextmanager
 
@@ -208,18 +209,34 @@ class TigerBrain:
                 "knowledge": self.kwargs.get('knowledge', {}),
                 "rewards": self.kwargs.get('rewards', {}),
                 "health": self.kwargs.get('health', {}),
+                "wandb": self.kwargs.get('wandb', {}),
                 "traffic_dict": self.traffic_dict,
+                "container_ips": self.container_ips,
+                "ips_containers": self.ips_containers,
                 "use_packet_feats": self.use_packet_feats,
                 "use_node_feats": self.use_node_feats,
                 "flow_feat_dim": self.flow_feat_dim,
                 "packet_feat_dim": self.packet_feat_dim,
                 "hidden_size": self.hidden_size,
+                "device": self.device,
+                "models": self.kwargs.get('models', ''),
             }
         except Exception:
             self.logger_instance.error(
                 f"[TigerBrain] Failed to build data collection manifest: {traceback.format_exc()}"
             )
             return {}
+        finally:
+            self.logger_instance.info(
+                "[TigerBrain] Built data collection manifest: "
+                f"device={self.device} use_packet_feats={self.use_packet_feats} "
+                f"use_node_feats={self.use_node_feats} flow_feat_dim={self.flow_feat_dim} "
+                f"packet_feat_dim={self.packet_feat_dim} hidden_size={self.hidden_size} "
+                f"models_source_len={len(self.kwargs.get('models', '') or '')} "
+                f"container_ips_count={len(self.container_ips or {})} "
+                f"ips_containers_count={len(self.ips_containers or {})} "
+                f"traffic_dict_keys={list((self.traffic_dict or {}).keys())}"
+            )
 
     @contextmanager
     def profile(self, name):
@@ -1084,26 +1101,57 @@ class TigerBrain:
                     with self.profile("input_assembly"):
                         batch = self.assembly_input_tensor(flows, node_feats)
 
-                with self._lock:
-                    self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
+                self._process_batch(batch)
 
-                    if self.batch_processing_allowed:
-                        with self.profile("online_inference_total"):
-                            self.online_inference(batch)
-                
-                    # we check again if batch_processing allowed because 
-                    # knowledge can change during online inference.
-                    if self.batch_processing_allowed:
-                        with self.profile("train_inf_module_single_batch"):
-                            self.train_inf_module_single_batch()
-
-                    if not self.agency:
-                        # If there's no agency, the step increments here, 
-                        # otherwise it increments with each action
-                        self.wb_tracker.step_counter += 1
-        
         if self.agency and self.wb_tracker.step_counter % self.update_target_freq == 0:
             self.mitigation_agent.update_target_model()
+
+    def _process_batch(self, batch):
+        """
+        Shared downstream path for a fully-assembled, fully-labelled batch:
+        replay buffer push, online inference, single-batch training, step
+        counter bookkeeping. Called identically by process_input (online,
+        live flows) and process_input_from_record (offline replay of
+        recorded shards), so an offline replay sees exactly what the
+        original online run saw -- no re-derivation of this logic.
+        """
+        with self._lock:
+            self.push_to_replay_buffers(batch.flow_features, batch.packet_features, batch.node_features, batch_labels=batch.class_labels)
+
+            if self.batch_processing_allowed:
+                with self.profile("online_inference_total"):
+                    self.online_inference(batch)
+
+            # we check again if batch_processing allowed because
+            # knowledge can change during online inference.
+            if self.batch_processing_allowed:
+                with self.profile("train_inf_module_single_batch"):
+                    self.train_inf_module_single_batch()
+
+            if not self.agency:
+                # If there's no agency, the step increments here,
+                # otherwise it increments with each action
+                self.wb_tracker.step_counter += 1
+
+    def process_input_from_record(self, flow_features, packet_features, node_features, element_classes, tick=None):
+        """
+        Offline-replay entry point: takes tensors/labels already recorded by
+        FlowDataRecorder (one tick's worth of samples) and runs them through
+        the exact same downstream path (_process_batch) that live process_input
+        uses, so an offline run trains/evaluates identically to what would
+        have happened online for this tick. Unlike process_input, callers
+        are expected to have already grouped samples by recorded tick.
+        """
+        with self.profile("process_input_from_record_total"):
+            batch = Batch(flow_features=flow_features, packet_features=packet_features, node_features=node_features)
+            batch.class_labels = self.get_labels_from_strings(list(element_classes))
+            self.logger_instance.info(
+                f"[TigerBrain] offline replay: tick={tick} n_samples={flow_features.shape[0]} "
+                f"label_histogram={dict(Counter(element_classes))} "
+                f"known_classes_count={self.current_known_classes_count} "
+                f"batch_processing_allowed={self.batch_processing_allowed}"
+            )
+            self._process_batch(batch)
 
 
     def _sample_from_frozen_buffers(self, frozen_buffers, frozen_int_to_label, frozen_knowledge, samples_per_class):
@@ -1451,11 +1499,20 @@ class TigerBrain:
         match = preds == targets
         return match.sum() / match.shape[0]
 
-    def get_labels(self, flows):
-        """Encodes string labels from flows into integers."""
-        labels = [f.element_class for f in flows]
+    def get_labels_from_strings(self, labels):
+        """
+        Encodes raw natural-language string labels into integers, mutating the
+        dynamic label encoder / knowledge base as new classes are discovered.
+        Core logic shared by the online path (get_labels) and offline replay
+        (process_input_from_record), which has only recorded strings, not
+        live Flow objects.
+        """
         for cl in self.encoder.fit(labels): self.add_class_to_knowledge_base(cl)
         return self.encoder.transform(labels).to(torch.long)
+
+    def get_labels(self, flows):
+        """Encodes string labels from flows into integers."""
+        return self.get_labels_from_strings([f.element_class for f in flows])
 
     def stack_flow_tensors(self, flows, node_feats):
         """
