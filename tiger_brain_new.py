@@ -121,6 +121,12 @@ class TigerBrain:
         # Training and Evaluation parameters
         self.seed = int(args.intrusion_detection.seed)
         random.seed(self.seed)
+        # Seed torch here too (not just in init_inference_neural_modules), since
+        # init_agents() below constructs the DM agent's policy/value networks and
+        # their weight init draws from torch's global RNG. Without this, varying
+        # `seed` changes exploration/sampling order but not the DM's starting
+        # weights, undermining seed-controlled multi-run statistics.
+        torch.manual_seed(self.seed)
         self.k_shot = int(args.intrusion_detection.k_shot)
         self.batch_size = int(args.intrusion_detection.batch_size)
         self.report_step_freq = int(args.intrusion_detection.report_step_freq)
