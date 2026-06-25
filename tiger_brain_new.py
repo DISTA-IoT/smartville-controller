@@ -104,6 +104,7 @@ class TigerBrain:
         self.use_node_feats = args.node_features
         self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
         self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
+        self.packets_per_sample = int(args.intrusion_detection.packets_per_sample)
         self.hidden_size = int(args.neural_modules.hidden_size)
         self.multi_class = args.intrusion_detection.multi_class
         self.kernel_regression = args.intrusion_detection.kernel_regression
@@ -1085,9 +1086,9 @@ class TigerBrain:
             with self.profile("process_input_total"):
                 if self.data_collection_mode and self.data_recorder is not None:
                     with self.profile("input_assembly"):
-                        batch = self.stack_flow_tensors(flows, node_feats)
+                        batch, row_flow_indices = self.stack_flow_tensors(flows, node_feats)
                     tick = self.wb_tracker.step_counter
-                    self._record_flows_for_data_collection(batch, flows, tick)
+                    self._record_flows_for_data_collection(batch, flows, row_flow_indices, tick)
                     if self.data_collection_skip_training:
                         if not self.agency:
                             self.wb_tracker.step_counter += 1
@@ -1096,7 +1097,7 @@ class TigerBrain:
                     # (get_labels must NOT be called while holding self._lock: it can
                     # call add_class_to_knowledge_base, which is @thread_safe and would
                     # deadlock re-acquiring the same non-reentrant lock.)
-                    batch.class_labels = self.get_labels(flows)
+                    batch.class_labels = self.get_labels(flows, row_flow_indices)
                 else:
                     with self.profile("input_assembly"):
                         batch = self.assembly_input_tensor(flows, node_feats)
@@ -1510,9 +1511,15 @@ class TigerBrain:
         for cl in self.encoder.fit(labels): self.add_class_to_knowledge_base(cl)
         return self.encoder.transform(labels).to(torch.long)
 
-    def get_labels(self, flows):
-        """Encodes string labels from flows into integers."""
-        return self.get_labels_from_strings([f.element_class for f in flows])
+    def get_labels(self, flows, row_flow_indices=None):
+        """
+        Encodes string labels from flows into integers. If row_flow_indices is
+        given (one entry per output batch row, see stack_flow_tensors), the
+        per-flow label is repeated once for every row that flow contributed.
+        """
+        if row_flow_indices is None:
+            row_flow_indices = range(len(flows))
+        return self.get_labels_from_strings([flows[i].element_class for i in row_flow_indices])
 
     def stack_flow_tensors(self, flows, node_feats):
         """
@@ -1521,19 +1528,63 @@ class TigerBrain:
         by the normal training path (assembly_input_tensor wraps this and adds
         class_labels) and by data collection mode, which records raw tensors
         and string labels without mutating encoder/replay-buffer state.
+
+        Flow-stats only refresh every flowstats_freq_secs, but packets can be
+        captured several at a time during a sampling burst. Rather than using
+        only the single most-recently-seen packet per flow (and silently
+        dropping the rest of the burst), every queued packet for a flow is
+        turned into its own row, all sharing that flow's current (still valid)
+        flow_feat window. A flow with no freshly-queued packets this tick still
+        contributes its one sticky last-known-packet row, so it isn't starved.
+
+        Returns (batch, row_flow_indices) where row_flow_indices[i] is the
+        index into `flows` that produced batch row i -- needed downstream to
+        repeat labels/flow_ids correctly since flows no longer map 1:1 to rows.
         """
-        f_batch = torch.stack([f.get_flow_features() for f in flows])
-        p_batch = torch.stack([f.get_packet_features() for f in flows]) if self.use_packet_feats else None
-        n_batch = torch.stack([get_metrics_tensor(node_feats, f.dest_ip, self.kwargs['health']) for f in flows]) if self.use_node_feats else None
-        return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch)
+        flow_feat_rows = []
+        packet_feat_rows = [] if self.use_packet_feats else None
+        node_feat_rows = [] if self.use_node_feats else None
+        row_flow_indices = []
+
+        for flow_idx, flow in enumerate(flows):
+            flow_feat_window = flow.get_flow_features()
+            node_feat_vec = get_metrics_tensor(node_feats, flow.dest_ip, self.kwargs['health']) if self.use_node_feats else None
+
+            packet_chunks = []
+            if self.use_packet_feats:
+                packet_chunks = flow.drain_packet_feature_chunks(self.packets_per_sample)
+                if packet_chunks:
+                    n_pending = len(flow.pending_packet_feats)
+                    self.logger_instance.info(
+                        f"[TigerBrain] flow {flow.flow_id}: consumed {len(packet_chunks)} "
+                        f"freshly-captured packet sample(s) "
+                        f"({len(packet_chunks) * self.packets_per_sample} packet(s) total, "
+                        f"packets_per_sample={self.packets_per_sample}) against current "
+                        f"flow_feat window; {n_pending} packet(s) left queued (incomplete chunk)")
+                else:
+                    # Nothing freshly captured this tick: fall back to the
+                    # sticky last-known packet so the flow still contributes.
+                    packet_chunks = [flow.get_packet_features()]
+
+            n_rows_for_flow = len(packet_chunks) if self.use_packet_feats else 1
+            for row_i in range(n_rows_for_flow):
+                flow_feat_rows.append(flow_feat_window)
+                if self.use_packet_feats: packet_feat_rows.append(packet_chunks[row_i])
+                if self.use_node_feats: node_feat_rows.append(node_feat_vec)
+                row_flow_indices.append(flow_idx)
+
+        f_batch = torch.stack(flow_feat_rows)
+        p_batch = torch.stack(packet_feat_rows) if self.use_packet_feats else None
+        n_batch = torch.stack(node_feat_rows) if self.use_node_feats else None
+        return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch), row_flow_indices
 
     def assembly_input_tensor(self, flows, node_feats):
         """Assemblies a batch from current flow observations."""
-        batch = self.stack_flow_tensors(flows, node_feats)
-        batch.class_labels = self.get_labels(flows)
+        batch, row_flow_indices = self.stack_flow_tensors(flows, node_feats)
+        batch.class_labels = self.get_labels(flows, row_flow_indices)
         return batch
 
-    def _record_flows_for_data_collection(self, batch, flows, tick):
+    def _record_flows_for_data_collection(self, batch, flows, row_flow_indices, tick):
         """
         Hands a freshly-assembled batch (tensors only, no encoder side effects)
         plus the raw ground-truth labels off to the FlowDataRecorder. Never
@@ -1542,9 +1593,13 @@ class TigerBrain:
         the agent buys CTI -- see NewTigerEnvironment.perform_epistemic_action.
         Only element_class (a fact about the traffic, not the curriculum) is
         persisted; zda/test_zda must be recomputed at replay time.
+
+        row_flow_indices maps each batch row back to its source flow (see
+        stack_flow_tensors): a flow that contributed multiple packet-fanned
+        rows this tick has its element_class/flow_id repeated accordingly.
         """
-        element_classes = [f.element_class for f in flows]
-        flow_ids = [f.flow_id for f in flows]
+        element_classes = [flows[i].element_class for i in row_flow_indices]
+        flow_ids = [flows[i].flow_id for i in row_flow_indices]
         try:
             self.data_recorder.record(batch, element_classes, tick=tick, flow_ids=flow_ids)
         except Exception:

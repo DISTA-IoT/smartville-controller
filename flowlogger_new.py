@@ -126,11 +126,18 @@ class FlowLogger(object):
         if flows:
             # Extract packet tensor (only once for all matching flows)
             packet_tensor = self.build_packet_tensor(packet=packet.next)
-            
+
             for flow in flows:
-               # Add packet to the buffer
+               # Keep the sticky "last packet" slot (used as a fallback when a
+               # flow has no freshly-queued packets this tick) ...
                flow.packet_feat_circular_buffer.add(packet_tensor)
-               self.logger_instance.debug(f"Updated packet buffer for {ip_pair}")
+               # ... and queue the packet so every one captured during this
+               # sampling burst gets turned into its own sample later on,
+               # instead of being overwritten and lost.
+               flow.queue_packet_feature(packet_tensor)
+               self.logger_instance.debug(
+                  f"Queued packet for {ip_pair} (flow {flow.flow_id}): "
+                  f"{len(flow.pending_packet_feats)} packet(s) pending consumption")
 
 
 
