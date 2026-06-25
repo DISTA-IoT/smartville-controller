@@ -28,14 +28,16 @@ from smartController.wandb_tracker import WandBTracker
 
 import subprocess
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 import uvicorn
 import threading
 import os
 import atexit
 import signal
+import traceback
 from threading import Lock
 import time
-import logging 
+import logging
 
 
 
@@ -86,12 +88,48 @@ stop_tiger_threads = True
 flowstats_req_thread = None
 inference_thread = None
 flowstats_listener = None
+# Set by smart_check() if the inference loop dies on an uncaught exception.
+# A daemon thread crashing leaves the FastAPI process up and answering
+# requests, so without this the experiment looks "alive" for the rest of an
+# unattended multi-hour run while doing nothing. /health surfaces it so the
+# CLI driver can detect and abort instead of waiting out the full duration.
+controller_crash_info = None
 
 tiger_lock = Lock()
 
 def dpid_to_mac (dpid):
   return EthAddr("%012x" % (dpid & 0xffFFffFFffFF,))
-   
+
+
+def notify_wandb_alert(title, text, level="ERROR"):
+  """
+  Best-effort W&B alert (emails/Slacks the user if Alerts are configured on
+  the account). Must never itself raise, since it's called from error
+  handlers and a crashing inference loop.
+  """
+  global wb_tracker
+  try:
+    if wb_tracker is None or getattr(wb_tracker, "wb_run", None) is None:
+      return
+    import wandb
+    alert_level = getattr(wandb.AlertLevel, level, wandb.AlertLevel.ERROR)
+    wb_tracker.wb_run.alert(title=title, text=text, level=alert_level)
+  except Exception as alert_exc:
+    logger.warning(f"Failed to send W&B alert ({title}): {alert_exc}")
+
+
+def _init_error(msg):
+  """
+  Logs, fires a W&B alert (if a run is active), and returns a JSONResponse
+  carrying the real HTTP 500 status code. Plain dict returns from a FastAPI
+  route default to HTTP 200 regardless of any "status_code" key inside the
+  body, which previously made callers (the dashboard, dash_cli.py) see
+  /initialize failures as successes.
+  """
+  logger.error(msg)
+  notify_wandb_alert(title="TIGER initialize failed", text=msg)
+  return JSONResponse(status_code=500, content={"status_code": 500, "msg": msg})
+
 
 def periodically_requests_stats(period):
   
@@ -157,37 +195,56 @@ def _handle_ConnectionUp (event):
         """
 
 def smart_check():
-  global args, wb_tracker
+  global args, wb_tracker, stop_tiger_threads, controller_crash_info
 
   logger.info("Starting SmartSwitch inference loop")
   check_count = 0
-  
+
   while not stop_tiger_threads:
 
     check_count += 1
 
-    with tiger_lock:
-      
-      controller_brain.process_input(
-        flows=list(flow_logger.flows_dict.values()),
-        node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
-      
-      
-      if check_count % 100 == 0:
-        report_dict = {}
-        for key, flow in list(flow_logger.flows_dict.items()): 
-          report_dict[f'packetcounts/{key}'] = flow.packet_count
+    try:
+      with tiger_lock:
 
-        profiling_metrics = controller_brain.get_profiling_stats_dict()
-        report_dict.update(profiling_metrics)
+        controller_brain.process_input(
+          flows=list(flow_logger.flows_dict.values()),
+          node_feats=(metrics_logger.metrics_dict if args['health_monitoring'] else None))
 
-        if controller_brain.data_recorder is not None:
-          report_dict.update(controller_brain.data_recorder.get_status_dict())
-          logger.debug(f"[DataRecorder] status: {controller_brain.data_recorder.get_status_dict()}")
 
-        wb_tracker.wb_run.log(report_dict, step=wb_tracker.step_counter)
+        if check_count % 100 == 0:
+          report_dict = {}
+          for key, flow in list(flow_logger.flows_dict.items()):
+            report_dict[f'packetcounts/{key}'] = flow.packet_count
 
-          
+          profiling_metrics = controller_brain.get_profiling_stats_dict()
+          report_dict.update(profiling_metrics)
+
+          if controller_brain.data_recorder is not None:
+            report_dict.update(controller_brain.data_recorder.get_status_dict())
+            logger.debug(f"[DataRecorder] status: {controller_brain.data_recorder.get_status_dict()}")
+
+          wb_tracker.wb_run.log(report_dict, step=wb_tracker.step_counter)
+
+    except Exception as e:
+      error_text = f"{e}\n{traceback.format_exc()}"
+      logger.error(f"Inference loop crashed at check #{check_count}: {error_text}")
+      controller_crash_info = {
+        "error": str(e),
+        "traceback": traceback.format_exc(),
+        "check_count": check_count,
+        "timestamp": time.time(),
+      }
+      # Stop both background threads rather than spinning on the same
+      # exception (or silently doing nothing) for the rest of the run.
+      stop_tiger_threads = True
+      notify_wandb_alert(
+        title="TIGER inference loop crashed",
+        text=f"smart_check() died at check #{check_count}: {error_text}",
+      )
+      break
+
+
 
 
 
@@ -274,11 +331,36 @@ def launch(**kwargs):
 
     @app.post("/stop")
     async def shutdown():
-        
+
         shutdown_process()
 
         return {"status_code": 200, "msg": "SmartSwitch is stopped"}
-    
+
+
+    @app.get("/health")
+    async def health():
+        """
+        Lets a sweep/driver script detect a crashed-but-still-running
+        experiment (e.g. the background inference thread died on an
+        uncaught exception) without waiting out the full run duration, and
+        re-confirms which seed/agent the currently running experiment was
+        actually initialized with.
+        """
+        if controller_crash_info is not None:
+          return JSONResponse(status_code=500, content={
+            "status_code": 500,
+            "status": "crashed",
+            "crash_info": controller_crash_info,
+          })
+
+        return {
+          "status_code": 200,
+          "status": "ok" if controller_brain is not None else "not_initialized",
+          "applied_seed": controller_brain.seed if controller_brain is not None else None,
+          "applied_agent": args['intrusion_detection'].get('agent') if args is not None else None,
+        }
+
+
 
     @app.post("/sync_wandb")
     async def sync_wandb():
@@ -313,7 +395,14 @@ def launch(**kwargs):
         global traffic_dict, rewards, container_ips, stop_tiger_threads
         global flow_logger, metrics_logger, controller_brain, smart_switch, wb_tracker
         global FLOWSTATS_FREQ_SECS, args, flowstats_req_thread, inference_thread
-        global flowstats_listener
+        global flowstats_listener, controller_crash_info
+
+        # Reset before anything else so an early failure (or a stale handle
+        # from a previous experiment) never gets misattributed: notify_wandb_alert
+        # below should only ever fire against *this* request's run, not a
+        # leftover one.
+        wb_tracker = None
+        controller_crash_info = None
 
         try:
           logger.setLevel(init_controller_args.get("smart_controller_log_level").upper())
@@ -323,27 +412,23 @@ def launch(**kwargs):
 
           args = init_controller_args
           args['logger'] = logger
-          
-          
+
+
         except Exception as e:
-          logger.error(f"Error parsing initialisation command: {e}")
           shutdown_process()
-          return {"status_code": 500, "msg": f"Error parsing initialisation command: {e}"}
-        
-        wb_tracker = None
+          return _init_error(f"Error parsing initialisation command: {e}")
+
         try:
           wb_tracker = WandBTracker(args)
         except Exception as e:
-          logger.error(f"Error initialising wandb tracker: {e}")
-          return {"status_code": 500, "msg": f"Error initialising wandb tracker: {e}"}
+          return _init_error(f"Error initialising wandb tracker: {e}")
 
 
         try:
           flow_logger = FlowLogger(wb_tracker=wb_tracker, **args)
         except Exception as e:
-          logger.error(f"Error initialising flow logger: {e}")
           shutdown_process()
-          return {"status_code": 500, "msg": f"Error initialising flow logger: {e}"}
+          return _init_error(f"Error initialising flow logger: {e}")
 
         try:
           if args['health_monitoring']:
@@ -351,30 +436,28 @@ def launch(**kwargs):
           else:
              logger.info("Metrics logger is not enabled")
         except Exception as e:
-          logger.error(f"Error creating metrics logger: {e}")
-          return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"} 
+          return _init_error(f"Error initialising metrics logger: {e}")
 
         try:
           # The controllerBrain holds the ML functionalities.
           controller_brain = TigerBrain(args, wb_tracker = wb_tracker)
         except Exception as e:
-          logger.error(f"Error creating controller brain: {e}")
           shutdown_process()
-          return {"status_code": 500, "msg": f"Error creating controller brain: {e}"}
+          return _init_error(f"Error creating controller brain: {e}")
 
-        
+
         try:
           if not core.hasComponent("smart_switch"):
-          
+
             # Registering Switch component:
             smart_switch = SmartSwitch(
               flow_logger=flow_logger,
               wb_tracker=wb_tracker,
               **args
               )
-            core.register("smart_switch", smart_switch) 
+            core.register("smart_switch", smart_switch)
             core.listen_to_dependencies(smart_switch)
-            
+
           else:
             logger.info("SmartSwitch already registered — re-initialising")
             smart_switch = core.components["smart_switch"]
@@ -386,18 +469,16 @@ def launch(**kwargs):
             logger.info("SmartSwitch re-initialised!")
 
         except Exception as e:
-            logger.error(f"Error creating SmartSwitch: {e}")
             shutdown_process()
-            return {"status_code": 500, "msg": f"Error creating SmartSwitch: {e}"}
-        
+            return _init_error(f"Error creating SmartSwitch: {e}")
+
 
         try:
            if metrics_logger is not None:
               metrics_logger.init()
         except Exception as e:
-          logger.error(f"Error initialising metrics logger: {e}")
           shutdown_process()
-          return {"status_code": 500, "msg": f"Error initialising metrics logger: {e}"}
+          return _init_error(f"Error initialising metrics logger: {e}")
 
 
         FLOWSTATS_FREQ_SECS = float(args['intrusion_detection']["flowstats_freq_secs"])
@@ -430,7 +511,15 @@ def launch(**kwargs):
           flowstats_req_thread.start()
           inference_thread.start()
 
-        return {"msg": "SmartSwitch initialized successfully", "status_code": 200}
+        return {
+          "msg": "SmartSwitch initialized successfully",
+          "status_code": 200,
+          # Echoed back so callers (dash_cli.py / sweep scripts) can assert
+          # the seed/agent they sent were the ones actually applied, instead
+          # of just trusting that the request went through.
+          "applied_seed": controller_brain.seed,
+          "applied_agent": args['intrusion_detection'].get('agent'),
+        }
     
 
     atexit.register(cleanup)
