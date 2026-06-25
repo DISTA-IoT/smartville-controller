@@ -14,6 +14,16 @@
                 "smartController.tiger_server",
             ],
             "justMyCode": true
-        }
+        },
+        {
+            "name": "Offline_training",
+            "type": "python",
+            "request": "launch",
+            "program": "offline_replay.py",
+            "args": [
+                "/pox/pox/smartController/tiger_data_collection/run_20260625_142450/",
+            ],
+            "justMyCode": true
+        },
     ]
 }

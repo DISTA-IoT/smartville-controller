@@ -336,6 +336,7 @@ def main():
     )
 
     shard_entries = index_entries if args.max_shards is None else index_entries[:args.max_shards]
+    shard_entries = shard_entries[1:] # skip first entry (ugly packet repetition warm up during collection)
     logger.info(f"[offline_replay] Will replay {len(shard_entries)} of {len(index_entries)} shard(s) (max_shards={args.max_shards}).")
 
     overall_start = time.monotonic()
