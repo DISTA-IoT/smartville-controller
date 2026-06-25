@@ -142,7 +142,7 @@ class FlowLogger(object):
                      f"Queued packet for {ip_pair} (flow {flow.flow_id}): "
                      f"{len(flow.pending_packet_feats)} packet(s) pending consumption")
                else:
-                  self.logger_instance.warning(
+                  self.logger_instance.debug(
                      f"Dropped packet for {ip_pair} (flow {flow.flow_id}): "
                      f"pending queue full (max_pending_packet_feats="
                      f"{flow.max_pending_packet_feats})")
