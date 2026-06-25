@@ -1152,6 +1152,11 @@ class TigerBrain:
         are expected to have already grouped samples by recorded tick.
         """
         with self.profile("process_input_from_record_total"):
+            if packet_features is not None and packet_features.dtype != torch.float32:
+                # FlowDataRecorder stores packet_features as uint8 on disk (they're
+                # integral byte values in [0,255]) to save space; classifiers expect
+                # the float32 dtype the live online path always fed them.
+                packet_features = packet_features.to(torch.float32)
             batch = Batch(flow_features=flow_features, packet_features=packet_features, node_features=node_features)
             batch.class_labels = self.get_labels_from_strings(list(element_classes))
             self.logger_instance.info(
