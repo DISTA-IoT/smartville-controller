@@ -71,9 +71,42 @@ class Flow():
         self.zda = False
         self.test_zda = False
 
+        # Packets sampled from the switch during a sampling burst arrive faster
+        # than flow-stats refresh (every flowstats_freq_secs). Rather than
+        # overwriting them into a single "last packet" slot and discarding the
+        # rest, we queue them here so every captured packet can be turned into
+        # its own sample (paired with the same, still-valid, flow_feat window).
+        self.pending_packet_feats = []
+
 
     def get_flow_features(self):
         return self.flow_feat_circular_buffer.buffer[-self.flows_per_sample:]
-    
+
     def get_packet_features(self):
         return self.packet_feat_circular_buffer.buffer[-self.packets_per_sample:]
+
+    def queue_packet_feature(self, packet_tensor):
+        """Called once per packet captured during a sampling burst."""
+        self.pending_packet_feats.append(packet_tensor)
+
+    def drain_packet_feature_chunks(self, chunk_size, max_chunks=None):
+        """
+        Pops up to max_chunks complete, in-arrival-order chunks of
+        `chunk_size` packets (all available chunks if max_chunks is None),
+        leaving any remainder -- incomplete trailing chunk and/or chunks
+        beyond the cap -- queued for the next call. This bounds how many
+        rows a single flow can inject into one tick's batch (a flow with a
+        deep backlog, e.g. mid-burst, drains it gradually over several ticks
+        instead of all at once), while still guaranteeing every captured
+        packet eventually becomes a sample.
+        Returns a (possibly empty) list of [chunk_size, packet_feat_dim] tensors.
+        """
+        n_chunks = len(self.pending_packet_feats) // chunk_size
+        if max_chunks is not None:
+            n_chunks = min(n_chunks, max_chunks)
+        chunks = []
+        for _ in range(n_chunks):
+            chunk = self.pending_packet_feats[:chunk_size]
+            self.pending_packet_feats = self.pending_packet_feats[chunk_size:]
+            chunks.append(torch.stack(chunk))
+        return chunks
