@@ -1565,17 +1565,11 @@ class TigerBrain:
                 if packet_chunks:
                     n_pending = len(flow.pending_packet_feats)
                     backlog_note = (
-                        f"; {n_pending} packet(s) still backlogged "
-                        f"(capped at {self.max_packet_samples_per_flow_per_tick} sample(s)/tick, "
-                        f"will drain over subsequent ticks)"
-                        if n_pending >= self.packets_per_sample
-                        else f"; {n_pending} packet(s) left queued (incomplete chunk)")
+                        f"; {n_pending} packet(s) still backlogged ")
                     self.logger_instance.info(
-                        f"[TigerBrain] flow {flow.flow_id}: consumed {len(packet_chunks)} "
-                        f"freshly-captured packet sample(s) "
+                        f"[TigerBrain] flow {flow.flow_id}: consumed "
                         f"({len(packet_chunks) * self.packets_per_sample} packet(s) total, "
-                        f"packets_per_sample={self.packets_per_sample}) against current "
-                        f"flow_feat window{backlog_note}")
+                        f"{backlog_note}")
                 else:
                     # Nothing freshly captured this tick: fall back to the
                     # sticky last-known packet so the flow still contributes.

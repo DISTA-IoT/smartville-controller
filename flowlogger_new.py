@@ -202,7 +202,7 @@ class FlowLogger(object):
     def _handle_flowstats_received(self, event, current_knowledge, traffic_dict, ips_containers):
       self.logger_instance.debug("FlowStatsReceived")
       stats = flow_stats_to_list(event.stats)
-      self.logger_instance.debug(f"Received {len(stats)} flow stats")
+      self.logger_instance.info(f"Received {len(stats)} flow stats")
       for sender_flow in stats:
         self.process_received_flow(
            of_flowstats_obj=sender_flow,

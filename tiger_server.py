@@ -178,7 +178,6 @@ def smart_check():
         for key, flow in list(flow_logger.flows_dict.items()):
           curr_packetcount = flow.packet_feat_circular_buffer.calls_to_add
           report_dict[f'packetcounts/{key}'] = curr_packetcount
-          logger.info(f"Packets seen for {key}: {curr_packetcount}")
 
         profiling_metrics = controller_brain.get_profiling_stats_dict()
         report_dict.update(profiling_metrics)
