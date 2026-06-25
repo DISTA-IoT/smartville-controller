@@ -50,8 +50,9 @@ class Flow():
         flows_per_sample,
         packet_feat_dim,
         packets_per_sample,
-        replay_buffer_max_capacity):
-        
+        replay_buffer_max_capacity,
+        max_pending_packet_feats=None):
+
         self.source_ip = source_ip
         self.dest_ip = dest_ip
         self.switch_output_port = switch_output_port
@@ -77,6 +78,11 @@ class Flow():
         # rest, we queue them here so every captured packet can be turned into
         # its own sample (paired with the same, still-valid, flow_feat window).
         self.pending_packet_feats = []
+        # Bounds how large pending_packet_feats can grow (e.g. a flow whose
+        # consumer falls behind during a dense/fast-replayed burst). None
+        # means unbounded. Once full, newly captured packets are dropped
+        # (see queue_packet_feature) rather than queued indefinitely.
+        self.max_pending_packet_feats = max_pending_packet_feats
 
 
     def get_flow_features(self):
@@ -86,8 +92,16 @@ class Flow():
         return self.packet_feat_circular_buffer.buffer[-self.packets_per_sample:]
 
     def queue_packet_feature(self, packet_tensor):
-        """Called once per packet captured during a sampling burst."""
+        """
+        Called once per packet captured during a sampling burst.
+        Returns True if the packet was queued, False if it was dropped
+        because pending_packet_feats is already at max_pending_packet_feats.
+        """
+        if self.max_pending_packet_feats is not None and \
+           len(self.pending_packet_feats) >= self.max_pending_packet_feats:
+            return False
         self.pending_packet_feats.append(packet_tensor)
+        return True
 
     def drain_packet_feature_chunks(self, chunk_size, max_chunks=None):
         """

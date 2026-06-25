@@ -51,6 +51,9 @@ class FlowLogger(object):
       self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
       self.flows_per_sample = int(args.intrusion_detection.flows_per_sample)
       self.use_packet_feats = args.use_packet_feats
+      self.max_pending_packet_feats = args.intrusion_detection.get('max_pending_packet_feats', None)
+      if self.max_pending_packet_feats is not None:
+         self.max_pending_packet_feats = int(self.max_pending_packet_feats)
 
 
     def reset(self):
@@ -134,10 +137,15 @@ class FlowLogger(object):
                # ... and queue the packet so every one captured during this
                # sampling burst gets turned into its own sample later on,
                # instead of being overwritten and lost.
-               flow.queue_packet_feature(packet_tensor)
-               self.logger_instance.debug(
-                  f"Queued packet for {ip_pair} (flow {flow.flow_id}): "
-                  f"{len(flow.pending_packet_feats)} packet(s) pending consumption")
+               if flow.queue_packet_feature(packet_tensor):
+                  self.logger_instance.debug(
+                     f"Queued packet for {ip_pair} (flow {flow.flow_id}): "
+                     f"{len(flow.pending_packet_feats)} packet(s) pending consumption")
+               else:
+                  self.logger_instance.warning(
+                     f"Dropped packet for {ip_pair} (flow {flow.flow_id}): "
+                     f"pending queue full (max_pending_packet_feats="
+                     f"{flow.max_pending_packet_feats})")
 
 
 
@@ -180,7 +188,8 @@ class FlowLogger(object):
                flows_per_sample=self.flows_per_sample,
                packet_feat_dim=self.packet_feat_dim,
                packets_per_sample=self.packets_per_sample,
-               replay_buffer_max_capacity=self.replay_buffer_max_capacity)
+               replay_buffer_max_capacity=self.replay_buffer_max_capacity,
+               max_pending_packet_feats=self.max_pending_packet_feats)
             self.flows_dict[flow.flow_id] = flow
             self.ip_pair_to_flows[(sender_ip_addr, dest_ip_addr)].append(flow)
 
