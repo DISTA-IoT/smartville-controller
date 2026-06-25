@@ -175,16 +175,15 @@ def smart_check():
       
       if check_count % 100 == 0:
         report_dict = {}
-        for key, flow in list(flow_logger.flows_dict.items()):
-          curr_packetcount = flow.packet_feat_circular_buffer.calls_to_add
-          report_dict[f'packetcounts/{key}'] = curr_packetcount
+        for key, flow in list(flow_logger.flows_dict.items()): 
+          report_dict[f'packetcounts/{key}'] = flow.packet_count
 
         profiling_metrics = controller_brain.get_profiling_stats_dict()
         report_dict.update(profiling_metrics)
 
         if controller_brain.data_recorder is not None:
           report_dict.update(controller_brain.data_recorder.get_status_dict())
-          logger.info(f"[DataRecorder] status: {controller_brain.data_recorder.get_status_dict()}")
+          logger.debug(f"[DataRecorder] status: {controller_brain.data_recorder.get_status_dict()}")
 
         wb_tracker.wb_run.log(report_dict, step=wb_tracker.step_counter)
 

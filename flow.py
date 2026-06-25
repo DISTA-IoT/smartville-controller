@@ -71,6 +71,7 @@ class Flow():
         self.element_class = BENIGN
         self.zda = False
         self.test_zda = False
+        self.packet_count = 0
 
         # Packets sampled from the switch during a sampling burst arrive faster
         # than flow-stats refresh (every flowstats_freq_secs). Rather than

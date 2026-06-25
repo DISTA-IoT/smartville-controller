@@ -1570,6 +1570,7 @@ class TigerBrain:
                         f"[TigerBrain] flow {flow.flow_id}: consumed "
                         f"({len(packet_chunks) * self.packets_per_sample} packet(s) total, "
                         f"{backlog_note}")
+                    flow.packet_count += len(packet_chunks) * self.packets_per_sample
                 else:
                     # Nothing freshly captured this tick: fall back to the
                     # sticky last-known packet so the flow still contributes.
