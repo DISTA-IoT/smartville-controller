@@ -26,7 +26,7 @@ There are three **forced-action overrides** that bypass the agent's own choice, 
 2. `greedy_cti=True` → forces `2` whenever `self.env.epistemic_actions_available == 1` (i.e., whenever an unbought G2 class still exists); otherwise queries the agent and remaps `2→1`.
 3. `no_epistemic_actions=True` (and neither of the above set) → queries the agent normally but remaps any `2` to `1`, effectively disabling epistemic actions entirely (ablation knob).
 
-These three are mutually exclusive ablation modes, not part of the "default" DM behavior — confirmed against `tiger/config/default.yaml`, where `greedy_cti: False`, `cti_period: -1`, and `no_epistemic_actions: false` are all off, so the actual learned-agent path is the final fallthrough in `_select_unknown_cluster_action` (the old `else` branch), which returns the agent's own action unmodified.
+These three are mutually exclusive ablation modes, not part of the "default" DM behavior — confirmed against `tiger/config/default.yaml`, where `greedy_cti: False`, `cti_period: -1`, and `no_epistemic_actions: false` are all off, so the actual learned-agent path is the final fallthrough in `_select_unknown_cluster_action`, which returns the agent's own action unmodified unless `epistemic_actions_available == 0`, in which case a `2` is remapped to `1` (block) since there is no G2 class left to buy.
 
 For known-class traffic, the action space is collapsed to a binary choice in effect: if `automatic_cs_acceptance=True` (a config flag, default `false`), action is hard-coded to `0`; otherwise the agent is queried, but **only actions `0` (accept the classifier's verdict) or "anything else" (reject/no-confidence) are semantically distinguished** in the reward logic — see §2.4. So even though `act()` can return `0/1/2` here too, the code only branches on `action_signal.item() == 0` vs. not; there's no real CTI semantics for known traffic, just "trust the IM" vs. "discard its classification and penalize."
 
@@ -41,9 +41,9 @@ For known-class traffic, the action space is collapsed to a binary choice in eff
   epistemic_actions_available (0/1), current_budget ]
 ```
 
-`zda_confidence` and `cs_classif_confidence` are now passed into `assembly_state_vector` explicitly by the caller rather than read off a tick-global `self.*` attribute, so each call site supplies the confidence of the specific group/cluster the decision is actually about.
+`zda_confidence` and `cs_classif_confidence` are passed into `assembly_state_vector` explicitly by the caller, so each call site supplies the confidence of the specific group/cluster the decision is actually about.
 
-Both call sites now take **one DM decision per identified group**, looped, with a real exteroceptive centroid every time — there is no longer a "dummy/placeholder state" regime:
+Both call sites take **one DM decision per identified group**, looped, with a real exteroceptive centroid every time:
 
 - **Known-traffic step** (`act_on_known_traffic`): the predicted-known online samples of the tick are grouped by the IM's predicted class (`torch.unique(class_preds)`), one DM decision *per predicted-class group*. The centroid is the mean hidden vector of that group's members; `cs_classif_confidence` is that group's own classification confidence, computed by `_cs_confidence_for_slice` over just that group's logits/predictions (four `confidence_strategy` strategies — baseline/entropy/energy/margin — scoped to the group). The `zda_confidence` slot in this state is always `0.0`: these samples were never evaluated for anomalousness, so there is no meaningful anomaly-confidence to report, and the zero doubles as a regime indicator the agent can read.
 - **Unknown-cluster step** (`act_on_unknown_clusters`): one DM decision *per identified cluster*, looped (`for idx, centroid in enumerate(centroids[~missing])`); `zda_confidence` is that cluster's own confidence, computed by `_zda_confidence_for_subset` over just the anomaly probabilities of that cluster's members (cluster membership is read off `clusters_oh`'s column for the cluster, matched against the online samples' anomaly probabilities in the same order). The `cs_classif_confidence` slot in this state is always `0.0`: these samples were never classified into a known class, so there is no meaningful classification-confidence to report, and the zero doubles as a regime indicator.
@@ -97,7 +97,7 @@ in `tiger_brain_new.py`:
   unknown clusters, it's computed per identified cluster. In both cases the
   reward is added to `self.env.current_budget`.
 
-**(c) CTI pricing dynamics**: `current_cti_price_factor *= clamp(N(0.7, 0.4), 0.01, 0.99)` is applied stochastically *every* decision step if `price_decay=True` (`price_decay()`, `tiger_environment_new.py`, called at the top of both `act_on_known_traffic` and inside the unknown-cluster loop) — note this is a strictly *decaying* multiplicative random walk (the sampled factor is clamped into `[0.01, 0.99]`, so price can only shrink over time, never recover), bounded below at `1%` of its previous value per single multiplicative step, not in absolute units. In `dista_tiger.yaml` (paper-relevant override) `price_decay` is explicitly `true`. In `default.yaml` it's `false`.
+**CTI pricing dynamics**: `current_cti_price_factor *= clamp(N(0.7, 0.4), 0.01, 0.99)` is applied stochastically *every* decision step if `price_decay=True` (`price_decay()`, `tiger_environment_new.py`, called at the top of both `act_on_known_traffic` and inside the unknown-cluster loop) — this is a strictly *decaying* multiplicative random walk (the sampled factor is clamped into `[0.01, 0.99]`, so price can only shrink over time, never recover), bounded below at `1%` of its previous value per single multiplicative step, not in absolute units. In `dista_tiger.yaml` (paper-relevant override) `price_decay` is explicitly `true`. In `default.yaml` it's `false`.
 
 ### 2.5 Episode termination
 
