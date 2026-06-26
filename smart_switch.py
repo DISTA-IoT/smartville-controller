@@ -162,6 +162,34 @@ class SmartSwitch(EventMixin):
     self.logger.info(f"SmartSwitch initialized!!")
 
 
+  def _notify_wandb_alert(self, title, text, level="ERROR"):
+    """
+    Best-effort W&B alert, mirroring tiger_server.py's notify_wandb_alert.
+    Must never raise, since it's called from an event handler.
+    """
+    try:
+      if self.wb_tracker is None or self.wb_tracker.wb_run_finished or \
+        getattr(self.wb_tracker, "wb_run", None) is None:
+        return
+      import wandb
+      alert_level = getattr(wandb.AlertLevel, level, wandb.AlertLevel.ERROR)
+      self.wb_tracker.wb_run.alert(title=title, text=text, level=alert_level)
+    except Exception as alert_exc:
+      self.logger.warning(f"Failed to send W&B alert ({title}): {alert_exc}")
+
+
+  def _handle_openflow_ConnectionUp(self, event):
+    self.logger.info(f"[OpenFlow] Connection UP for switch {event.dpid} ({event.connection})")
+
+
+  def _handle_openflow_ConnectionDown(self, event):
+    self.logger.warning(f"[OpenFlow] Connection DOWN for switch {event.dpid} ({event.connection})")
+    self._notify_wandb_alert(
+      title="SmartSwitch lost OpenFlow connection",
+      text=f"Switch {event.dpid} disconnected from the controller ({event.connection}).",
+    )
+
+
   def _handle_expiration(self):
     
     # Called by a timer so that we can remove old items.
