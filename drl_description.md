@@ -62,20 +62,40 @@ The "transition" of the environment as a whole, across ticks, is driven by an ex
 
 ### 2.4 Reward
 
-Reward is *not* a single scalar function `r(s,a)` — it's assembled from several independently-configured terms, computed and credited at two different sites:
+Reward is one rule, shared by every DM decision (known-traffic group or
+unknown-traffic cluster alike) — `_decision_reward(accepted, group_rewards)`
+in `tiger_brain_new.py`:
 
-**(a) Known-traffic reward**, computed per predicted-class group (`_known_traffic_reward`, called once per group in `act_on_known_traffic`'s loop):
-- If `action_signal == 0` ("trust the classifier"): reward = `sum(|reward_label| for correctly-classified members of that group)` + `bad_classif_costs` for misclassified ones, where the penalty for being wrong is `-|reward_label|` if `wrong_inference_penalisation == 'easy'`, or `-|reward_label| * bad_classif_cost_factor` if `'hard'` (default config is `'hard'`, factor `40`).
-- Else (any non-zero action signal here): flat penalty `-no_confidence_penalty` (default `0` in `default.yaml`, but configurable, e.g. `tiger.yaml`'s dev override) regardless of how many samples were in the group — a coarse "reject this class-inference group's verdict" penalty.
-- Per-sample rewards come from `self.env.flow_rewards_dict`, set straight from the `rewards:` YAML block — fixed scalars per traffic class (e.g., `mirai: -0.20`, `hue: 0.05` in the smaller config, or larger magnitudes in the dista override) — i.e., reward shaping is entirely a human-authored lookup table, not learned or derived from any cost model.
-- Because the loop now runs once per predicted-class group rather than once for the whole tick's known-traffic sub-batch, a single tick can credit several known-traffic rewards (and W&B logs their per-group average), one per distinct class the IM predicted that tick.
-
-**(b) Unknown-cluster reward**, computed per identified cluster:
-- `rewards_if_acc` = sum of true class rewards for that cluster's members (signed: positive for benign, negative for malicious); `cost_if_acc = -relu(-rewards_if_acc)` (i.e. only the malicious-content cost matters if accepting); `benign_per_cluster = relu(rewards) summed per cluster` (the benign reward forgone/preserved).
-- If accepted (`action==0`, or `action==2` and `epistemic_is_blocking=False`): `reward = f * cost_if_acc + benign_per_cluster`, where `f = bad_clustering_cost_factor` (default `8`) if `wrong_inference_penalisation=='hard'` else `1.0`.
-- If blocked: `reward = -f * bad_classif_cost_factor * benign_per_cluster - uncertainty_blocking_penalty` (default penalty `1.5`) — i.e. blocking penalizes lost benign reward, scaled by *both* `bad_clustering_cost_factor` and `bad_classif_cost_factor` when in `'hard'` mode.
-- If epistemic (`action==2`): in addition to the accept/block reward above (gated by `epistemic_is_blocking`), `current_reward -= price_payed`, where `price_payed` is either the actual CTI cost (`|class_reward * current_cti_price_factor|`, from `perform_epistemic_action`) or, if there were no more G2 classes left to buy (a "placeholder" purchase), the flat `useless_epistemic_penalty` (default `7`) — a hard-coded penalty for taking an epistemic action when no information was actually available to buy.
-- This reward is then added to `self.env.current_budget`.
+- **Accepted** (`action==0`, or `action==2` with `epistemic_is_blocking=False`):
+  reward = `sum(group_rewards)`, the group's true per-flow rewards, signed
+  positive for benign content and negative for malicious content. Trusting
+  a benign verdict/cluster earns its reward; trusting a malicious one costs
+  its reward — no separate correct/incorrect bookkeeping is needed, since
+  the sign of the true reward already encodes that.
+- **Blocked** (`action==1`, or any non-zero known-traffic action signal, or
+  `action==2` with `epistemic_is_blocking=True`): reward =
+  `-relu(group_rewards).sum()`, i.e. only the benign reward the group would
+  have earned is forgone; there's no cost for the malicious content, since
+  it's blocked.
+- **Epistemic** (`action==2`): the accept/block reward above, minus
+  `price_payed` (the actual CTI cost, `|class_reward * current_cti_price_factor|`,
+  from `perform_epistemic_action`). Action `2` is only ever offered to the
+  agent when `epistemic_actions_available == 1` (a real G2 class exists to
+  buy) — `_select_unknown_cluster_action` remaps any `2` it returns to `1`
+  (block) otherwise, so there is no separate "useless epistemic action"
+  penalty: the choice simply isn't offered when it would be a no-op.
+- Per-sample rewards come from `self.env.flow_rewards_dict`, set straight
+  from the `rewards:` YAML block — fixed scalars per traffic class (e.g.,
+  `mirai: -0.20`, `hue: 0.05` in the smaller config, or larger magnitudes in
+  the dista override) — reward shaping is entirely a human-authored lookup
+  table, not learned or derived from any cost model. This lookup table is
+  the *only* tunable for reward magnitude; there is no separate penalty
+  factor, "hard"/"easy" mode, or per-branch multiplier layered on top.
+- For known-traffic groups, this is computed per predicted-class group
+  (a single tick can credit several known-traffic rewards, one per distinct
+  class the IM predicted that tick, W&B logs their per-group average). For
+  unknown clusters, it's computed per identified cluster. In both cases the
+  reward is added to `self.env.current_budget`.
 
 **(c) CTI pricing dynamics**: `current_cti_price_factor *= clamp(N(0.7, 0.4), 0.01, 0.99)` is applied stochastically *every* decision step if `price_decay=True` (`price_decay()`, `tiger_environment_new.py`, called at the top of both `act_on_known_traffic` and inside the unknown-cluster loop) — note this is a strictly *decaying* multiplicative random walk (the sampled factor is clamped into `[0.01, 0.99]`, so price can only shrink over time, never recover), bounded below at `1%` of its previous value per single multiplicative step, not in absolute units. In `dista_tiger.yaml` (paper-relevant override) `price_decay` is explicitly `true`. In `default.yaml` it's `false`.
 
@@ -105,6 +125,6 @@ The DM step counter (`wb_tracker.step_counter`) increments once per individual a
 5. **IM is fully reset every episode** (weights reloaded from disk, replay buffers and curriculum reset); only the DM's network/memory persists across episodes.
 6. **CTI price only decays, never rises**, and decays multiplicatively and stochastically every single decision step (not per-episode or per-purchase) when enabled.
 7. **Greedy-CTI / periodic-CTI / no-epistemic-actions are exclusive override modes** that replace the learned policy's action for the epistemic dimension — useful as ablations, but mean "agent always decides" is only true in the default/else branch.
-8. **Reward magnitudes are a fixed, hand-authored per-class lookup table** (`rewards:` YAML), with separate multiplicative penalty factors (`bad_classif_cost_factor`, `bad_clustering_cost_factor`, `uncertainty_blocking_penalty`, `useless_epistemic_penalty`) layered on asymmetrically between the accept-branch and block-branch of the unknown-cluster logic.
+8. **Reward magnitudes are a fixed, hand-authored per-class lookup table** (`rewards:` YAML), and that table is the only tunable: there are no separate multiplicative penalty factors or "hard"/"easy" mode layered on top — accept and block share one rule (`_decision_reward`) everywhere.
 9. **Traffic arrival is exogenous**: the DM's actions never influence which flows/classes appear next; they only affect the budget/reward and the curriculum (which classes are "known" vs. purchasable), not the environment's "physics."
 10. **IM training batches are decoupled from the exact batch the DM just acted on** — IM gradient steps sample fresh i.i.d. batches from replay buffers rather than the literal online tick batch, which is what allows the act-then-train ordering to not create within-tick circular dependency, but also means the IM's loss is not a function of the DM's most recent decisions.

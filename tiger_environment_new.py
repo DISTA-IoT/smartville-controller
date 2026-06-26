@@ -16,7 +16,6 @@ class NewTigerEnvironment:
         self.max_episode_steps = int(kwargs.intrusion_detection.max_episode_steps)
         self.init_cti_price_factor = float(kwargs.intrusion_detection.cti_price_factor)
         self.current_cti_price_factor = self.init_cti_price_factor
-        self.useless_epistemic_penalty = int(kwargs.intrusion_detection.useless_epistemic_penalty)
         self.seed = int(kwargs.intrusion_detection.seed)
 
     def reset_intelligence(self):
@@ -78,34 +77,20 @@ class NewTigerEnvironment:
 
     def perform_epistemic_action(self, current_action=0):
         """
-        This method changes the curriculum by turning an attack that
-        was a type2 ZDA in a known attack.
-        TODO check legacy with corresponding tiger_enrivonment action.
+        Buys CTI for the G2 class at `current_action`'s slot in
+        `current_cti_options`, turning it into a known class. Only called
+        when `epistemic_actions_available == 1` (the DM's action-2 is
+        masked to a block otherwise), so there's always a real label to buy.
         """
-               
-        price_payed = 0
-        # get the label corresponding to the attack we want to purchase info about
-        # Optimization: Avoid list(keys()) if possible, but for small n_options it's fine.
-        # However, we can use a more direct way if current_action is always 0.
-        keys = list(self.current_cti_options.keys())
-        if current_action < len(keys):
-            acquired_cti = keys[current_action]
-        else:
-            acquired_cti = 'placeholder'
+        acquired_cti = list(self.current_cti_options.keys())[current_action]
 
         self.epistemic_actions += 1
-        
-        # if the action corresponds to a placeholder, it means we did not buy anything.
-        if 'placeholder' not in acquired_cti:
-            self.current_knowledge['G2s'].remove(acquired_cti)
-            self.current_knowledge['Knowns'].append(acquired_cti)
-            self.current_knowledge['updated_labels'].append(acquired_cti)
-            price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
-            self.update_cti_options()
-        else:
-            acquired_cti = None
-            price_payed = self.useless_epistemic_penalty
-            
+        self.current_knowledge['G2s'].remove(acquired_cti)
+        self.current_knowledge['Knowns'].append(acquired_cti)
+        self.current_knowledge['updated_labels'].append(acquired_cti)
+        price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
+        self.update_cti_options()
+
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,
                 'price_payed': price_payed}

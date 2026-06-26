@@ -136,9 +136,6 @@ class TigerBrain:
         self.use_neural_KR = args.intrusion_detection.use_neural_KR
         self.use_neural_CS = args.intrusion_detection.use_neural_CS
         self.online_evaluation = args.intrusion_detection.online_evaluation
-        self.wrong_inference_penalisation = args.intrusion_detection.wrong_inference_penalisation
-        self.bad_classif_cost_factor = float(args.intrusion_detection.bad_classif_cost_factor)
-        self.bad_clustering_cost_factor = float(args.intrusion_detection.bad_clustering_cost_factor)
         self.online_eval_rounds = int(args.intrusion_detection.online_evaluation_rounds)
         self.load_pretrained_inference_module = args.intrusion_detection.pretrained_inference
         self.clustering_loss_backprop = args.intrusion_detection.clustering_loss_backprop
@@ -834,58 +831,27 @@ class TigerBrain:
         else: # baseline
             return probs.mean().unsqueeze(-1)
 
-    def _hard_mode_factor(self, factor):
+    def _decision_reward(self, accepted, group_rewards):
         """
-        Returns `factor` if `wrong_inference_penalisation == 'hard'`, else 1.0.
-        Several reward terms below get an extra multiplicative penalty in
-        'hard' mode and none in 'easy' mode; this centralizes that switch.
+        Single reward rule shared by every DM decision, known-traffic group
+        or unknown-traffic cluster alike: a decision is "accept" (let the
+        group's traffic stand) or "block" (discard it).
+
+        Accepted: the sum of the group's true per-flow rewards -- positive
+        for benign content, negative for malicious content. This already
+        rewards trusting a benign verdict/cluster and penalizes trusting a
+        malicious one, with no separate correctness bookkeeping needed.
+        Blocked: the benign reward the group would have earned is forgone
+        (the malicious-content cost is zero, since it's blocked).
+
+        An epistemic (CTI-buying) decision reuses this same rule for its
+        accept/block component; the caller subtracts the CTI price on top.
         """
-        return factor if self.wrong_inference_penalisation == 'hard' else 1.0
-
-    def _known_traffic_reward(self, action_signal, known_samples_costs, correct_mask):
-        """
-        Reward for one tick's known-traffic sub-batch (case a in the reward spec).
-
-        action 0 ("trust the classifier"): correctly-classified samples earn
-        their |reward_label|; misclassified ones cost |reward_label|, scaled
-        by bad_classif_cost_factor in 'hard' mode.
-        Any other action ("no confidence"): flat no_confidence_penalty,
-        regardless of how many samples were in the batch.
-
-        Returns (total_reward, correct_rewards, wrong_costs, no_confidence_penalty)
-        -- the latter three are only for W&B logging by the caller.
-        """
-        if action_signal.item() != 0:
-            penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
-            zeros = torch.zeros_like(known_samples_costs)
-            return penalty, zeros, zeros, penalty
-
-        correct_rewards = torch.abs(known_samples_costs * correct_mask)
-        wrong_costs = -torch.abs(known_samples_costs * (~correct_mask)) * self._hard_mode_factor(self.bad_classif_cost_factor)
-        total = (correct_rewards.sum() + wrong_costs.sum()).item()
-        return total, correct_rewards, wrong_costs, 0.0
-
-    def _cluster_reward(self, accepted, cost_if_acc, benign_reward):
-        """
-        Reward for one identified unknown-traffic cluster (case b in the
-        reward spec), excluding any epistemic CTI price -- the caller
-        subtracts `price_payed` separately, only when action == 2.
-
-        Accepted (action 0, or 2 with epistemic_is_blocking=False): the
-        malicious-content cost (scaled by bad_clustering_cost_factor in
-        'hard' mode) plus the cluster's benign reward.
-        Blocked: the benign reward is forgone -- scaled by
-        bad_classif_cost_factor, and additionally by bad_clustering_cost_factor
-        in 'hard' mode -- plus a flat uncertainty_blocking_penalty.
-        """
-        clustering_factor = self._hard_mode_factor(self.bad_clustering_cost_factor)
         if accepted:
-            return clustering_factor * cost_if_acc + benign_reward
+            return group_rewards.sum().item()
+        return -torch.relu(group_rewards).sum().item()
 
-        uncertainty_penalty = float(self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0))
-        return -clustering_factor * self.bad_classif_cost_factor * benign_reward - uncertainty_penalty
-
-    def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards,
+    def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
                               class_preds, interest_logits_slice, number_of_known_classes):
         """
         One DM decision per predicted closed-set class-inference group within
@@ -914,9 +880,6 @@ class TigerBrain:
         group_centroids = [known_hiddens[mask].mean(dim=0) for mask in group_member_masks]
 
         classification_reward_total = 0.0
-        correct_rewards_total = 0.0
-        bad_classif_costs_total = 0.0
-        no_confidence_penalty_total = 0.0
         last_action = None
 
         for idx in range(num_groups):
@@ -941,9 +904,7 @@ class TigerBrain:
             self.wb_tracker.step_counter += 1
 
             group_costs = known_samples_costs[member_mask]
-            group_correct_mask = correct_mask[member_mask]
-            classification_reward, correct_classif_rewards, bad_classif_costs, no_confidence_penalty = \
-                self._known_traffic_reward(action_signal, group_costs, group_correct_mask)
+            classification_reward = self._decision_reward(action_signal.item() == 0, group_costs)
 
             self.env.current_budget += classification_reward
 
@@ -964,19 +925,13 @@ class TigerBrain:
             self.env.episode_budgets.append(self.env.current_budget)
 
             classification_reward_total += classification_reward
-            correct_rewards_total += correct_classif_rewards.sum().item()
-            bad_classif_costs_total += bad_classif_costs.sum().item()
-            no_confidence_penalty_total += no_confidence_penalty
 
         if num_groups > 0 and self.wbt:
             self.reporter.log_scalars({
                 AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
                 AGENT+'/'+'classification_reward': classification_reward_total / num_groups,
                 AGENT+'/'+'budget': self.env.current_budget,
-                AGENT+'/'+'correct_classification_rewards': correct_rewards_total / num_groups,
-                AGENT+'/'+'bad_classification_cost': bad_classif_costs_total / num_groups,
                 AGENT+'/'+'known traffic action': last_action.item() if last_action is not None else -1,
-                AGENT+'/'+'no_confidence_penalty': no_confidence_penalty_total / num_groups,
                 AGENT+'/'+'known_traffic_groups': num_groups,
             }, step=self.wb_tracker.step_counter)
 
@@ -1055,6 +1010,10 @@ class TigerBrain:
         action = self.act(state_vec)
         if self.intrusion_detection_kwargs['no_epistemic_actions']:
             return self._remap_epistemic_to_block(action)
+        if self.env.epistemic_actions_available == 0:
+            # No G2 class left to buy: a CTI purchase here would be a no-op,
+            # so it's not offered as a real choice -- treat it as a block.
+            return self._remap_epistemic_to_block(action)
         return action
 
     def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs):
@@ -1067,10 +1026,7 @@ class TigerBrain:
         state belongs to the unknown-cluster regime.
         """
         num_identified = centroids[~missing].shape[0]
-        rewards_if_acc = (clusters_oh * rewards[zda_mask].unsqueeze(-1)).sum(0)
-        cost_if_acc = -torch.relu(-rewards_if_acc)
-        benign_rewards = torch.relu(rewards[zda_mask])
-        benign_per_cluster = (clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
+        rewards_per_cluster = (clusters_oh * rewards[zda_mask].unsqueeze(-1)).sum(0)
 
         # clusters_oh's rows are the predicted-anomalous online samples, in
         # the same order as online_anomaly_probs[zda_mask] -- so indexing both
@@ -1106,10 +1062,7 @@ class TigerBrain:
                 epistemic_action = True
                 accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
 
-            current_reward = self._cluster_reward(
-                accepted_cluster,
-                cost_if_acc[~missing][idx],
-                benign_per_cluster[~missing][idx].item())
+            current_reward = self._decision_reward(accepted_cluster, rewards_per_cluster[~missing][idx])
 
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
@@ -1204,14 +1157,14 @@ class TigerBrain:
         rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
-        correct_mask, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
+        _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
             self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
 
         kr_metrics = {}
         if num_known > 0:
             if self.agency:
                 self.act_on_known_traffic(
-                    num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards,
+                    num_anom, num_known, hiddens, pred_online_zda_mask, rewards,
                     class_preds, interest_logits_slice, number_of_known_classes)
 
         if num_anom > 0:
