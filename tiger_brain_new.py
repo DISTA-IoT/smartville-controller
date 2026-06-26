@@ -891,6 +891,59 @@ class TigerBrain:
 
         return predicted_clusters_oh, centroids, missing, kr_metrics
     
+    def _remap_epistemic_to_block(self, action):
+        """
+        Ablation helper: turns a CTI-purchase action (2) into a block (1).
+        Used by the scripted-CTI ablation modes in `_select_unknown_cluster_action`
+        to neutralize the agent's own choice of action 2 outside their forced slot.
+        """
+        if action == 2:
+            return torch.tensor([1], device=self.device).long()
+        return action
+
+    def _select_unknown_cluster_action(self, state_vec):
+        """
+        Chooses the action for one unknown-traffic cluster.
+
+        The default path is the learned policy (`self.act`) -- this is what
+        runs in practice, since `greedy_cti`, `cti_period`, and
+        `no_epistemic_actions` are all off by default in
+        tiger/config/default.yaml (`greedy_cti: False`, `cti_period: -1`,
+        `no_epistemic_actions: false`). The three branches below are
+        mutually-exclusive ABLATION KNOBS, set via tiger/config overrides,
+        used to study the value of the epistemic-action channel itself
+        rather than the learned policy:
+
+        - cti_period != -1: a scripted periodic-CTI policy. Forces action 2
+          every `cti_period` steps; in every other step the agent is still
+          queried, but any 2 it returns is remapped to 1 (block), since CTI
+          is reserved for the periodic slot.
+        - greedy_cti: forces action 2 whenever there is still an unbought
+          G2 class available (`self.env.epistemic_actions_available == 1`);
+          otherwise behaves like the periodic case (query + remap 2 -> 1).
+        - no_epistemic_actions: queries the agent normally but remaps any 2
+          it returns to 1, fully disabling epistemic actions as a no-CTI
+          baseline.
+
+        Only when none of these is active does the agent's own action 2
+        survive unmodified.
+        """
+        cti_period = self.intrusion_detection_kwargs.get('cti_period', -1)
+        if cti_period != -1:
+            if self.wb_tracker.step_counter % int(cti_period) == 0:
+                return torch.tensor([2], device=self.device).long()
+            return self._remap_epistemic_to_block(self.act(state_vec))
+
+        if self.intrusion_detection_kwargs.get('greedy_cti'):
+            if self.env.epistemic_actions_available == 1:
+                return torch.tensor([2], device=self.device).long()
+            return self._remap_epistemic_to_block(self.act(state_vec))
+
+        action = self.act(state_vec)
+        if self.intrusion_detection_kwargs['no_epistemic_actions']:
+            return self._remap_epistemic_to_block(action)
+        return action
+
     def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards):
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
@@ -907,9 +960,6 @@ class TigerBrain:
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
 
-        greedy_cti = self.intrusion_detection_kwargs.get('greedy_cti')
-        cti_period = self.intrusion_detection_kwargs.get('cti_period')
-
         for idx, centroid in enumerate(centroids[~missing]):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
             accepted_cluster = False
@@ -917,28 +967,7 @@ class TigerBrain:
 
             state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
 
-
-            if cti_period != -1:
-                # this is a periodic CTI agent.
-                if self.wb_tracker.step_counter % int(cti_period) == 0:
-                    # time to tacke an epistemic action:
-                    action = torch.tensor([2], device=self.device).long()
-                else:
-                    action = self.act(state_vec)
-                    if action == 2: action = torch.tensor([1], device=self.device).long()
-                    
-            elif greedy_cti:
-                if self.env.epistemic_actions_available == 1:
-                    action = torch.tensor([2], device=self.device).long()
-                else:
-                    action = self.act(state_vec)
-                    if action == 2: action = torch.tensor([1], device=self.device).long()
-
-            else:
-                action = self.act(state_vec)
-                if self.intrusion_detection_kwargs['no_epistemic_actions'] and action == 2:
-                    action = torch.tensor([1], device=self.device).long()
-
+            action = self._select_unknown_cluster_action(state_vec)
 
             if action == 0:
                 accepted_cluster = True
