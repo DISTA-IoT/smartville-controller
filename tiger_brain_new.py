@@ -336,10 +336,12 @@ class TigerBrain:
         #    to chain to within the tick).
         # 1. number of anomalies inferred in the tick's batch
         # 2. confidence of the current anomaly cluster's members (unknown
-        #    traffic) -- tick-broadcast value reused for known-traffic states.
+        #    traffic); zeroed for known-traffic states, doubling as the
+        #    regime indicator alongside slot 4.
         # 3. number of known-class samples inferred in the tick's batch
         # 4. confidence of the current predicted-class group's members (known
-        #    traffic) -- tick-broadcast value reused for unknown-cluster states.
+        #    traffic); zeroed for unknown-cluster states, doubling as the
+        #    regime indicator alongside slot 2.
         # 5. available CTI options (boolean flag)
         # 6. current system budget
         self.state_space_dim += 6
@@ -891,8 +893,10 @@ class TigerBrain:
         per-cluster loop: samples the IM assigned to the same class are
         grouped, and the agent accepts/rejects that specific class inference
         by looking at the hidden-space centroid of its members. Per-group
-        confidence (cs_classif_confidence) and reward replace the old
-        tick-broadcast scalar / whole-sub-batch decision. Next state's
+        confidence (cs_classif_confidence) and reward. The zda_confidence
+        slot in this state vector is zeroed, since these samples were never
+        evaluated for anomalousness -- the zero also signals to the agent
+        that this state belongs to the known-traffic regime. Next state's
         exteroceptive part is the next group's centroid, chained sequentially
         within the tick exactly like the cluster loop.
         """
@@ -925,7 +929,7 @@ class TigerBrain:
             centroid = group_centroids[idx].unsqueeze(0)
             state_vec = self.assembly_state_vector(
                 centroid, num_of_anomalies, num_known,
-                self.zda_confidence.item(), group_confidence.item(), self.env.current_budget)
+                0.0, group_confidence.item(), self.env.current_budget)
 
             if self.intrusion_detection_kwargs['automatic_cs_acceptance']:
                 action_signal = torch.tensor([0], device=self.device).long()
@@ -1057,8 +1061,10 @@ class TigerBrain:
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
         Each cluster's decision uses its own members' zda_confidence (via
-        _zda_confidence_for_subset), instead of the tick-broadcast scalar
-        previously reused identically across every cluster in the tick.
+        _zda_confidence_for_subset). The cs_classif_confidence slot in this
+        state vector is zeroed, since these samples were never classified
+        into a known class -- the zero also signals to the agent that this
+        state belongs to the unknown-cluster regime.
         """
         num_identified = centroids[~missing].shape[0]
         rewards_if_acc = (clusters_oh * rewards[zda_mask].unsqueeze(-1)).sum(0)
@@ -1090,7 +1096,7 @@ class TigerBrain:
 
             state_vec = self.assembly_state_vector(
                 centroid.unsqueeze(0), num_anom, num_known,
-                cluster_zda_confidence.item(), self.cs_classif_confidence.item(), self.env.current_budget)
+                cluster_zda_confidence.item(), 0.0, self.env.current_budget)
 
             action = self._select_unknown_cluster_action(state_vec)
 
@@ -1266,10 +1272,12 @@ class TigerBrain:
     def assembly_state_vector(self, centroid, num_anom, num_known, zda_confidence, cs_classif_confidence, curr_budget):
         """
         Assembles the state vector for the agent. zda_confidence and
-        cs_classif_confidence are passed in explicitly by the caller (per-
-        cluster / per-class-inference-group confidence) rather than read off
-        a tick-broadcast self.* scalar, so each decision sees the confidence
-        of the specific cluster/class-inference it is actually about.
+        cs_classif_confidence are passed in explicitly by the caller: each
+        decision carries the confidence of the specific cluster or class-
+        inference-group it is actually about in the slot relevant to its
+        regime, and zero in the other slot, so the zero/non-zero pair tells
+        the agent which regime (known vs. unknown traffic) this state
+        belongs to.
         """
         return torch.cat([
             centroid.squeeze(0),
