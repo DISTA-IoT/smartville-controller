@@ -23,6 +23,7 @@ import torch.nn.functional as F
 class PolicyNet(nn.Module):
     def __init__(self, kwargs):
         super(PolicyNet, self).__init__()
+        self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
@@ -33,7 +34,7 @@ class PolicyNet(nn.Module):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
         exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
+        proprioceptive_part = self.proprio_norm(x[:,-6:])
         exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
         proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
         exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
@@ -47,6 +48,7 @@ class PolicyNet(nn.Module):
 class ValueNet(nn.Module):
     def __init__(self, kwargs):
         super(ValueNet, self).__init__()
+        self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
@@ -57,7 +59,7 @@ class ValueNet(nn.Module):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
         exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
+        proprioceptive_part = self.proprio_norm(x[:,-6:])
         exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
         proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
         exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
@@ -73,6 +75,7 @@ class NEFENet(nn.Module):
         Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
         """
         super(NEFENet, self).__init__()
+        self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
@@ -83,7 +86,7 @@ class NEFENet(nn.Module):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
         exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
+        proprioceptive_part = self.proprio_norm(x[:,-6:])
         exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
         proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
         exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
@@ -91,11 +94,12 @@ class NEFENet(nn.Module):
         # concat the two parts
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         return self.fc3(x)
-    
+
 
 class DQN(nn.Module):
     def __init__(self, kwargs):
         super(DQN, self).__init__()
+        self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
@@ -107,7 +111,7 @@ class DQN(nn.Module):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
         exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
+        proprioceptive_part = self.proprio_norm(x[:,-6:])
         exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
         proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
         exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
@@ -120,6 +124,7 @@ class DQN(nn.Module):
 class DuelingDQN(nn.Module):
     def __init__(self, kwargs):
         super(DuelingDQN, self).__init__()
+        self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
         self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
@@ -145,7 +150,7 @@ class DuelingDQN(nn.Module):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
         exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
+        proprioceptive_part = self.proprio_norm(x[:,-6:])
         exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
         proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
         exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
