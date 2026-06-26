@@ -773,12 +773,62 @@ class TigerBrain:
             if conf_normalizer > 0:
                 self.zda_confidence /= conf_normalizer
 
+    def _hard_mode_factor(self, factor):
+        """
+        Returns `factor` if `wrong_inference_penalisation == 'hard'`, else 1.0.
+        Several reward terms below get an extra multiplicative penalty in
+        'hard' mode and none in 'easy' mode; this centralizes that switch.
+        """
+        return factor if self.wrong_inference_penalisation == 'hard' else 1.0
+
+    def _known_traffic_reward(self, action_signal, known_samples_costs, correct_mask):
+        """
+        Reward for one tick's known-traffic sub-batch (case a in the reward spec).
+
+        action 0 ("trust the classifier"): correctly-classified samples earn
+        their |reward_label|; misclassified ones cost |reward_label|, scaled
+        by bad_classif_cost_factor in 'hard' mode.
+        Any other action ("no confidence"): flat no_confidence_penalty,
+        regardless of how many samples were in the batch.
+
+        Returns (total_reward, correct_rewards, wrong_costs, no_confidence_penalty)
+        -- the latter three are only for W&B logging by the caller.
+        """
+        if action_signal.item() != 0:
+            penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
+            zeros = torch.zeros_like(known_samples_costs)
+            return penalty, zeros, zeros, penalty
+
+        correct_rewards = torch.abs(known_samples_costs * correct_mask)
+        wrong_costs = -torch.abs(known_samples_costs * (~correct_mask)) * self._hard_mode_factor(self.bad_classif_cost_factor)
+        total = (correct_rewards.sum() + wrong_costs.sum()).item()
+        return total, correct_rewards, wrong_costs, 0.0
+
+    def _cluster_reward(self, accepted, cost_if_acc, benign_reward):
+        """
+        Reward for one identified unknown-traffic cluster (case b in the
+        reward spec), excluding any epistemic CTI price -- the caller
+        subtracts `price_payed` separately, only when action == 2.
+
+        Accepted (action 0, or 2 with epistemic_is_blocking=False): the
+        malicious-content cost (scaled by bad_clustering_cost_factor in
+        'hard' mode) plus the cluster's benign reward.
+        Blocked: the benign reward is forgone -- scaled by
+        bad_classif_cost_factor, and additionally by bad_clustering_cost_factor
+        in 'hard' mode -- plus a flat uncertainty_blocking_penalty.
+        """
+        clustering_factor = self._hard_mode_factor(self.bad_clustering_cost_factor)
+        if accepted:
+            return clustering_factor * cost_if_acc + benign_reward
+
+        uncertainty_penalty = float(self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0))
+        return -clustering_factor * self.bad_classif_cost_factor * benign_reward - uncertainty_penalty
+
     def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards):
         """
         Assembly state and perform action for known traffic.
         """
         if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
-        classification_reward = 0
         empty_state_vec = -1 * torch.ones(1, hiddens.shape[1])
 
         state_vec = self.assembly_state_vector(empty_state_vec, num_of_anomalies, num_known, self.env.current_budget)
@@ -792,20 +842,8 @@ class TigerBrain:
         self.wb_tracker.step_counter += 1
 
         known_samples_costs = rewards[~zda_mask]
-        correct_classif_rewards = torch.zeros_like(known_samples_costs)
-        bad_classif_costs = torch.zeros_like(known_samples_costs)
-        no_confidence_penalty = 0
-
-        if action_signal.item() == 0:
-            correct_classif_rewards = torch.abs(known_samples_costs * correct_mask)
-            if self.wrong_inference_penalisation == 'easy':
-                bad_classif_costs = -torch.abs(known_samples_costs * (~correct_mask))
-            else:
-                bad_classif_costs = -torch.abs(known_samples_costs * (~correct_mask) * self.bad_classif_cost_factor)
-            classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
-        else:
-            no_confidence_penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
-            classification_reward = no_confidence_penalty
+        classification_reward, correct_classif_rewards, bad_classif_costs, no_confidence_penalty = \
+            self._known_traffic_reward(action_signal, known_samples_costs, correct_mask)
 
         self.env.current_budget += classification_reward
         
@@ -853,6 +891,59 @@ class TigerBrain:
 
         return predicted_clusters_oh, centroids, missing, kr_metrics
     
+    def _remap_epistemic_to_block(self, action):
+        """
+        Ablation helper: turns a CTI-purchase action (2) into a block (1).
+        Used by the scripted-CTI ablation modes in `_select_unknown_cluster_action`
+        to neutralize the agent's own choice of action 2 outside their forced slot.
+        """
+        if action == 2:
+            return torch.tensor([1], device=self.device).long()
+        return action
+
+    def _select_unknown_cluster_action(self, state_vec):
+        """
+        Chooses the action for one unknown-traffic cluster.
+
+        The default path is the learned policy (`self.act`) -- this is what
+        runs in practice, since `greedy_cti`, `cti_period`, and
+        `no_epistemic_actions` are all off by default in
+        tiger/config/default.yaml (`greedy_cti: False`, `cti_period: -1`,
+        `no_epistemic_actions: false`). The three branches below are
+        mutually-exclusive ABLATION KNOBS, set via tiger/config overrides,
+        used to study the value of the epistemic-action channel itself
+        rather than the learned policy:
+
+        - cti_period != -1: a scripted periodic-CTI policy. Forces action 2
+          every `cti_period` steps; in every other step the agent is still
+          queried, but any 2 it returns is remapped to 1 (block), since CTI
+          is reserved for the periodic slot.
+        - greedy_cti: forces action 2 whenever there is still an unbought
+          G2 class available (`self.env.epistemic_actions_available == 1`);
+          otherwise behaves like the periodic case (query + remap 2 -> 1).
+        - no_epistemic_actions: queries the agent normally but remaps any 2
+          it returns to 1, fully disabling epistemic actions as a no-CTI
+          baseline.
+
+        Only when none of these is active does the agent's own action 2
+        survive unmodified.
+        """
+        cti_period = self.intrusion_detection_kwargs.get('cti_period', -1)
+        if cti_period != -1:
+            if self.wb_tracker.step_counter % int(cti_period) == 0:
+                return torch.tensor([2], device=self.device).long()
+            return self._remap_epistemic_to_block(self.act(state_vec))
+
+        if self.intrusion_detection_kwargs.get('greedy_cti'):
+            if self.env.epistemic_actions_available == 1:
+                return torch.tensor([2], device=self.device).long()
+            return self._remap_epistemic_to_block(self.act(state_vec))
+
+        action = self.act(state_vec)
+        if self.intrusion_detection_kwargs['no_epistemic_actions']:
+            return self._remap_epistemic_to_block(action)
+        return action
+
     def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards):
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
@@ -869,9 +960,6 @@ class TigerBrain:
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
 
-        greedy_cti = self.intrusion_detection_kwargs.get('greedy_cti')
-        cti_period = self.intrusion_detection_kwargs.get('cti_period')
-
         for idx, centroid in enumerate(centroids[~missing]):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
             accepted_cluster = False
@@ -879,30 +967,7 @@ class TigerBrain:
 
             state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
 
-
-            if cti_period != -1:
-                # this is a periodic CTI agent.
-                if self.wb_tracker.step_counter % int(cti_period) == 0:
-                    # time to tacke an epistemic action:
-                    action = torch.tensor([2], device=self.device).long()
-                else:
-                    action = self.act(state_vec)
-                    if action == 2: action = torch.tensor([1], device=self.device).long()
-                    
-            elif greedy_cti:
-                if self.env.epistemic_actions_available == 1:
-                    action = torch.tensor([2], device=self.device).long()
-                else:
-                    action = self.act(state_vec)
-                    if action == 2: action = torch.tensor([1], device=self.device).long()
-
-            else:
-                action = self.act(state_vec)
-                if self.intrusion_detection_kwargs['no_epistemic_actions'] and action == 2:
-                    action = torch.tensor([1], device=self.device).long()
-
-
-            current_reward = 0
+            action = self._select_unknown_cluster_action(state_vec)
 
             if action == 0:
                 accepted_cluster = True
@@ -910,20 +975,11 @@ class TigerBrain:
                 epistemic_action = True
                 accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
 
-            if accepted_cluster: 
-                cost = cost_if_acc[~missing][idx]
-                f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
-                current_reward += f * cost
-                current_reward += benign_per_cluster[~missing][idx].item()
-            else:
-                cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
-                f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
-                current_reward -= f * cost
-                uncertainty_penalty = float(
-                    self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0)
-                )
-                current_reward -= uncertainty_penalty
-            
+            current_reward = self._cluster_reward(
+                accepted_cluster,
+                cost_if_acc[~missing][idx],
+                benign_per_cluster[~missing][idx].item())
+
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
                 current_reward -= updates_dict['price_payed']
