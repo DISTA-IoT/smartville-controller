@@ -329,11 +329,17 @@ class TigerBrain:
             self.state_space_dim += self.hidden_size
 
         # State space components:
-        # 0. centroid of collective anomaly (an all-zeros centroid for known traffic)
-        # 1. number of anomalies inferred in the batch
-        # 2. mean confidence of anomaly inference.  
-        # 3. number of known classes inferred in the batch
-        # 4. mean confidence of known class classification
+        # 0. exteroceptive centroid: for unknown traffic, the hidden-space
+        #    centroid of the current anomaly cluster; for known traffic, the
+        #    hidden-space centroid of the current predicted-class group
+        #    (a -1-filled placeholder only when there is no next group/cluster
+        #    to chain to within the tick).
+        # 1. number of anomalies inferred in the tick's batch
+        # 2. confidence of the current anomaly cluster's members (unknown
+        #    traffic) -- tick-broadcast value reused for known-traffic states.
+        # 3. number of known-class samples inferred in the tick's batch
+        # 4. confidence of the current predicted-class group's members (known
+        #    traffic) -- tick-broadcast value reused for unknown-cluster states.
         # 5. available CTI options (boolean flag)
         # 6. current system budget
         self.state_space_dim += 6
@@ -666,6 +672,14 @@ class TigerBrain:
     def perform_cs_inference(self, merged_batch, logits, predicted_online_zda_mask, num_of_online_samples, number_of_predicted_known_samples):
         """
         Performs closed-set classification for traffic predicted as known.
+
+        Returns, in addition to the correctness mask and tick-level accuracy,
+        the per-sample predicted class and the logits slice the predictions
+        came from -- callers (act_on_known_traffic) use these to group known
+        samples by predicted class and compute a per-class-inference
+        confidence, instead of the single tick-broadcast confidence this
+        method also still sets on self.cs_classif_confidence (kept for
+        tick-level W&B reporting in online_inference).
         """
         online_class_labels = merged_batch.class_labels[-num_of_online_samples:][~predicted_online_zda_mask].squeeze(-1)
 
@@ -684,31 +698,43 @@ class TigerBrain:
         interest_logits_slice = logits[-num_of_online_samples:][~predicted_online_zda_mask]
         number_of_known_classes = logits.shape[1]
 
-        if number_of_predicted_known_samples == 0:
-            self.cs_classif_confidence = torch.ones(1) * 10
-        else:
-            strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
+        self.cs_classif_confidence = self._cs_confidence_for_slice(
+            interest_logits_slice, online_class_preds, number_of_known_classes)
 
-            if strategy == 'entropy':
-                probs = torch.softmax(interest_logits_slice, dim=1)
-                self.cs_classif_confidence = (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
-            elif strategy == 'energy':
-                self.cs_classif_confidence = torch.logsumexp(interest_logits_slice, dim=1).mean().unsqueeze(-1)
-            elif strategy == 'margin':
-                probs = torch.softmax(interest_logits_slice, dim=1)
-                if probs.shape[1] > 1:
-                    top2 = torch.topk(probs, 2, dim=1).values
-                    self.cs_classif_confidence = (top2[:, 0] - top2[:, 1]).mean().unsqueeze(-1)
-                else:
-                    self.cs_classif_confidence = probs.mean().unsqueeze(-1)
-            else: # baseline
-                non_choosed_mask = torch.ones(number_of_predicted_known_samples, number_of_known_classes)
-                non_choosed_mask[torch.arange(number_of_predicted_known_samples), online_class_preds] = 0
-                mean_non_choosed_values = interest_logits_slice[non_choosed_mask.to(torch.bool)].mean()
-                mean_choosed_logits = interest_logits_slice.max(1)[0].mean()
-                self.cs_classif_confidence = torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
-            
-        return known_correct_classification_mask, cs_acc
+        return known_correct_classification_mask, cs_acc, online_class_preds, interest_logits_slice, number_of_known_classes
+
+    def _cs_confidence_for_slice(self, logits_slice, preds_slice, num_classes):
+        """
+        Closed-set classification confidence over an arbitrary subset of
+        known-predicted samples (their logits + predicted class indices).
+        Same four interchangeable strategies as before, just generalized so
+        it can be applied either to a whole tick's known traffic (tick-level
+        reporting) or to one predicted-class group within a tick (per-class-
+        inference decisions in act_on_known_traffic).
+        """
+        n = logits_slice.shape[0]
+        if n == 0:
+            return torch.ones(1) * 10
+
+        strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
+
+        if strategy == 'entropy':
+            probs = torch.softmax(logits_slice, dim=1)
+            return (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
+        elif strategy == 'energy':
+            return torch.logsumexp(logits_slice, dim=1).mean().unsqueeze(-1)
+        elif strategy == 'margin':
+            probs = torch.softmax(logits_slice, dim=1)
+            if probs.shape[1] > 1:
+                top2 = torch.topk(probs, 2, dim=1).values
+                return (top2[:, 0] - top2[:, 1]).mean().unsqueeze(-1)
+            return probs.mean().unsqueeze(-1)
+        else: # baseline
+            non_choosed_mask = torch.ones(n, num_classes)
+            non_choosed_mask[torch.arange(n), preds_slice] = 0
+            mean_non_choosed_values = logits_slice[non_choosed_mask.to(torch.bool)].mean()
+            mean_choosed_logits = logits_slice.max(1)[0].mean()
+            return torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
 
     def evaluate_closed_set(self, class_labels, class_predictions, mode, accuracy_mask=None):
         """
@@ -773,6 +799,39 @@ class TigerBrain:
             if conf_normalizer > 0:
                 self.zda_confidence /= conf_normalizer
 
+    def _zda_confidence_for_subset(self, probs):
+        """
+        Anomaly-detection confidence over an arbitrary subset of predicted-
+        anomalous online samples (e.g. one collective-anomaly cluster's
+        members) -- same four strategies as evaluate_zda_confidence, which
+        stays as the tick-level (broadcast) metric for W&B reporting. This
+        is what act_on_unknown_clusters uses instead, so each cluster's
+        decision sees its own members' confidence rather than the whole
+        tick's.
+
+        Every member here is, by construction, predicted-anomalous (clusters
+        are built only from the predicted-unknown subset), so the baseline
+        strategy collapses to the mean anomaly probability of the cluster.
+        """
+        if probs.numel() == 0:
+            return torch.ones(1) * 10
+
+        probs = probs.view(-1, 1)
+        strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
+
+        if strategy == 'entropy':
+            p = torch.cat([1 - probs, probs], dim=1)
+            return (p * torch.log(p + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
+        elif strategy == 'energy':
+            p = probs.clamp(1e-10, 1 - 1e-10)
+            l = torch.log(p / (1 - p))
+            logits = torch.cat([-l, l], dim=1)
+            return torch.logsumexp(logits, dim=1).mean().unsqueeze(-1)
+        elif strategy == 'margin':
+            return torch.abs(2 * probs - 1).mean().unsqueeze(-1)
+        else: # baseline
+            return probs.mean().unsqueeze(-1)
+
     def _hard_mode_factor(self, factor):
         """
         Returns `factor` if `wrong_inference_penalisation == 'hard'`, else 1.0.
@@ -824,47 +883,97 @@ class TigerBrain:
         uncertainty_penalty = float(self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0))
         return -clustering_factor * self.bad_classif_cost_factor * benign_reward - uncertainty_penalty
 
-    def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards):
+    def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards,
+                              class_preds, interest_logits_slice, number_of_known_classes):
         """
-        Assembly state and perform action for known traffic.
+        One DM decision per predicted closed-set class-inference group within
+        this tick's known-traffic sub-batch, mirroring act_on_unknown_clusters's
+        per-cluster loop: samples the IM assigned to the same class are
+        grouped, and the agent accepts/rejects that specific class inference
+        by looking at the hidden-space centroid of its members. Per-group
+        confidence (cs_classif_confidence) and reward replace the old
+        tick-broadcast scalar / whole-sub-batch decision. Next state's
+        exteroceptive part is the next group's centroid, chained sequentially
+        within the tick exactly like the cluster loop.
         """
-        if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
-        empty_state_vec = -1 * torch.ones(1, hiddens.shape[1])
+        if num_known == 0:
+            return
 
-        state_vec = self.assembly_state_vector(empty_state_vec, num_of_anomalies, num_known, self.env.current_budget)
-
-        if self.intrusion_detection_kwargs['automatic_cs_acceptance']:
-            action_signal = torch.tensor([0], device=self.device).long()
-        else:
-            action_signal = self.act(state_vec)
-              
-        self.env.steps_done += 1
-        self.wb_tracker.step_counter += 1
-
+        num_online = zda_mask.shape[0]
+        known_hiddens = hiddens[-num_online:][~zda_mask]
         known_samples_costs = rewards[~zda_mask]
-        classification_reward, correct_classif_rewards, bad_classif_costs, no_confidence_penalty = \
-            self._known_traffic_reward(action_signal, known_samples_costs, correct_mask)
 
-        self.env.current_budget += classification_reward
-        
-        if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
-            new_state = state_vec.detach().clone()
-            new_state[-1] = self.env.current_budget 
-            end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
-            self.mitigation_agent.remember(state_vec.detach(), action_signal, torch.tensor([classification_reward], device=self.device), new_state, end_signal, self.wb_tracker.step_counter)
+        unique_classes = torch.unique(class_preds)
+        num_groups = unique_classes.shape[0]
 
-        self.env.episode_rewards.append(classification_reward)
-        self.env.episode_budgets.append(self.env.current_budget)
+        group_member_masks = [class_preds == cls for cls in unique_classes]
+        group_centroids = [known_hiddens[mask].mean(dim=0) for mask in group_member_masks]
 
-        if self.wbt:
+        classification_reward_total = 0.0
+        correct_rewards_total = 0.0
+        bad_classif_costs_total = 0.0
+        no_confidence_penalty_total = 0.0
+        last_action = None
+
+        for idx in range(num_groups):
+            if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
+
+            member_mask = group_member_masks[idx]
+            group_confidence = self._cs_confidence_for_slice(
+                interest_logits_slice[member_mask], class_preds[member_mask], number_of_known_classes)
+
+            centroid = group_centroids[idx].unsqueeze(0)
+            state_vec = self.assembly_state_vector(
+                centroid, num_of_anomalies, num_known,
+                self.zda_confidence.item(), group_confidence.item(), self.env.current_budget)
+
+            if self.intrusion_detection_kwargs['automatic_cs_acceptance']:
+                action_signal = torch.tensor([0], device=self.device).long()
+            else:
+                action_signal = self.act(state_vec)
+            last_action = action_signal
+
+            self.env.steps_done += 1
+            self.wb_tracker.step_counter += 1
+
+            group_costs = known_samples_costs[member_mask]
+            group_correct_mask = correct_mask[member_mask]
+            classification_reward, correct_classif_rewards, bad_classif_costs, no_confidence_penalty = \
+                self._known_traffic_reward(action_signal, group_costs, group_correct_mask)
+
+            self.env.current_budget += classification_reward
+
+            if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
+                new_state = state_vec.detach().clone()
+                if idx < num_groups - 1:
+                    new_state[:-6] = group_centroids[idx + 1]
+                else:
+                    new_state[:-6] = -1 * torch.ones_like(new_state[:-6])
+                new_state[-1] = self.env.current_budget
+                end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
+                self.mitigation_agent.remember(
+                    state_vec.detach(), action_signal,
+                    torch.tensor([classification_reward], device=self.device),
+                    new_state, end_signal, self.wb_tracker.step_counter)
+
+            self.env.episode_rewards.append(classification_reward)
+            self.env.episode_budgets.append(self.env.current_budget)
+
+            classification_reward_total += classification_reward
+            correct_rewards_total += correct_classif_rewards.sum().item()
+            bad_classif_costs_total += bad_classif_costs.sum().item()
+            no_confidence_penalty_total += no_confidence_penalty
+
+        if num_groups > 0 and self.wbt:
             self.reporter.log_scalars({
                 AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
-                AGENT+'/'+'classification_reward': classification_reward,
+                AGENT+'/'+'classification_reward': classification_reward_total / num_groups,
                 AGENT+'/'+'budget': self.env.current_budget,
-                AGENT+'/'+'correct_classification_rewards': correct_classif_rewards.sum().item(),
-                AGENT+'/'+'bad_classification_cost': bad_classif_costs.sum().item(),
-                AGENT+'/'+'known traffic action': action_signal.item(),
-                AGENT+'/'+'no_confidence_penalty': no_confidence_penalty
+                AGENT+'/'+'correct_classification_rewards': correct_rewards_total / num_groups,
+                AGENT+'/'+'bad_classification_cost': bad_classif_costs_total / num_groups,
+                AGENT+'/'+'known traffic action': last_action.item() if last_action is not None else -1,
+                AGENT+'/'+'no_confidence_penalty': no_confidence_penalty_total / num_groups,
+                AGENT+'/'+'known_traffic_groups': num_groups,
             }, step=self.wb_tracker.step_counter)
 
     def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens):
@@ -944,15 +1053,25 @@ class TigerBrain:
             return self._remap_epistemic_to_block(action)
         return action
 
-    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards):
+    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs):
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
+        Each cluster's decision uses its own members' zda_confidence (via
+        _zda_confidence_for_subset), instead of the tick-broadcast scalar
+        previously reused identically across every cluster in the tick.
         """
         num_identified = centroids[~missing].shape[0]
         rewards_if_acc = (clusters_oh * rewards[zda_mask].unsqueeze(-1)).sum(0)
         cost_if_acc = -torch.relu(-rewards_if_acc)
         benign_rewards = torch.relu(rewards[zda_mask])
         benign_per_cluster = (clusters_oh * benign_rewards.unsqueeze(-1)).sum(0)
+
+        # clusters_oh's rows are the predicted-anomalous online samples, in
+        # the same order as online_anomaly_probs[zda_mask] -- so indexing both
+        # by the same cluster column lines a cluster up with its members' own
+        # anomaly probabilities (see collective_anomaly_detection).
+        anomalous_probs = online_anomaly_probs[zda_mask].view(-1, 1)
+        non_missing_columns = (~missing).nonzero(as_tuple=False).squeeze(-1)
 
         clustering_reward = 0
         epistemic_actions_taken = 0
@@ -965,7 +1084,13 @@ class TigerBrain:
             accepted_cluster = False
             epistemic_action = False
 
-            state_vec = self.assembly_state_vector(centroid.unsqueeze(0), num_anom, num_known, self.env.current_budget)
+            column = non_missing_columns[idx]
+            member_mask = clusters_oh[:, column].bool()
+            cluster_zda_confidence = self._zda_confidence_for_subset(anomalous_probs[member_mask])
+
+            state_vec = self.assembly_state_vector(
+                centroid.unsqueeze(0), num_anom, num_known,
+                cluster_zda_confidence.item(), self.cs_classif_confidence.item(), self.env.current_budget)
 
             action = self._select_unknown_cluster_action(state_vec)
 
@@ -1073,18 +1198,22 @@ class TigerBrain:
         rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
-        correct_mask, cs_acc = self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
+        correct_mask, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
+            self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
 
         kr_metrics = {}
         if num_known > 0:
             if self.agency:
-                self.act_on_known_traffic(num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards)
-            
+                self.act_on_known_traffic(
+                    num_anom, num_known, correct_mask, hiddens, pred_online_zda_mask, rewards,
+                    class_preds, interest_logits_slice, number_of_known_classes)
+
         if num_anom > 0:
             with self.profile("onl_inf_CAD"):
                 clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
             if self.agency:
-                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards)
+                online_anomaly_probs = zda_predictions[-num_online:]
+                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs)
 
         if self.agency:
             with self.profile("onl_inf_ER"):
@@ -1134,13 +1263,19 @@ class TigerBrain:
         centroids[~missing_clusters] = existent_centroids
         return centroids, missing_clusters
 
-    def assembly_state_vector(self, centroid, num_anom, num_known, curr_budget):
-        """Assembles the state vector for the agent."""
+    def assembly_state_vector(self, centroid, num_anom, num_known, zda_confidence, cs_classif_confidence, curr_budget):
+        """
+        Assembles the state vector for the agent. zda_confidence and
+        cs_classif_confidence are passed in explicitly by the caller (per-
+        cluster / per-class-inference-group confidence) rather than read off
+        a tick-broadcast self.* scalar, so each decision sees the confidence
+        of the specific cluster/class-inference it is actually about.
+        """
         return torch.cat([
             centroid.squeeze(0),
             torch.tensor([
-                float(num_anom), self.zda_confidence.item(),
-                float(num_known), self.cs_classif_confidence.item(),
+                float(num_anom), float(zda_confidence),
+                float(num_known), float(cs_classif_confidence),
                 float(self.env.epistemic_actions_available), float(curr_budget)
             ], device=centroid.device, dtype=centroid.dtype)
         ])
