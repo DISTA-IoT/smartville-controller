@@ -773,12 +773,62 @@ class TigerBrain:
             if conf_normalizer > 0:
                 self.zda_confidence /= conf_normalizer
 
+    def _hard_mode_factor(self, factor):
+        """
+        Returns `factor` if `wrong_inference_penalisation == 'hard'`, else 1.0.
+        Several reward terms below get an extra multiplicative penalty in
+        'hard' mode and none in 'easy' mode; this centralizes that switch.
+        """
+        return factor if self.wrong_inference_penalisation == 'hard' else 1.0
+
+    def _known_traffic_reward(self, action_signal, known_samples_costs, correct_mask):
+        """
+        Reward for one tick's known-traffic sub-batch (case a in the reward spec).
+
+        action 0 ("trust the classifier"): correctly-classified samples earn
+        their |reward_label|; misclassified ones cost |reward_label|, scaled
+        by bad_classif_cost_factor in 'hard' mode.
+        Any other action ("no confidence"): flat no_confidence_penalty,
+        regardless of how many samples were in the batch.
+
+        Returns (total_reward, correct_rewards, wrong_costs, no_confidence_penalty)
+        -- the latter three are only for W&B logging by the caller.
+        """
+        if action_signal.item() != 0:
+            penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
+            zeros = torch.zeros_like(known_samples_costs)
+            return penalty, zeros, zeros, penalty
+
+        correct_rewards = torch.abs(known_samples_costs * correct_mask)
+        wrong_costs = -torch.abs(known_samples_costs * (~correct_mask)) * self._hard_mode_factor(self.bad_classif_cost_factor)
+        total = (correct_rewards.sum() + wrong_costs.sum()).item()
+        return total, correct_rewards, wrong_costs, 0.0
+
+    def _cluster_reward(self, accepted, cost_if_acc, benign_reward):
+        """
+        Reward for one identified unknown-traffic cluster (case b in the
+        reward spec), excluding any epistemic CTI price -- the caller
+        subtracts `price_payed` separately, only when action == 2.
+
+        Accepted (action 0, or 2 with epistemic_is_blocking=False): the
+        malicious-content cost (scaled by bad_clustering_cost_factor in
+        'hard' mode) plus the cluster's benign reward.
+        Blocked: the benign reward is forgone -- scaled by
+        bad_classif_cost_factor, and additionally by bad_clustering_cost_factor
+        in 'hard' mode -- plus a flat uncertainty_blocking_penalty.
+        """
+        clustering_factor = self._hard_mode_factor(self.bad_clustering_cost_factor)
+        if accepted:
+            return clustering_factor * cost_if_acc + benign_reward
+
+        uncertainty_penalty = float(self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0))
+        return -clustering_factor * self.bad_classif_cost_factor * benign_reward - uncertainty_penalty
+
     def act_on_known_traffic(self, num_of_anomalies, num_known, correct_mask, hiddens, zda_mask, rewards):
         """
         Assembly state and perform action for known traffic.
         """
         if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
-        classification_reward = 0
         empty_state_vec = -1 * torch.ones(1, hiddens.shape[1])
 
         state_vec = self.assembly_state_vector(empty_state_vec, num_of_anomalies, num_known, self.env.current_budget)
@@ -792,20 +842,8 @@ class TigerBrain:
         self.wb_tracker.step_counter += 1
 
         known_samples_costs = rewards[~zda_mask]
-        correct_classif_rewards = torch.zeros_like(known_samples_costs)
-        bad_classif_costs = torch.zeros_like(known_samples_costs)
-        no_confidence_penalty = 0
-
-        if action_signal.item() == 0:
-            correct_classif_rewards = torch.abs(known_samples_costs * correct_mask)
-            if self.wrong_inference_penalisation == 'easy':
-                bad_classif_costs = -torch.abs(known_samples_costs * (~correct_mask))
-            else:
-                bad_classif_costs = -torch.abs(known_samples_costs * (~correct_mask) * self.bad_classif_cost_factor)
-            classification_reward += (correct_classif_rewards.sum() + bad_classif_costs.sum()).item()
-        else:
-            no_confidence_penalty = -float(self.intrusion_detection_kwargs['no_confidence_penalty'])
-            classification_reward = no_confidence_penalty
+        classification_reward, correct_classif_rewards, bad_classif_costs, no_confidence_penalty = \
+            self._known_traffic_reward(action_signal, known_samples_costs, correct_mask)
 
         self.env.current_budget += classification_reward
         
@@ -902,28 +940,17 @@ class TigerBrain:
                     action = torch.tensor([1], device=self.device).long()
 
 
-            current_reward = 0
-
             if action == 0:
                 accepted_cluster = True
             elif action == 2:
                 epistemic_action = True
                 accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
 
-            if accepted_cluster: 
-                cost = cost_if_acc[~missing][idx]
-                f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
-                current_reward += f * cost
-                current_reward += benign_per_cluster[~missing][idx].item()
-            else:
-                cost = self.bad_classif_cost_factor * benign_per_cluster[~missing][idx]
-                f = self.bad_clustering_cost_factor if self.wrong_inference_penalisation == 'hard' else 1.0
-                current_reward -= f * cost
-                uncertainty_penalty = float(
-                    self.intrusion_detection_kwargs.get('uncertainty_blocking_penalty', 0.0)
-                )
-                current_reward -= uncertainty_penalty
-            
+            current_reward = self._cluster_reward(
+                accepted_cluster,
+                cost_if_acc[~missing][idx],
+                benign_per_cluster[~missing][idx].item())
+
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
                 current_reward -= updates_dict['price_payed']
