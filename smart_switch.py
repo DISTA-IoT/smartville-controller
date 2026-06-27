@@ -95,10 +95,22 @@ class SmartSwitch(EventMixin):
 
 
   def initialize(
-        self, 
+        self,
         flow_logger,
         wb_tracker,
         **kwargs):
+
+    # Wipe any flow entries the switch is still holding from a previous
+    # experiment *before* resetting our own bookkeeping. self.forwardingRules/
+    # self.sampling_rule_messages are Python-side caches; clearing them alone
+    # does nothing to the switch's real flow table. Without this, a permanent
+    # forwarding rule installed for an IP pair in a prior run keeps matching
+    # in the dataplane on every later run that reuses the same topology, so
+    # the controller never sees a PacketIn for that flow again: the packet
+    # sampling rule never gets reinstalled (packet-level data goes dark for
+    # that flow) and flow-stats counters keep accumulating across experiments
+    # instead of starting from zero.
+    self._flush_switch_flow_tables()
 
     self.resample_packets = bool(kwargs['resample_packets'])
     self.sampling_rate_seconds = int(kwargs['switching_args'].get('sampling_rate_seconds'))
@@ -261,6 +273,29 @@ class SmartSwitch(EventMixin):
         po.actions.append(of.ofp_action_dl_addr.set_dst(dest_mac_addr))
         po.actions.append(of.ofp_action_output(port = port))
         core.openflow.sendToDPID(switch_id, po)
+
+
+  def _flush_switch_flow_tables(self):
+      """
+      Delete every flow entry (wildcard match) on every currently connected
+      switch. Called at the top of initialize() so each new experiment
+      starts from an empty flow table on the real switch, not just an empty
+      Python-side cache. Iterates core.openflow._connections directly
+      (rather than self.connection) because self.connection is only learned
+      lazily from the first PacketIn/ConnectionUp and may still be None or
+      stale at /initialize time, while the switch itself stays connected
+      across experiments.
+      """
+      try:
+        connections = list(core.openflow._connections.values())
+      except Exception as e:
+        self.logger.warning(f"Could not enumerate switch connections to flush flow tables: {e}")
+        return
+
+      for connection in connections:
+        msg = of.ofp_flow_mod(command=of.OFPFC_DELETE)
+        connection.send(msg)
+        self.logger.info(f"Flushed all flow table entries on switch {connection.dpid} before re-initializing")
 
 
   def delete_ip_flow_matching_rules(self, dest_ip, connection):
