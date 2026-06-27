@@ -14,19 +14,20 @@ import torch.nn.functional as F
 
 class DAIF_Agent:
     def __init__(self, args):
-        
+
+        self.device = args.device
         kwargs = args.intrusion_detection.to_dict()
         kwargs.update(args.neural_modules.to_dict())
         kwargs['use_packet_feats'] = args.use_packet_feats
         kwargs['node_features'] = args.node_features
         self.wbl = kwargs['wbl']
         self.action_size = int(kwargs['action_size'])
-        self.neg_efe_net = NEFENet(kwargs)
-        self.target_neg_efe_net = NEFENet(kwargs)
+        self.neg_efe_net = NEFENet(kwargs).to(self.device)
+        self.target_neg_efe_net = NEFENet(kwargs).to(self.device)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
-        
+
         self.transitionnet = None
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
@@ -35,19 +36,19 @@ class DAIF_Agent:
         hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
-        
+
         if kwargs['use_transition_model']:
 
             if self.variational_t_model:
-                self.transitionnet = VariationalTransitionNet(kwargs)
+                self.transitionnet = VariationalTransitionNet(kwargs).to(self.device)
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
                 self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
-                self.transitionnet = NewTransitionNet(kwargs)
-                
+                self.transitionnet = NewTransitionNet(kwargs).to(self.device)
+
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
-        self.policynet = PolicyNet(kwargs)
+        self.policynet = PolicyNet(kwargs).to(self.device)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
         self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
@@ -63,7 +64,7 @@ class DAIF_Agent:
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.surrogate_policy_consistency = kwargs['surrogate_policy_consistency']
         self.use_critic_to_act = kwargs['use_critic_to_act']
-        self._action_eye = torch.eye(self.action_size)
+        self._action_eye = torch.eye(self.action_size, device=self.device)
 
 
     def reset_sequential_memory(self):
@@ -135,15 +136,15 @@ class DAIF_Agent:
 
         states = torch.stack(states)
         next_states = torch.stack(next_states)
-        actions = torch.tensor(actions, dtype=torch.long)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.bool, device=self.device).unsqueeze(1)
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
         transition_inputs = torch.cat([states, action_onehots], dim=1)
-            
+
         targets = rewards.clone()
-        
+
         # 1. Forward passes for gain and consistency
         policy_probabilities = self.policynet(states)
         estimated_neg_efe_values = self.neg_efe_net(states)
@@ -291,19 +292,20 @@ class DAIF_Agent:
 
 class DAIP_Agent:
     def __init__(self, args):
-        
+
+        self.device = args.device
         kwargs = args.intrusion_detection.to_dict()
         kwargs.update(args.neural_modules.to_dict())
         kwargs['use_packet_feats'] = args.use_packet_feats
         kwargs['node_features'] = args.node_features
         self.wbl = kwargs['wbl']
         self.action_size = int(kwargs['action_size'])
-        self.neg_efe_net = NEFENet(kwargs)
-        self.target_neg_efe_net = NEFENet(kwargs)
+        self.neg_efe_net = NEFENet(kwargs).to(self.device)
+        self.target_neg_efe_net = NEFENet(kwargs).to(self.device)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
-        
+
         self.transitionnet = None
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
@@ -312,19 +314,19 @@ class DAIP_Agent:
         hidden_state_size = int(kwargs['hidden_size']) + (int(kwargs['use_packet_feats']) * int(kwargs['hidden_size'])) + (int(kwargs['node_features']) * int(kwargs['hidden_size']))
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
-        
+
         if kwargs['use_transition_model']:
 
             if self.variational_t_model:
-                self.transitionnet = VariationalTransitionNet(kwargs)
+                self.transitionnet = VariationalTransitionNet(kwargs).to(self.device)
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
                 self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
             else:
-                self.transitionnet = NewTransitionNet(kwargs)
-                
+                self.transitionnet = NewTransitionNet(kwargs).to(self.device)
+
             self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
-        self.policynet = PolicyNet(kwargs)
+        self.policynet = PolicyNet(kwargs).to(self.device)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
         self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
@@ -466,12 +468,12 @@ class DAIP_Agent:
 
         states = torch.stack(states)
         next_states = torch.stack(next_states)
-        actions = torch.tensor(actions, dtype=torch.long)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
         action_onehots = torch.nn.functional.one_hot(actions, self.action_size).float()
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.bool, device=self.device).unsqueeze(1)
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
-            
+
         targets = rewards.clone()
         epistemic_gains = torch.zeros_like(rewards)
         
@@ -556,19 +558,20 @@ class DAIP_Agent:
 
 class DAIA_Agent:
     def __init__(self, args):
-        
+
+        self.device = args.device
         kwargs = args.intrusion_detection.to_dict()
         kwargs.update(args.neural_modules.to_dict())
         kwargs['use_packet_feats'] = args.use_packet_feats
         kwargs['node_features'] = args.node_features
         self.wbl = kwargs['wbl']
         self.action_size = int(kwargs['action_size'])
-        self.neg_efe_net = NEFENet(kwargs)
-        self.target_neg_efe_net = NEFENet(kwargs)
+        self.neg_efe_net = NEFENet(kwargs).to(self.device)
+        self.target_neg_efe_net = NEFENet(kwargs).to(self.device)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
-        
+
         self.transitionnet = None
         self.transitionnet_optimizer = None
         self.variational_t_model = kwargs['variational_tmodel']
@@ -579,15 +582,15 @@ class DAIA_Agent:
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
         if self.variational_t_model:
-            self.transitionnet = VariationalTransitionNet(kwargs)
+            self.transitionnet = VariationalTransitionNet(kwargs).to(self.device)
             self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
             self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
         else:
-            self.transitionnet = NewTransitionNet(kwargs)
-            
+            self.transitionnet = NewTransitionNet(kwargs).to(self.device)
+
         self.transitionnet_optimizer = optim.Adam(self.transitionnet.parameters(), lr=kwargs['learning_rate'])
 
-        self.policynet = PolicyNet(kwargs)
+        self.policynet = PolicyNet(kwargs).to(self.device)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
         self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
@@ -602,7 +605,7 @@ class DAIA_Agent:
 
         self.value_loss_fn = nn.MSELoss(reduction='mean')
         self.use_critic_to_act = kwargs['use_critic_to_act']
-        self._action_eye = torch.eye(self.action_size)
+        self._action_eye = torch.eye(self.action_size, device=self.device)
 
     def reset_sequential_memory(self):
         self.sequential_memory = deque(maxlen=self.sequential_memory_size)
@@ -716,13 +719,13 @@ class DAIA_Agent:
 
         states = torch.stack(states)
         next_states = torch.stack(next_states)
-        actions = torch.tensor(actions, dtype=torch.long)
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.bool, device=self.device).unsqueeze(1)
         next_proprioceptive_states = next_states[:, -self.proprioceptive_state_size:]
-            
+
         targets = rewards.clone()
-        
+
         # 1. Forward pass for policy prior
         action_probs_prior = self.policynet(states)
 
@@ -802,15 +805,16 @@ class DAIA_Agent:
 
 class DAISA_Agent:
     def __init__(self, args):
-        
+
+        self.device = args.device
         kwargs = args.intrusion_detection.to_dict()
         kwargs.update(args.neural_modules.to_dict())
         kwargs['use_packet_feats'] = args.use_packet_feats
         kwargs['node_features'] = args.node_features
         self.wbl = kwargs['wbl']
         self.action_size = int(kwargs['action_size'])
-        self.neg_efe_net = NEFENet(kwargs)
-        self.target_neg_efe_net = NEFENet(kwargs)
+        self.neg_efe_net = NEFENet(kwargs).to(self.device)
+        self.target_neg_efe_net = NEFENet(kwargs).to(self.device)
         self.update_target_model()
         self.efe_net_optimizer = optim.Adam(self.neg_efe_net.parameters(), lr=kwargs['learning_rate'])
         self.epistemic_regularisation_factor = float(kwargs['epistemic_regularisation_factor'])
@@ -820,7 +824,7 @@ class DAISA_Agent:
         self.proprioceptive_state_size = state_size - hidden_state_size
         kwargs['proprioceptive_state_size'] = self.proprioceptive_state_size
 
-        self.policynet = PolicyNet(kwargs)
+        self.policynet = PolicyNet(kwargs).to(self.device)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
         self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
         self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
@@ -903,9 +907,9 @@ class DAISA_Agent:
 
         states = torch.stack(states)
         next_states = torch.stack(next_states)
-        actions = torch.tensor(actions, dtype=torch.long)
-        rewards = torch.tensor(rewards, dtype=torch.float32).unsqueeze(1)
-        dones = torch.tensor(dones, dtype=torch.bool).unsqueeze(1)
+        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
+        dones = torch.tensor(dones, dtype=torch.bool, device=self.device).unsqueeze(1)
 
         targets = rewards.clone()
 
