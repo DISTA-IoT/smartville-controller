@@ -169,6 +169,11 @@ def build_kwargs(manifest, logger, args):
         kwargs["intrusion_detection"]["pretrained_inference"] = True
         logger.info(f"[offline_replay] Override: intrusion_detection.pretrained_inference {old} -> True")
 
+    if args.agency:
+        old = kwargs["intrusion_detection"].get("agency")
+        kwargs["intrusion_detection"]["agency"] = True
+        logger.info(f"[offline_replay] Override: intrusion_detection.agency {old} -> True")
+
     kwargs["intrusion_detection"].setdefault("save_models", True)
     if args.no_save:
         kwargs["intrusion_detection"]["save_models"] = False
@@ -284,6 +289,7 @@ def main():
     parser.add_argument("--device", default=None, help="Override manifest's device (e.g. 'cuda:0'). Default: use manifest's recorded device.")
     parser.add_argument("--pretrained-models-dir", default=None, help="Override intrusion_detection.pretrained_models_dir (where models load from / save to).")
     parser.add_argument("--load-pretrained", action="store_true", help="Force intrusion_detection.pretrained_inference=True (load pretrained weights before replaying).")
+    parser.add_argument("--agency", action="store_true", help="Force intrusion_detection.agency=True, so the Decision Module acts/learns during replay even if the collection run recorded agency=False (e.g. the data_collection.yaml profile sets agency: false).")
     parser.add_argument("--no-save", action="store_true", help="Disable model checkpoint saving for this replay run.")
     parser.add_argument("--max-shards", type=int, default=None, help="Stop after replaying this many shards.")
     parser.add_argument("--max-samples", type=int, default=None, help="Stop after replaying this many total samples (across all ticks/shards).")
