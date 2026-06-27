@@ -987,6 +987,8 @@ class ValueLearningAgent:
             self.model = DQN(kwargs)
             self.target_model = DQN(kwargs)
 
+        self.model.to(self.device)
+        self.target_model.to(self.device)
         self.update_target_model()
         self.optimizer = optim.Adam(self.model.parameters(), lr=kwargs['learning_rate'])
         self.replay_batch_size = int(kwargs['replay_batch_size'])
