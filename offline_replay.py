@@ -53,6 +53,7 @@ import types
 from collections import Counter
 
 import torch
+import yaml
 
 # Under POX, this repo's checkout directory is itself named/mounted as
 # "smartController", which is why every internal module here imports its
@@ -113,6 +114,35 @@ def load_index(run_dir, logger):
                 logger.error(f"[offline_replay] Malformed JSON on {INDEX_NAME}:{line_num}: {e} -- skipping entry.")
     logger.info(f"[offline_replay] Loaded {len(entries)} shard entries from {index_path}")
     return entries
+
+
+def apply_set_overrides(kwargs, overrides, logger):
+    """
+    Applies generic --set dotted.path=value overrides on top of the manifest-derived
+    kwargs, last (highest precedence -- can override anything build_kwargs already
+    set, including the dedicated --agency/--load-pretrained/etc. flags). `value` is
+    parsed with yaml.safe_load so plain CLI strings get sensible Python types
+    (DuelingDDQN -> str, 0.01 -> float, true -> bool, null -> None, [1,2] -> list)
+    without forcing the user to quote/escape anything beyond what their shell needs.
+    """
+    for raw in overrides or []:
+        if "=" not in raw:
+            raise ValueError(f"--set override {raw!r} is not of the form path.to.key=value")
+        path, raw_value = raw.split("=", 1)
+        path = path.strip()
+        keys = path.split(".")
+        if not path or any(not k for k in keys):
+            raise ValueError(f"--set override {raw!r} has an empty/malformed key path {path!r}")
+        value = yaml.safe_load(raw_value)
+
+        node = kwargs
+        for k in keys[:-1]:
+            if k not in node or not isinstance(node[k], dict):
+                node[k] = {}
+            node = node[k]
+        old = node.get(keys[-1])
+        node[keys[-1]] = value
+        logger.info(f"[offline_replay] Override (--set): {path} {old!r} -> {value!r}")
 
 
 def build_kwargs(manifest, logger, args):
@@ -195,6 +225,8 @@ def build_kwargs(manifest, logger, args):
         f"[offline_replay] wandb config: wb_tracking={kwargs['wandb']['wb_tracking']} "
         f"wb_run_name={kwargs['wandb']['wb_run_name']} wb_project_name={kwargs['wandb']['wb_project_name']}"
     )
+
+    apply_set_overrides(kwargs, args.set, logger)
 
     return kwargs
 
@@ -290,6 +322,14 @@ def main():
     parser.add_argument("--pretrained-models-dir", default=None, help="Override intrusion_detection.pretrained_models_dir (where models load from / save to).")
     parser.add_argument("--load-pretrained", action="store_true", help="Force intrusion_detection.pretrained_inference=True (load pretrained weights before replaying).")
     parser.add_argument("--agency", action="store_true", help="Force intrusion_detection.agency=True, so the Decision Module acts/learns during replay even if the collection run recorded agency=False (e.g. the data_collection.yaml profile sets agency: false).")
+    parser.add_argument(
+        "--set", action="append", metavar="PATH.TO.KEY=VALUE", default=None,
+        help="Override any manifest config value by dotted path before reconstructing TigerBrain, e.g. "
+             "--set intrusion_detection.agent=DuelingDDQN --set neural_modules.hidden_size=128. "
+             "Repeatable. Applied last, after --agency/--load-pretrained/etc., so it can override those too. "
+             "Top-level path segment must be one of: intrusion_detection, neural_modules, knowledge, rewards, "
+             "health, wandb. Value is parsed with yaml.safe_load (so true/1.0/null/[a,b] get real types; plain "
+             "words like DuelingDDQN become strings).")
     parser.add_argument("--no-save", action="store_true", help="Disable model checkpoint saving for this replay run.")
     parser.add_argument("--max-shards", type=int, default=None, help="Stop after replaying this many shards.")
     parser.add_argument("--max-samples", type=int, default=None, help="Stop after replaying this many total samples (across all ticks/shards).")
