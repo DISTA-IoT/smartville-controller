@@ -1680,7 +1680,7 @@ class TigerBrain:
         live Flow objects.
         """
         for cl in self.encoder.fit(labels): self.add_class_to_knowledge_base(cl)
-        return self.encoder.transform(labels).to(torch.long)
+        return self.encoder.transform(labels).to(device=self.device, dtype=torch.long)
 
     def get_labels(self, flows, row_flow_indices=None):
         """
