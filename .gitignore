@@ -3,3 +3,6 @@ wandb
 PrometheusLogs
 *.log
 tiger_data_collection
+.venv
+pre_recorded_data
+.ipynb_checkpoints
