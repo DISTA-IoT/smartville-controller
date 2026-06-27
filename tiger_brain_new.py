@@ -983,9 +983,11 @@ class TigerBrain:
         rather than the learned policy:
 
         - cti_period != -1: a scripted periodic-CTI policy. Forces action 2
-          every `cti_period` steps; in every other step the agent is still
-          queried, but any 2 it returns is remapped to 1 (block), since CTI
-          is reserved for the periodic slot.
+          every `cti_period` steps, provided a G2 class is still available to
+          buy (`epistemic_actions_available == 1`); in every other step (and
+          whenever no G2 class remains, even on a periodic step), the agent is
+          still queried, but any 2 it returns is remapped to 1 (block), since
+          CTI is reserved for the periodic slot.
         - greedy_cti: forces action 2 whenever there is still an unbought
           G2 class available (`self.env.epistemic_actions_available == 1`);
           otherwise behaves like the periodic case (query + remap 2 -> 1).
@@ -998,7 +1000,8 @@ class TigerBrain:
         """
         cti_period = self.intrusion_detection_kwargs.get('cti_period', -1)
         if cti_period != -1:
-            if self.wb_tracker.step_counter % int(cti_period) == 0:
+            if self.wb_tracker.step_counter % int(cti_period) == 0 \
+                    and self.env.epistemic_actions_available == 1:
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
 
