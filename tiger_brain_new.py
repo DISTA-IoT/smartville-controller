@@ -1375,15 +1375,15 @@ class TigerBrain:
         nl_labels = self.encoder.inverse_transform(classes_decimal)
         
         for replay_buff, nl_label in zip(self.replay_buffers.values(), nl_labels):
-            test_zda_labels = zda_labels = torch.zeros(samples_per_class, 1)
+            test_zda_labels = zda_labels = torch.zeros(samples_per_class, 1, device=self.device)
 
             if mode == TRAINING:
                 if nl_label in self.env.current_knowledge['G2s']: continue
-                if nl_label in self.env.current_knowledge['G1s']: zda_labels = torch.ones(samples_per_class, 1)
-            
+                if nl_label in self.env.current_knowledge['G1s']: zda_labels = torch.ones(samples_per_class, 1, device=self.device)
+
             if mode == INFERENCE:
                 if nl_label in self.env.current_knowledge['G2s']:
-                    test_zda_labels = zda_labels = torch.ones(samples_per_class, 1)
+                    test_zda_labels = zda_labels = torch.ones(samples_per_class, 1, device=self.device)
             
             try:
                 f, p, n, l = replay_buff.sample(samples_per_class)
