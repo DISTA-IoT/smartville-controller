@@ -627,7 +627,7 @@ class TigerBrain:
             }
 
         rewards = [self._rewards_lookup[label.item()] for label in encoded_labels]
-        return torch.tensor(rewards, dtype=torch.float32)
+        return torch.tensor(rewards, dtype=torch.float32, device=self.device)
 
     def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask):
         """
@@ -729,8 +729,8 @@ class TigerBrain:
                 return (top2[:, 0] - top2[:, 1]).mean().unsqueeze(-1)
             return probs.mean().unsqueeze(-1)
         else: # baseline
-            non_choosed_mask = torch.ones(n, num_classes)
-            non_choosed_mask[torch.arange(n), preds_slice] = 0
+            non_choosed_mask = torch.ones(n, num_classes, device=logits_slice.device)
+            non_choosed_mask[torch.arange(n, device=logits_slice.device), preds_slice] = 0
             mean_non_choosed_values = logits_slice[non_choosed_mask.to(torch.bool)].mean()
             mean_choosed_logits = logits_slice.max(1)[0].mean()
             return torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
@@ -1340,9 +1340,9 @@ class TigerBrain:
             class_nl_label = frozen_int_to_label.get(class_idx)
             if class_nl_label is None: continue
 
-            test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1)
+            test_zda_batch_labels = zda_batch_labels = torch.zeros(samples_per_class, 1, device=self.device)
             if class_nl_label in frozen_knowledge.get('G2s', set()):
-                test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1)
+                test_zda_batch_labels = zda_batch_labels = torch.ones(samples_per_class, 1, device=self.device)
 
             try:
                 flow_batch, packet_batch, node_feat_batch, batch_labels = replay_buff.sample(samples_per_class)
@@ -1490,7 +1490,7 @@ class TigerBrain:
         if torch.any(known_h_mask):
             zda_preds = self.confidence_decoder(scores=logits[:, known_h_mask])
             if self.multi_class:
-                zda_loss, _, ad_metrics = self.evaluate_anomaly_detection(training_batch.zda_labels[query_mask], zda_preds, torch.ones(query_mask.sum()).to(torch.bool), TRAINING)
+                zda_loss, _, ad_metrics = self.evaluate_anomaly_detection(training_batch.zda_labels[query_mask], zda_preds, torch.ones(query_mask.sum(), device=self.device).to(torch.bool), TRAINING)
                 loss += zda_loss
 
         kr_loss, pred_clusters, kr_metrics = self.evaluate_kernel_regression(pred_kernel, one_hot_labels, TRAINING)
