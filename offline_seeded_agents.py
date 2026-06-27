@@ -52,8 +52,9 @@ differ only in ablation mode or seed will write checkpoints to the same path,
 each overwriting the previous one in this sweep (the IM itself is still
 trained from scratch / reloaded fresh per run per the manifest's
 pretrained_inference setting -- there's no cross-run weight leakage, only
-last-checkpoint-wins on disk). Pass --no-save if you don't need checkpoints
-at all for a sweep like this.
+last-checkpoint-wins on disk). Because of this, checkpoint saving defaults
+to OFF for this script (every offline_replay.py invocation gets --no-save
+unless --save is passed).
 
 Sweep order matches tiger/tests/seeded_agents.py: seeds are the OUTERMOST
 loop, (agent, mode) the innermost -- so an interrupted sweep always leaves
@@ -201,7 +202,18 @@ def main() -> int:
     parser.add_argument("--device", default=None, help="Forwarded to offline_replay.py --device.")
     parser.add_argument("--pretrained-models-dir", default=None, help="Forwarded to offline_replay.py --pretrained-models-dir.")
     parser.add_argument("--load-pretrained", action="store_true", help="Forwarded to offline_replay.py --load-pretrained.")
-    parser.add_argument("--no-save", action="store_true", help="Forwarded to offline_replay.py --no-save.")
+    parser.add_argument(
+        "--save", action="store_true",
+        help="Enable model checkpoint saving for this sweep (default: disabled, i.e. every "
+             "offline_replay.py invocation gets --no-save -- checkpoints are keyed by wandb run "
+             "name, which this sweep collapses to just the agent string, so different seeds/modes "
+             "for the same agent would otherwise overwrite each other's checkpoint; see module docstring).",
+    )
+    parser.add_argument(
+        "--repetitions", type=int, default=None,
+        help="Forwarded to offline_replay.py --repetitions (default: let offline_replay.py use its own "
+             "default of 20 full passes over the recorded shards per run).",
+    )
     parser.add_argument("--max-shards", type=int, default=None, help="Forwarded to offline_replay.py --max-shards (e.g. for a smoke-test sweep).")
     parser.add_argument("--max-samples", type=int, default=None, help="Forwarded to offline_replay.py --max-samples.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Forwarded to offline_replay.py --log-level.")
@@ -225,8 +237,10 @@ def main() -> int:
         passthrough_args += ["--pretrained-models-dir", args.pretrained_models_dir]
     if args.load_pretrained:
         passthrough_args.append("--load-pretrained")
-    if args.no_save:
+    if not args.save:
         passthrough_args.append("--no-save")
+    if args.repetitions is not None:
+        passthrough_args += ["--repetitions", str(args.repetitions)]
     if args.max_shards is not None:
         passthrough_args += ["--max-shards", str(args.max_shards)]
     if args.max_samples is not None:

@@ -331,6 +331,13 @@ def main():
              "health, wandb. Value is parsed with yaml.safe_load (so true/1.0/null/[a,b] get real types; plain "
              "words like DuelingDDQN become strings).")
     parser.add_argument("--no-save", action="store_true", help="Disable model checkpoint saving for this replay run.")
+    parser.add_argument(
+        "--repetitions", type=int, default=20,
+        help="Number of full passes over the (possibly --max-shards-truncated) set of recorded shards "
+             "(default: 20). Each pass replays the shards in the same order, feeding the IM/DM "
+             "--repetitions times the gradient steps over this fixed recorded dataset -- the offline "
+             "equivalent of training for multiple epochs. --max-samples, if set, is a hard cap across "
+             "the whole run (all repetitions combined), not per-repetition.")
     parser.add_argument("--max-shards", type=int, default=None, help="Stop after replaying this many shards.")
     parser.add_argument("--max-samples", type=int, default=None, help="Stop after replaying this many total samples (across all ticks/shards).")
     parser.add_argument("--wandb", action="store_true", help="Opt in to real (online) wandb tracking for this replay run. Default: disabled (offline, no network calls).")
@@ -384,6 +391,11 @@ def main():
     shard_entries = index_entries if args.max_shards is None else index_entries[:args.max_shards]
     shard_entries = shard_entries[1:] # skip first entry (ugly packet repetition warm up during collection)
     logger.info(f"[offline_replay] Will replay {len(shard_entries)} of {len(index_entries)} shard(s) (max_shards={args.max_shards}).")
+    logger.info(
+        f"[offline_replay] --repetitions={args.repetitions}: the same {len(shard_entries)} shard(s) will be "
+        f"replayed {args.repetitions} time(s) in full-pass order (no reshuffling between passes), giving "
+        f"the IM/DM {args.repetitions}x the gradient steps over this recorded data."
+    )
 
     overall_start = time.monotonic()
     total_samples_replayed = 0
@@ -393,84 +405,90 @@ def main():
     aggregate_label_histogram = Counter()
     stop = False
 
-    for shard_idx, entry in enumerate(shard_entries):
+    for epoch in range(args.repetitions):
         if stop:
             break
-        shard_name = entry.get("shard")
-        shard_path = os.path.join(run_dir, shard_name)
-        logger.info(
-            f"[offline_replay] --- Shard {shard_idx + 1}/{len(shard_entries)}: {shard_name} "
-            f"(expected {entry.get('num_samples')} samples, ticks=[{entry.get('tick_min')},{entry.get('tick_max')}]) ---"
-        )
+        logger.info(f"[offline_replay] ===== Repetition {epoch + 1}/{args.repetitions} over {len(shard_entries)} shard(s) =====")
 
-        if not os.path.isfile(shard_path):
-            logger.error(f"[offline_replay] {shard_name}: file missing on disk at {shard_path} -- skipping shard.")
-            total_shard_errors += 1
-            continue
-
-        try:
-            shard = torch.load(shard_path, map_location=brain.device, weights_only=False)
-        except Exception:
-            logger.error(f"[offline_replay] {shard_name}: torch.load failed: {traceback.format_exc()} -- skipping shard.")
-            total_shard_errors += 1
-            continue
-
-        shard_start = time.monotonic()
-        shard_samples = 0
-        shard_ticks = 0
-
-        for tick, flow_feats, packet_feats, node_feats, classes in iter_tick_groups(shard, shard_name, logger):
-            if args.max_samples is not None and total_samples_replayed >= args.max_samples:
-                logger.info(f"[offline_replay] Reached --max-samples={args.max_samples}; stopping replay.")
-                stop = True
+        for shard_idx, entry in enumerate(shard_entries):
+            if stop:
                 break
+            shard_name = entry.get("shard")
+            shard_path = os.path.join(run_dir, shard_name)
+            logger.info(
+                f"[offline_replay] --- Repetition {epoch + 1}/{args.repetitions}, Shard {shard_idx + 1}/{len(shard_entries)}: "
+                f"{shard_name} (expected {entry.get('num_samples')} samples, "
+                f"ticks=[{entry.get('tick_min')},{entry.get('tick_max')}]) ---"
+            )
 
-            n = flow_feats.shape[0]
-            if args.max_samples is not None and total_samples_replayed + n > args.max_samples:
-                remaining = args.max_samples - total_samples_replayed
-                logger.info(
-                    f"[offline_replay] Truncating tick={tick}'s batch from {n} to {remaining} "
-                    f"samples to respect --max-samples={args.max_samples}."
-                )
-                flow_feats = flow_feats[:remaining]
-                packet_feats = packet_feats[:remaining] if packet_feats is not None else None
-                node_feats = node_feats[:remaining] if node_feats is not None else None
-                classes = classes[:remaining]
-                n = remaining
-
-            try:
-                brain.process_input_from_record(flow_feats, packet_feats, node_feats, classes, tick=tick)
-            except Exception:
-                logger.error(
-                    f"[offline_replay] {shard_name} tick={tick}: process_input_from_record raised: "
-                    f"{traceback.format_exc()} -- skipping this tick's batch, continuing replay."
-                )
+            if not os.path.isfile(shard_path):
+                logger.error(f"[offline_replay] {shard_name}: file missing on disk at {shard_path} -- skipping shard.")
+                total_shard_errors += 1
                 continue
 
-            shard_samples += n
-            shard_ticks += 1
-            total_samples_replayed += n
-            total_ticks_replayed += 1
-            aggregate_label_histogram.update(Counter(classes))
+            try:
+                shard = torch.load(shard_path, map_location=brain.device, weights_only=False)
+            except Exception:
+                logger.error(f"[offline_replay] {shard_name}: torch.load failed: {traceback.format_exc()} -- skipping shard.")
+                total_shard_errors += 1
+                continue
 
-            if args.max_samples is not None and total_samples_replayed >= args.max_samples:
-                stop = True
-                break
+            shard_start = time.monotonic()
+            shard_samples = 0
+            shard_ticks = 0
 
-        shard_elapsed = time.monotonic() - shard_start
-        total_shards_replayed += 1
-        logger.info(
-            f"[offline_replay] {shard_name} done: {shard_ticks} tick-batches, {shard_samples} samples "
-            f"replayed in {shard_elapsed:.2f}s. Running totals: samples={total_samples_replayed} "
-            f"ticks={total_ticks_replayed} shards={total_shards_replayed} "
-            f"known_classes={brain.current_known_classes_count} step_counter={wb_tracker.step_counter} "
-            f"batch_processing_allowed={brain.batch_processing_allowed}"
-        )
+            for tick, flow_feats, packet_feats, node_feats, classes in iter_tick_groups(shard, shard_name, logger):
+                if args.max_samples is not None and total_samples_replayed >= args.max_samples:
+                    logger.info(f"[offline_replay] Reached --max-samples={args.max_samples}; stopping replay.")
+                    stop = True
+                    break
+
+                n = flow_feats.shape[0]
+                if args.max_samples is not None and total_samples_replayed + n > args.max_samples:
+                    remaining = args.max_samples - total_samples_replayed
+                    logger.info(
+                        f"[offline_replay] Truncating tick={tick}'s batch from {n} to {remaining} "
+                        f"samples to respect --max-samples={args.max_samples}."
+                    )
+                    flow_feats = flow_feats[:remaining]
+                    packet_feats = packet_feats[:remaining] if packet_feats is not None else None
+                    node_feats = node_feats[:remaining] if node_feats is not None else None
+                    classes = classes[:remaining]
+                    n = remaining
+
+                try:
+                    brain.process_input_from_record(flow_feats, packet_feats, node_feats, classes, tick=tick)
+                except Exception:
+                    logger.error(
+                        f"[offline_replay] {shard_name} tick={tick}: process_input_from_record raised: "
+                        f"{traceback.format_exc()} -- skipping this tick's batch, continuing replay."
+                    )
+                    continue
+
+                shard_samples += n
+                shard_ticks += 1
+                total_samples_replayed += n
+                total_ticks_replayed += 1
+                aggregate_label_histogram.update(Counter(classes))
+
+                if args.max_samples is not None and total_samples_replayed >= args.max_samples:
+                    stop = True
+                    break
+
+            shard_elapsed = time.monotonic() - shard_start
+            total_shards_replayed += 1
+            logger.info(
+                f"[offline_replay] {shard_name} done: {shard_ticks} tick-batches, {shard_samples} samples "
+                f"replayed in {shard_elapsed:.2f}s. Running totals: samples={total_samples_replayed} "
+                f"ticks={total_ticks_replayed} shards={total_shards_replayed} "
+                f"known_classes={brain.current_known_classes_count} step_counter={wb_tracker.step_counter} "
+                f"batch_processing_allowed={brain.batch_processing_allowed}"
+            )
 
     overall_elapsed = time.monotonic() - overall_start
     logger.info(
         f"[offline_replay] ===== Replay complete in {overall_elapsed:.2f}s: "
-        f"shards_replayed={total_shards_replayed} shard_errors={total_shard_errors} "
+        f"repetitions={args.repetitions} shards_replayed={total_shards_replayed} shard_errors={total_shard_errors} "
         f"ticks_replayed={total_ticks_replayed} samples_replayed={total_samples_replayed} "
         f"final_known_classes={brain.current_known_classes_count} "
         f"final_step_counter={wb_tracker.step_counter} "
