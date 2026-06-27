@@ -47,11 +47,12 @@ drains. Jobs whose subprocess was already running when you pressed Ctrl-C
 are still killed outright by that same SIGINT (it hits the whole process
 group); they're recorded as failed/cancelled rather than silently dropped.
 
-Run-name / checkpoint conventions (wandb run name == agent string,
---no-save default, --repetitions, --set-based config overrides) are
-identical to offline_seeded_agents.py -- see that script's module docstring
-for the full rationale. This script reuses its constants and per-job
---set override logic directly (`import offline_seeded_agents`) rather than
+Run-name / checkpoint conventions (wandb run name collapsed to the ablation
+label for non-baseline modes via wb_run_name(), --no-save default,
+--repetitions, --set-based config overrides) are identical to
+offline_seeded_agents.py -- see that script's module docstring for the full
+rationale. This script reuses its constants and per-job --set override /
+run-naming logic directly (`import offline_seeded_agents`) rather than
 re-deriving them, so the two stay in sync.
 """
 
@@ -153,7 +154,7 @@ def run_job(
             "--agency", "--device", f"cuda:{gpu_id}",
         ]
         if wandb_enabled:
-            cmd += ["--wandb", "--wandb-run-name", job.agent]
+            cmd += ["--wandb", "--wandb-run-name", seq.wb_run_name(job.agent, job.mode)]
         for override in overrides:
             cmd += ["--set", override]
         cmd += passthrough_args
