@@ -99,7 +99,9 @@ class SmartSwitch(EventMixin):
         flow_logger,
         wb_tracker,
         **kwargs):
-
+    self.logger = core.getLogger()
+    self.logger.name = "SmartSwitch"
+    self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
     # Wipe any flow entries the switch is still holding from a previous
     # experiment *before* resetting our own bookkeeping. self.forwardingRules/
     # self.sampling_rule_messages are Python-side caches; clearing them alone
@@ -120,9 +122,7 @@ class SmartSwitch(EventMixin):
     self.max_buffering_secs = int(kwargs['switching_args'].get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs['switching_args'].get('arp_req_exp_secs'))
     self.sampling_flow_hardtimeout = int(kwargs['switching_args'].get('sampling_flow_hard_timeout'))
-    self.logger = core.getLogger()
-    self.logger.name = "SmartSwitch"
-    self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
+    
     self.logger.info(f"SmartSwitch started with args: {kwargs['switching_args']}")
     self.logger.info(f"SmartSwitch resampling packets: {self.resample_packets}")
     self.flow_logger = flow_logger
