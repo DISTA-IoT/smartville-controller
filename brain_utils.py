@@ -48,12 +48,16 @@ def efficient_cm(preds, targets_onehot):
     Compute a multi-class confusion matrix efficiently using matrix multiplication.
     """
     predictions_decimal = preds.argmax(dim=1).to(torch.int64)
-    predictions_onehot = torch.zeros_like(
-        preds,
+    predictions_onehot = torch.zeros(
+        preds.shape,
         device=preds.device)
     predictions_onehot.scatter_(1, predictions_decimal.view(-1, 1), 1)
 
-    return targets_onehot.T @ predictions_onehot
+    # CUDA's matmul kernels don't support integer dtypes (only the CPU
+    # backend does), so the onehot matrices are multiplied as float and the
+    # exact integer counts are recovered by casting the result afterward,
+    # regardless of whether preds/targets_onehot came in as long or float.
+    return (targets_onehot.float().T @ predictions_onehot.float()).long()
 
 
 def efficient_os_cm(preds, targets_onehot):
@@ -65,7 +69,10 @@ def efficient_os_cm(preds, targets_onehot):
         device=preds.device)
     predictions_onehot.scatter_(1, preds.view(-1, 1), 1)
 
-    return targets_onehot.T @ predictions_onehot.long()
+    # CUDA's matmul kernels don't support integer dtypes (only the CPU
+    # backend does), so the onehot matrices are multiplied as float and the
+    # exact integer counts are recovered by casting the result afterward.
+    return (targets_onehot.float().T @ predictions_onehot.float()).long()
 
 
 def get_balanced_accuracy(os_cm, negative_weight):
