@@ -41,6 +41,12 @@ keeps going; the script's own exit code is 1 if any job failed (or had shard
 errors), 0 if every job replayed cleanly, and a summary table of every job's
 outcome and log path is printed at the end either way.
 
+Ctrl-C: a single SIGINT cancels every not-yet-started queued job and prints
+the summary right away, instead of hanging until the whole remaining grid
+drains. Jobs whose subprocess was already running when you pressed Ctrl-C
+are still killed outright by that same SIGINT (it hits the whole process
+group); they're recorded as failed/cancelled rather than silently dropped.
+
 Run-name / checkpoint conventions (wandb run name == agent string,
 --no-save default, --repetitions, --set-based config overrides) are
 identical to offline_seeded_agents.py -- see that script's module docstring
@@ -288,7 +294,9 @@ def main() -> int:
 
     overall_start = time.monotonic()
     results: list[JobResult] = []
-    with ThreadPoolExecutor(max_workers=len(slot_ids)) as executor:
+    interrupted = False
+    executor = ThreadPoolExecutor(max_workers=len(slot_ids))
+    try:
         futures = [
             executor.submit(
                 run_job, job, gpu_queue, offline_replay_path, run_dir, args.cti_period,
@@ -296,15 +304,46 @@ def main() -> int:
             )
             for job in jobs
         ]
-        for future in as_completed(futures):
-            results.append(future.result())
+        try:
+            for future in as_completed(futures):
+                results.append(future.result())
+        except KeyboardInterrupt:
+            # Cancel every not-yet-started queued job so freed GPU slots stop
+            # getting backfilled, instead of waiting out the whole remaining
+            # grid (Python's default executor.shutdown(wait=True) does not
+            # cancel pending futures, so without this Ctrl-C would appear to
+            # hang until every already-submitted job finished). Jobs whose
+            # subprocess is already running still get killed by the SIGINT
+            # that just hit this whole process group, and still finish
+            # recording their (non-zero) result below before we print the
+            # summary -- only jobs that hadn't started a subprocess yet are
+            # actually dropped.
+            interrupted = True
+            print(
+                "\n[offline_seeded_agents_parallel] Interrupted -- cancelling queued jobs "
+                "(jobs already running are being killed by the same Ctrl-C and will still "
+                "report their result below).",
+                flush=True,
+            )
+            for future in futures:
+                future.cancel()
+            for future in futures:
+                if future.cancelled():
+                    continue
+                try:
+                    results.append(future.result())
+                except Exception:
+                    pass
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
     overall_elapsed = time.monotonic() - overall_start
 
     ok = [r for r in results if r.returncode == 0]
     warned = [r for r in results if r.returncode == 2]
     failed = [r for r in results if r.returncode not in (0, 2)]
 
-    print(f"\n[offline_seeded_agents_parallel] ===== Sweep complete in {overall_elapsed:.1f}s "
+    status_label = "Interrupted" if interrupted else "Sweep complete"
+    print(f"\n[offline_seeded_agents_parallel] ===== {status_label} in {overall_elapsed:.1f}s "
           f"({len(results)}/{len(jobs)} jobs accounted for) =====")
     print(f"  ok:     {len(ok)}")
     print(f"  warn:   {len(warned)} (shard load/parse errors -- check logs, run is likely still usable)")
