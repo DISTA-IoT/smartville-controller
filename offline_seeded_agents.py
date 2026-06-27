@@ -39,22 +39,23 @@ this sweep is to exercise the Decision Module, even if the recorded run
 was captured with intrusion_detection.agency=false, as the
 data_collection.yaml profile sets).
 
-Run-name convention (deliberately different from tiger/tests/seeded_agents.py):
-wandb's run name is always exactly the agent string (e.g. "DQN",
-"DuelingDDQN"), regardless of ablation mode, so results group by agent in
-W&B's "group by run name" view. The seed and ablation mode are still fully
-recorded -- in the console label (agent-mode-seedN), in wandb.wb_group_name,
-and inside each run's own logged config (intrusion_detection.seed/
-.no_epistemic_actions/.cti_period/.greedy_cti) -- only the run *name* is
-collapsed onto the agent. One consequence: since offline_replay.py / TigerBrain
-key checkpoint filenames by wandb.wb_run_name, runs that share an agent but
-differ only in ablation mode or seed will write checkpoints to the same path,
-each overwriting the previous one in this sweep (the IM itself is still
-trained from scratch / reloaded fresh per run per the manifest's
-pretrained_inference setting -- there's no cross-run weight leakage, only
-last-checkpoint-wins on disk). Because of this, checkpoint saving defaults
-to OFF for this script (every offline_replay.py invocation gets --no-save
-unless --save is passed).
+Run-name convention (now matches tiger/tests/seeded_agents.py): wandb's run
+name is the agent string when mode == "baseline", or a short ablation label
+("no_epis", "periodic", "greedy") otherwise -- see ABLATION_RUN_NAME / wb_run_name()
+below -- so W&B's "group by run name" view groups all agents sharing an
+ablation together, instead of grouping by agent. The seed, agent, and
+ablation mode are still fully recorded -- in the console label
+(agent-mode-seedN), in wandb.wb_group_name, and inside each run's own logged
+config (intrusion_detection.agent/.seed/.no_epistemic_actions/.cti_period/
+.greedy_cti) -- only the run *name* is collapsed for non-baseline modes. One
+consequence: since offline_replay.py / TigerBrain key checkpoint filenames by
+wandb.wb_run_name, runs that share a collapsed run name (e.g. every agent's
+"no_epis" run) will write checkpoints to the same path, each overwriting the
+previous one in this sweep (the IM itself is still trained from scratch /
+reloaded fresh per run per the manifest's pretrained_inference setting --
+there's no cross-run weight leakage, only last-checkpoint-wins on disk).
+Because of this, checkpoint saving defaults to OFF for this script (every
+offline_replay.py invocation gets --no-save unless --save is passed).
 
 Sweep order matches tiger/tests/seeded_agents.py: seeds are the OUTERMOST
 loop, (agent, mode) the innermost -- so an interrupted sweep always leaves
@@ -75,6 +76,24 @@ DEFAULT_CTI_PERIOD = 10
 DEFAULT_WANDB_GROUP_NAME = "offline-agents-seeded"
 
 ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti"]
+
+# wandb's run name uses these short labels instead of the agent name whenever
+# mode != "baseline", mirroring tiger/tests/seeded_agents.py's
+# ABLATION_RUN_NAME/wb_run_name(), so W&B's "group by run name" view groups
+# all agents sharing an ablation together (the agent itself is still
+# recorded in the run's logged config, same as the seed, so neither is
+# lost -- just not in the run name).
+ABLATION_RUN_NAME = {
+    "no_epistemic": "no_epis",
+    "periodic_cti": "periodic",
+    "greedy_cti": "greedy",
+}
+
+
+def wb_run_name(agent: str, mode: str) -> str:
+    if mode == "baseline":
+        return agent
+    return ABLATION_RUN_NAME[mode]
 
 
 def ablation_set_overrides(mode: str, cti_period: int) -> list[str]:
@@ -119,8 +138,9 @@ def run_one(
     passthrough_args: list[str],
 ) -> None:
     # label is just for console/log messages -- fully descriptive (agent,
-    # mode, seed). The wandb run name (set below) is intentionally just the
-    # agent string, per this script's grouping convention -- see module docstring.
+    # mode, seed). The wandb run name (set below) is collapsed to the
+    # ablation label for non-baseline modes, per wb_run_name() -- see module
+    # docstring.
     label = f"{agent}-{mode}-seed{seed}"
     print(f"\n[step] Replaying {label} ...", flush=True)
 
@@ -133,7 +153,7 @@ def run_one(
 
     cmd = [sys.executable, str(offline_replay_path), str(run_dir), "--agency"]
     if wandb_enabled:
-        cmd += ["--wandb", "--wandb-run-name", agent]
+        cmd += ["--wandb", "--wandb-run-name", wb_run_name(agent, mode)]
     for override in overrides:
         cmd += ["--set", override]
     cmd += passthrough_args
@@ -166,8 +186,8 @@ def main() -> int:
     parser.add_argument("run_dir", help="Path to a specific recorded run_<timestamp>/ directory (passed straight through to offline_replay.py).")
     parser.add_argument(
         "--agents", nargs="+", default=DEFAULT_AGENTS,
-        help=f"Agent types to sweep (default: {DEFAULT_AGENTS}). Each becomes intrusion_detection.agent "
-             "AND the wandb run name for its runs.",
+        help=f"Agent types to sweep (default: {DEFAULT_AGENTS}). Each becomes intrusion_detection.agent, "
+             "and the wandb run name for its baseline-mode runs (see wb_run_name()).",
     )
     parser.add_argument(
         "--seeds", nargs="+", type=int, default=DEFAULT_SEEDS,
@@ -191,7 +211,7 @@ def main() -> int:
     parser.add_argument(
         "--no-wandb", action="store_true",
         help="Disable real wandb tracking for this sweep (default: enabled, with --wandb-run-name "
-             "set to the agent string, since grouping by run_name is the point of this script).",
+             "set via wb_run_name(agent, mode), since grouping by run_name is the point of this script).",
     )
     parser.add_argument(
         "--offline-replay-path", type=Path,
@@ -206,8 +226,9 @@ def main() -> int:
         "--save", action="store_true",
         help="Enable model checkpoint saving for this sweep (default: disabled, i.e. every "
              "offline_replay.py invocation gets --no-save -- checkpoints are keyed by wandb run "
-             "name, which this sweep collapses to just the agent string, so different seeds/modes "
-             "for the same agent would otherwise overwrite each other's checkpoint; see module docstring).",
+             "name, which this sweep collapses for non-baseline ablation modes (wb_run_name()), so "
+             "different agents/seeds sharing an ablation mode would otherwise overwrite each "
+             "other's checkpoint; see module docstring).",
     )
     parser.add_argument(
         "--repetitions", type=int, default=None,
