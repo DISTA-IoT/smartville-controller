@@ -128,3 +128,128 @@ The DM step counter (`wb_tracker.step_counter`) increments once per individual a
 8. **Reward magnitudes are a fixed, hand-authored per-class lookup table** (`rewards:` YAML), and that table is the only tunable: there are no separate multiplicative penalty factors or "hard"/"easy" mode layered on top — accept and block share one rule (`_decision_reward`) everywhere.
 9. **Traffic arrival is exogenous**: the DM's actions never influence which flows/classes appear next; they only affect the budget/reward and the curriculum (which classes are "known" vs. purchasable), not the environment's "physics."
 10. **IM training batches are decoupled from the exact batch the DM just acted on** — IM gradient steps sample fresh i.i.d. batches from replay buffers rather than the literal online tick batch, which is what allows the act-then-train ordering to not create within-tick circular dependency, but also means the IM's loss is not a function of the DM's most recent decisions.
+
+## 5. Offline replay: re-running the exact same DM/IM game from recorded data
+
+`offline_replay.py` is a second way to exercise the entire mechanism described
+in §1–§3, with no FastAPI/POX/uvicorn server and no live network traffic. It
+reconstructs a real `TigerBrain` instance and feeds it samples that were
+previously captured by `FlowDataRecorder` (`data_recorder.py`) during a live
+run with `intrusion_detection.data_collection_mode: true`, replaying them
+through the *same* `TigerBrain._process_batch` path that `process_input` uses
+online. Concretely, `process_input_from_record` (`tiger_brain_new.py:1328`)
+wraps one recorded tick's tensors into a `Batch`, restores the ground-truth
+`class_labels` from the recorded label strings, and calls `_process_batch` —
+none of the DM/IM coupling, MDP, reward, or episode-termination logic
+described above is re-derived or approximated; it is the original online code
+running on recorded inputs instead of live ones.
+
+### 5.1 Where a collection run's data lives, and what's in it
+
+A collection run is a directory `run_<timestamp>/` (under
+`intrusion_detection.data_collection_dir`, e.g.
+`/pox/pox/smartController/tiger_data_collection/`) containing:
+
+- **`manifest.json`** — written once, at `FlowDataRecorder.__init__` time, via
+  `TigerBrain._build_data_collection_manifest()` (`tiger_brain_new.py:212`).
+  This is a full snapshot of the exact config the live run used to construct
+  `TigerBrain`/`NewTigerEnvironment`: the `intrusion_detection`,
+  `neural_modules`, `knowledge`, `rewards`, `health`, and `wandb` config
+  blocks (the same ones documented in §0 and used throughout the rest of
+  this file), plus `traffic_dict`, `container_ips`, `ips_containers`,
+  `use_packet_feats`, `use_node_feats`, `flow_feat_dim`, `packet_feat_dim`,
+  `hidden_size`, `device`, and `models` (the raw Python source text of the
+  ASAP model classes that gets `exec()`'d, exactly as it does for a live run
+  — see system-description §3/§5). It is JSON despite the suggestive name —
+  there is no `manifest.yaml` anywhere in the recorded-run layout.
+- **`shards_index.jsonl`** — one JSON line appended per flushed shard
+  (shard filename, `num_samples`, `tick_min`/`tick_max`), for cheap
+  inspection without loading the actual tensors.
+- **`shard_NNNNNN.pt`** — `torch.save`d dicts of the buffered `tick`,
+  `flow_features`, optional `packet_features`/`node_features`, and
+  `element_classes` (ground-truth label strings only — `zda`/`test_zda`
+  booleans are deliberately *not* recorded, since they depend on the
+  curriculum state, i.e. which classes have been bought via CTI, at capture
+  time; replay recomputes them from whatever curriculum the *replaying* run
+  is configured with).
+
+### 5.2 Every DM/IM hyperparameter comes from the run's `manifest.json`, not from the script
+
+`offline_replay.py` takes a single positional argument — the `run_dir` — and
+has **no flags for any RL/IM hyperparameter** (no learning rate, no
+`init_epsilon_egreedy`, no `cti_price_factor`, no `Knowns`/`G1s`/`G2s` lists,
+etc.). `build_kwargs()` (`offline_replay.py:148`) reconstructs the exact
+kwargs dict `TigerBrain.__init__` expects entirely by copying the
+`intrusion_detection`, `neural_modules`, `knowledge`, `rewards`, `health`, and
+`wandb` blocks straight out of the loaded `manifest.json`:
+
+```python
+kwargs = {
+    "intrusion_detection": dict(manifest.get("intrusion_detection", {})),
+    "neural_modules": dict(manifest.get("neural_modules", {})),
+    "knowledge": dict(manifest.get("knowledge", {})),
+    "rewards": dict(manifest.get("rewards", {})),
+    "health": dict(manifest.get("health", {})),
+    "wandb": dict(manifest.get("wandb", {})),
+    ...
+    "models": manifest.get("models", ""),
+}
+```
+
+So every quantity discussed in §2 — action space, reward magnitudes
+(`rewards:` lookup table), CTI pricing/decay, budget bounds, epsilon decay,
+PER/n-step settings, the agent type (`intrusion_detection.agent`), the
+curriculum (`Knowns`/`G1s`/`G2s`), and even which ASAP model source
+(`models`) gets `exec()`'d — is whatever that *specific collection run* was
+configured with when it captured the data, not anything chosen by
+`offline_replay.py` itself. Replaying a given `run_dir` therefore always
+re-runs the live experiment's own DM/IM configuration, not the controller's
+current `tiger/config/default.yaml` or any override file.
+
+The script only ever *overrides* a handful of fields on top of the
+manifest-derived kwargs, and always for a documented, non-hyperparameter
+reason:
+- `intrusion_detection.data_collection_mode` is always forced to `False`
+  (the replay must not spin up a second `FlowDataRecorder` and re-record the
+  data it is replaying).
+- `--device`, `--pretrained-models-dir`, `--load-pretrained`, `--agency`,
+  `--no-save` optionally override the corresponding single field (device,
+  checkpoint dir, whether pretrained IM weights are loaded, whether the DM
+  acts/learns during replay, whether checkpoints are saved).
+- `wandb.wb_tracking` defaults to disabled (`--wandb` opts back in), since a
+  replay is not a fresh tracked experiment by default.
+- `--set path.to.key=value` is a generic escape hatch to override *any* of
+  the six manifest-derived blocks by dotted path (e.g.
+  `--set intrusion_detection.agent=DuelingDDQN`), applied last so it can
+  override anything else, including the dedicated flags above — but absent
+  explicit `--set` overrides, every DM/IM hyperparameter is exactly what the
+  manifest says.
+
+Before any of this, `check_feature_coverage()` (`offline_replay.py:234`)
+cross-checks `manifest['use_packet_feats']`/`use_node_feats` (what the model
+config wanted at capture time) against
+`intrusion_detection.data_collection_use_packet_feats`/`_use_node_feats`
+(what was actually captured), and aborts loudly rather than silently
+replaying `None` tensors into a model that expects real ones.
+
+### 5.3 How a run is replayed once `TigerBrain` is reconstructed
+
+`shards_index.jsonl` entries are read in order, the first entry is skipped
+(it covers an initial packet-repetition warm-up artifact from the collection
+process itself, not real traffic), and each shard's `.pt` file is loaded and
+split into contiguous same-`tick` groups by `iter_tick_groups()`
+(`offline_replay.py:275`) — a FlowDataRecorder flush never splits a single
+recorded tick across two shards, so per-shard grouping alone is enough to
+reconstruct the original tick boundaries. Each tick group is handed to
+`brain.process_input_from_record(...)` one at a time, in recorded order,
+exactly reproducing the per-tick orchestration of §3 (IM forward pass,
+known/unknown split, one DM decision per predicted-class group/cluster,
+`replay(step)`, then `train_inf_module_single_batch()`) for that tick's
+recorded samples.
+
+`--repetitions` (default `20`) replays the *same* fixed set of shards that
+many full passes, in the same order each time (no reshuffling) — the offline
+analogue of training for multiple epochs over a fixed dataset, still driven
+entirely by the manifest's hyperparameters. `--max-shards`/`--max-samples`
+cap how much of the recorded run is consumed; neither changes any DM/IM
+hyperparameter, only how much recorded data is fed through them.
