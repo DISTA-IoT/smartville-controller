@@ -115,16 +115,18 @@ def detect_gpu_ids() -> list[int]:
     return ids
 
 
-def build_jobs(seeds: list[int], agents: list[str], modes: list[str]) -> list[Job]:
+def build_jobs(seeds: list[int], agents: list[str], modes: list[str], ablated_agents: list[str]) -> list[Job]:
     # Seeds outermost, agents/modes innermost -- same order as
     # offline_seeded_agents.py, kept for log/console readability and so an
     # interrupted sweep's "first N jobs done" has the same interpretation
     # (full coverage of early seeds before later ones) even though actual
     # completion order under parallel scheduling will differ from submission order.
+    # Agents not in ablated_agents only get "baseline" -- see
+    # offline_seeded_agents.modes_for_agent()/module docstring.
     jobs = []
     for seed in seeds:
         for agent in agents:
-            for mode in modes:
+            for mode in seq.modes_for_agent(agent, modes, ablated_agents):
                 jobs.append(Job(seed=seed, agent=agent, mode=mode))
     return jobs
 
@@ -195,7 +197,8 @@ def main() -> int:
     parser.add_argument("run_dir", help="Path to a recorded run_<timestamp>/ directory (passed straight through to offline_replay.py).")
     parser.add_argument("--agents", nargs="+", default=seq.DEFAULT_AGENTS, help=f"Agent types to sweep (default: {seq.DEFAULT_AGENTS}).")
     parser.add_argument("--seeds", nargs="+", type=int, default=seq.DEFAULT_SEEDS, help=f"Seeds to run per agent (default: {seq.DEFAULT_SEEDS}).")
-    parser.add_argument("--ablation-modes", nargs="+", default=seq.ABLATION_MODES, choices=seq.ABLATION_MODES, help=f"Ablation modes to sweep (default: {seq.ABLATION_MODES}).")
+    parser.add_argument("--ablation-modes", nargs="+", default=seq.ABLATION_MODES, choices=seq.ABLATION_MODES, help=f"Ablation modes to sweep (default: {seq.ABLATION_MODES}). Only actually applied to agents listed in --ablated-agents.")
+    parser.add_argument("--ablated-agents", nargs="+", default=seq.DEFAULT_ABLATED_AGENTS, help=f"Which agents (from --agents) to sweep across --ablation-modes (default: {seq.DEFAULT_ABLATED_AGENTS}); every other agent in --agents only runs 'baseline'.")
     parser.add_argument("--cti-period", type=int, default=seq.DEFAULT_CTI_PERIOD, help=f"intrusion_detection.cti_period for the 'periodic_cti' mode (default: {seq.DEFAULT_CTI_PERIOD}).")
     parser.add_argument("--wandb-group-name", default=seq.DEFAULT_WANDB_GROUP_NAME, help=f"wandb.wb_group_name shared by every run (default: {seq.DEFAULT_WANDB_GROUP_NAME!r}).")
     parser.add_argument("--no-wandb", action="store_true", help="Disable real wandb tracking for this sweep (default: enabled, --wandb-run-name set to the agent string).")
@@ -269,7 +272,7 @@ def main() -> int:
     if args.max_samples is not None:
         passthrough_args += ["--max-samples", str(args.max_samples)]
 
-    jobs = build_jobs(args.seeds, args.agents, args.ablation_modes)
+    jobs = build_jobs(args.seeds, args.agents, args.ablation_modes, args.ablated_agents)
     slot_ids = [gpu_id for gpu_id in gpu_ids for _ in range(args.jobs_per_gpu)]
     print(
         f"[offline_seeded_agents_parallel] {len(jobs)} job(s) total, "
