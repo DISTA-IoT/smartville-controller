@@ -39,23 +39,41 @@ this sweep is to exercise the Decision Module, even if the recorded run
 was captured with intrusion_detection.agency=false, as the
 data_collection.yaml profile sets).
 
-Run-name convention (now matches tiger/tests/seeded_agents.py): wandb's run
-name is the agent string when mode == "baseline", or a short ablation label
-("no_epis", "periodic", "greedy") otherwise -- see ABLATION_RUN_NAME / wb_run_name()
-below -- so W&B's "group by run name" view groups all agents sharing an
-ablation together, instead of grouping by agent. The seed, agent, and
-ablation mode are still fully recorded -- in the console label
-(agent-mode-seedN), in wandb.wb_group_name, and inside each run's own logged
-config (intrusion_detection.agent/.seed/.no_epistemic_actions/.cti_period/
-.greedy_cti) -- only the run *name* is collapsed for non-baseline modes. One
-consequence: since offline_replay.py / TigerBrain key checkpoint filenames by
-wandb.wb_run_name, runs that share a collapsed run name (e.g. every agent's
-"no_epis" run) will write checkpoints to the same path, each overwriting the
-previous one in this sweep (the IM itself is still trained from scratch /
-reloaded fresh per run per the manifest's pretrained_inference setting --
-there's no cross-run weight leakage, only last-checkpoint-wins on disk).
-Because of this, checkpoint saving defaults to OFF for this script (every
-offline_replay.py invocation gets --no-save unless --save is passed).
+Ablations are NOT a fourth family of RL algorithm -- they only override the
+DM's action on the unknown-cluster (epistemic) decision, and only on some
+steps; every other decision (all known-traffic accept/block calls, plus the
+unknown-cluster calls on non-forced steps) still goes through the agent's own
+`mitigation_agent.act()`, and every transition -- forced or not -- still gets
+pushed through that same agent's `remember()`/`replay()` (see
+tiger_brain_new.py's `_select_unknown_cluster_action`). So an ablation run
+genuinely trains and exercises whichever underlying algorithm it's paired
+with; running "periodic_cti" against DQN and against PPO are two different
+experiments, not a duplicate. With four DQN-family agents plus PPO/A2C/DAI_*
+etc. it's not worth the compute to run all three ablation modes against
+every single algorithm, though -- `--ablated-agents` (default: DQN, PPO)
+restricts which agents in `--agents` actually get swept across
+`--ablation-modes`; every other agent in `--agents` only ever runs in
+"baseline" mode, regardless of what `--ablation-modes` contains.
+
+Run-name convention (matches tiger/tests/seeded_agents.py for the agent part):
+wandb's run name is the agent string when mode == "baseline", or
+"<agent>-<short-ablation-label>" (e.g. "DQN-periodic") otherwise -- see
+ABLATION_RUN_NAME / wb_run_name() below. Since ablations are no longer
+necessarily run identically across every agent, the run name keeps the
+agent prefix so W&B's "group by run name" view doesn't conflate e.g.
+DQN-periodic with PPO-periodic. The seed, agent, and ablation mode are still
+fully recorded -- in the console label (agent-mode-seedN), in
+wandb.wb_group_name, and inside each run's own logged config
+(intrusion_detection.agent/.seed/.no_epistemic_actions/.cti_period/
+.greedy_cti). One consequence: since offline_replay.py / TigerBrain key
+checkpoint filenames by wandb.wb_run_name, runs that share a run name (e.g.
+two seeds of the same agent+mode) will write checkpoints to the same path,
+each overwriting the previous one in this sweep (the IM itself is still
+trained from scratch / reloaded fresh per run per the manifest's
+pretrained_inference setting -- there's no cross-run weight leakage, only
+last-checkpoint-wins on disk). Because of this, checkpoint saving defaults to
+OFF for this script (every offline_replay.py invocation gets --no-save unless
+--save is passed).
 
 Sweep order matches tiger/tests/seeded_agents.py: seeds are the OUTERMOST
 loop, (agent, mode) the innermost -- so an interrupted sweep always leaves
@@ -77,12 +95,17 @@ DEFAULT_WANDB_GROUP_NAME = "offline-agents-seeded"
 
 ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti"]
 
-# wandb's run name uses these short labels instead of the agent name whenever
+# Agents the epistemic-action ablations are actually swept against (see
+# module docstring: ablations only override one decision slot and still
+# train/exercise whichever underlying algorithm they're paired with, so they
+# are not interchangeable across agents -- but sweeping all of them against
+# every agent isn't worth the compute). Any agent in --agents but not in
+# --ablated-agents only ever runs in "baseline" mode.
+DEFAULT_ABLATED_AGENTS = ["DQN", "PPO"]
+
+# Short labels appended to the agent name in the wandb run name whenever
 # mode != "baseline", mirroring tiger/tests/seeded_agents.py's
-# ABLATION_RUN_NAME/wb_run_name(), so W&B's "group by run name" view groups
-# all agents sharing an ablation together (the agent itself is still
-# recorded in the run's logged config, same as the seed, so neither is
-# lost -- just not in the run name).
+# ABLATION_RUN_NAME/wb_run_name().
 ABLATION_RUN_NAME = {
     "no_epistemic": "no_epis",
     "periodic_cti": "periodic",
@@ -93,7 +116,19 @@ ABLATION_RUN_NAME = {
 def wb_run_name(agent: str, mode: str) -> str:
     if mode == "baseline":
         return agent
-    return ABLATION_RUN_NAME[mode]
+    return f"{agent}-{ABLATION_RUN_NAME[mode]}"
+
+
+def modes_for_agent(agent: str, ablation_modes: list[str], ablated_agents: list[str]) -> list[str]:
+    """
+    Which ablation modes to actually run for this agent: the full requested
+    --ablation-modes list if the agent is in --ablated-agents, otherwise just
+    "baseline" -- regardless of what --ablation-modes contains -- since
+    un-ablated agents have no business running no_epistemic/periodic_cti/greedy_cti.
+    """
+    if agent in ablated_agents:
+        return ablation_modes
+    return ["baseline"]
 
 
 def ablation_set_overrides(mode: str, cti_period: int) -> list[str]:
@@ -196,7 +231,16 @@ def main() -> int:
     )
     parser.add_argument(
         "--ablation-modes", nargs="+", default=ABLATION_MODES, choices=ABLATION_MODES,
-        help=f"Epistemic-action ablation modes to sweep (default: {ABLATION_MODES}).",
+        help=f"Epistemic-action ablation modes to sweep (default: {ABLATION_MODES}). Only actually "
+             "applied to agents listed in --ablated-agents -- see that flag.",
+    )
+    parser.add_argument(
+        "--ablated-agents", nargs="+", default=DEFAULT_ABLATED_AGENTS,
+        help=f"Which agents (from --agents) to sweep across --ablation-modes (default: "
+             f"{DEFAULT_ABLATED_AGENTS}). Any agent in --agents but not listed here only ever runs "
+             "in 'baseline' mode -- ablations still train/exercise the underlying algorithm they're "
+             "paired with (see module docstring), so they aren't worth repeating identically across "
+             "every agent.",
     )
     parser.add_argument(
         "--cti-period", type=int, default=DEFAULT_CTI_PERIOD,
@@ -267,11 +311,12 @@ def main() -> int:
     if args.max_samples is not None:
         passthrough_args += ["--max-samples", str(args.max_samples)]
 
-    total_runs = len(args.seeds) * len(args.agents) * len(args.ablation_modes)
+    agent_modes = {agent: modes_for_agent(agent, args.ablation_modes, args.ablated_agents) for agent in args.agents}
+    total_runs = len(args.seeds) * sum(len(modes) for modes in agent_modes.values())
     run_idx = 0
     for seed in args.seeds:
         for agent in args.agents:
-            for mode in args.ablation_modes:
+            for mode in agent_modes[agent]:
                 run_idx += 1
                 print(
                     f"\n===== Run {run_idx}/{total_runs}: seed={seed} agent={agent} mode={mode} =====",
