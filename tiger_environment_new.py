@@ -70,6 +70,27 @@ class NewTigerEnvironment:
         self.steps_done = 0
         self.restart_budget()
         self.reset_intelligence()
+        # Fixed-key per-G2 stats, pre-populated every episode so wandb sees
+        # the same 7 series (reappearances/<label>, net gain net of price)
+        # whether or not that label gets bought this episode.
+        self.acquired_g2_stats = {
+            label: {'bought': False, 'price_paid': 0.0,
+                    'reappearances': 0, 'reward_since_purchase': 0.0}
+            for label in self.init_knowledge['G2s']
+        }
+
+    def record_reappearances(self, true_label_names, per_sample_rewards):
+        """
+        Called once per online tick with the true label and reward of every
+        online sample. Only accumulates for G2 labels already bought this
+        episode -- pre-purchase occurrences are accounted for by the
+        unknown-cluster reward path, not this CTI-ROI tracker.
+        """
+        for name, reward in zip(true_label_names, per_sample_rewards):
+            stats = self.acquired_g2_stats.get(name)
+            if stats is not None and stats['bought']:
+                stats['reappearances'] += 1
+                stats['reward_since_purchase'] += reward
 
     def price_decay(self):
         self.current_cti_price_factor *= max(0.01, min(0.99, random.gauss(0.7,0.4)))
@@ -90,6 +111,10 @@ class NewTigerEnvironment:
         self.current_knowledge['updated_labels'].append(acquired_cti)
         price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
         self.update_cti_options()
+
+        stats = self.acquired_g2_stats[acquired_cti]
+        stats['bought'] = True
+        stats['price_paid'] = price_payed
 
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,

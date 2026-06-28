@@ -176,6 +176,7 @@ class TigerBrain:
         # Performance profiling
         self.profiling_stats = {}
         self._rewards_lookup = None
+        self._label_names_lookup = None
         self._g1_codes_tensor = None
         self._g2_codes_tensor = None
 
@@ -628,6 +629,18 @@ class TigerBrain:
 
         rewards = [self._rewards_lookup[label.item()] for label in encoded_labels]
         return torch.tensor(rewards, dtype=torch.float32, device=self.device)
+
+    def get_label_names_from_encoded_labels(self, encoded_labels):
+        """
+        Resolves per-sample string label names from their encoded class
+        labels, mirroring get_rewards_from_encoded_labels's caching.
+        """
+        if self._label_names_lookup is None or len(self._label_names_lookup) != len(self.encoder.get_mapping()):
+            self._label_names_lookup = {
+                class_idx: class_name
+                for class_name, class_idx in self.encoder.get_mapping().items()
+            }
+        return [self._label_names_lookup[label.item()] for label in encoded_labels]
 
     def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask):
         """
@@ -1158,6 +1171,8 @@ class TigerBrain:
         num_known = (~pred_online_zda_mask).sum()
         num_anom = pred_online_zda_mask.sum()
         rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
+        true_label_names = self.get_label_names_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
+        self.env.record_reappearances(true_label_names, rewards.tolist())
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
         _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
@@ -1203,16 +1218,23 @@ class TigerBrain:
         self.classifier.train()
         self.confidence_decoder.train()
 
-        if self.agency and self.env.has_episode_ended(): 
+        if self.agency and self.env.has_episode_ended():
             if self.wbt:
-                self.reporter.log_scalars({
+                episode_metrics = {
                     'episode_count': self.episode_count,
                     'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
                     'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
                     'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
                     'epistemic_actions_per_episode': self.env.epistemic_actions,
                     'steps_per_episode': self.env.steps_done
-                }, step=self.wb_tracker.step_counter)
+                }
+                # Fixed-key per-G2 CTI-ROI series: same 7 labels every run
+                # (knowledge is static), so these render as 7 line plots
+                # under each of the two wandb sections below.
+                for label, stats in self.env.acquired_g2_stats.items():
+                    episode_metrics[f'reappearances/{label}'] = stats['reappearances']
+                    episode_metrics[f'net_values/{label}'] = stats['reward_since_purchase'] - stats['price_paid']
+                self.reporter.log_scalars(episode_metrics, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
     def get_centroids(self, hidden_vectors, onehot_labels):
