@@ -40,7 +40,7 @@
     "confidence_strategy": "energy",
     "max_budget": 100,
     "min_budget": -60,
-    "max_episode_steps": 10000,
+    "max_episode_steps": 750,
     "multi_class": true,
     "tiger_init_budget": 1,
     "cti_price_factor": 50,
