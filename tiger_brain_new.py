@@ -145,7 +145,11 @@ class TigerBrain:
         self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
         self.pretrained_models_dir = args.intrusion_detection.pretrained_models_dir
         self.update_target_freq = int(args.intrusion_detection.update_target_freq)
-        
+        self.unknown_accept_reward_scale = self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0)
+        self.unknown_malicious_accept_penalty_scale = self.intrusion_detection_kwargs.get('unknown_malicious_accept_penalty_scale', 1.0)
+        self.logger_instance.info(
+            "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m",
+            self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -1091,8 +1095,8 @@ class TigerBrain:
 
             current_reward = self._decision_reward(
                 accepted_cluster, rewards_per_cluster[~missing][idx],
-                accept_reward_scale=self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0),
-                malicious_accept_penalty_scale=self.intrusion_detection_kwargs.get('unknown_malicious_accept_penalty_scale', 1.0))
+                accept_reward_scale=self.unknown_accept_reward_scale,
+                malicious_accept_penalty_scale=self.unknown_malicious_accept_penalty_scale)
 
             if accepted_cluster:
                 member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
