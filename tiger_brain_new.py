@@ -893,10 +893,12 @@ class TigerBrain:
         exteroceptive part is the next group's centroid, chained sequentially
         within the tick exactly like the cluster loop.
 
-        Only the groups the DM actually accepts (action == 0) feed
-        `record_reappearances` -- the bought-G2 CTI-ROI tracker -- since a
-        blocked group never reaches the network and shouldn't be charged or
-        credited the traffic's raw reward.
+        Every group -- accepted or blocked -- feeds `record_reappearances`,
+        the bought-G2 CTI-ROI tracker, since a reappearance is about the
+        traffic showing up again on the wire, not about the DM's decision.
+        Only accepted groups contribute their reward to that tracker's
+        net_values series, since a blocked group never earns or costs the
+        raw per-flow reward.
         """
         if num_known == 0:
             return
@@ -939,9 +941,8 @@ class TigerBrain:
             accepted_group = action_signal.item() == 0
             classification_reward = self._decision_reward(accepted_group, group_costs)
 
-            if accepted_group:
-                group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
-                self.env.record_reappearances(group_true_labels, group_costs.tolist())
+            group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
+            self.env.record_reappearances(group_true_labels, group_costs.tolist(), accepted=accepted_group)
 
             self.env.current_budget += classification_reward
 

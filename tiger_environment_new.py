@@ -91,21 +91,26 @@ class NewTigerEnvironment:
         # (see perform_epistemic_action) but acquire nothing.
         self.wasted_epistemic_actions = 0
 
-    def record_reappearances(self, true_label_names, per_sample_rewards):
+    def record_reappearances(self, true_label_names, per_sample_rewards, accepted):
         """
-        Called once per accepted known-traffic group (action == 0) from
-        act_on_known_traffic, with the true label and reward of just that
-        group's members -- blocked groups never reach here, since traffic
-        the DM blocks neither earns nor costs the raw per-flow reward. Only
-        accumulates for G2 labels already bought this episode -- pre-purchase
-        occurrences are accounted for by the unknown-cluster reward path,
-        not this CTI-ROI tracker.
+        Called once per known-traffic group from act_on_known_traffic,
+        whether the DM accepted or blocked it, with the true label and
+        reward of just that group's members. The reappearance count tracks
+        every reencounter of an already-bought G2 label regardless of the
+        DM's decision -- it's about the traffic showing up again on the
+        wire, not about whether the DM let it through. The reward side
+        (reward_since_purchase, which feeds net_values) only accumulates on
+        accepted groups, since a blocked group never earns or costs the raw
+        per-flow reward. Only accumulates for G2 labels already bought this
+        episode -- pre-purchase occurrences are accounted for by the
+        unknown-cluster reward path, not this CTI-ROI tracker.
         """
         for name, reward in zip(true_label_names, per_sample_rewards):
             stats = self.acquired_g2_stats.get(name)
             if stats is not None and stats['bought']:
                 stats['reappearances'] += 1
-                stats['reward_since_purchase'] += reward
+                if accepted:
+                    stats['reward_since_purchase'] += reward
 
     def record_classification_stats(self, true_label_names, pred_label_names):
         """
