@@ -61,6 +61,7 @@
     "bad_clustering_cost_factor": 8,
     "no_confidence_penalty": 0,
     "automatic_cs_acceptance": false,
+    "unknown_accept_reward_scale": 0.2,
     "useless_epistemic_penalty": 7,
     "epistemic_is_blocking": false,
     "no_epistemic_actions": false,
