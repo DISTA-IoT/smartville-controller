@@ -81,7 +81,16 @@ accept_reward_scale=1.0)` in `tiger_brain_new.py`:
   'unknown_accept_reward_scale', 1.0)`, a config knob (default `1.0`,
   i.e. no-op) that lets a benign unknown-cluster accept be discounted
   relative to a benign known-class accept, without affecting block
-  rewards or the cost of a wrong accept in either regime.
+  rewards or the cost of a wrong accept in either regime. Symmetrically,
+  the negative (malicious) part of an accepted group's reward is now
+  scaled by `malicious_accept_penalty_scale` (default `1.0`, no-op). For
+  known-traffic groups this stays unscaled; for unknown clusters the call
+  passes `malicious_accept_penalty_scale=self.intrusion_detection_kwargs.get(
+  'unknown_malicious_accept_penalty_scale', 1.0)`, a config knob (default
+  `1.0`) that lets the penalty for wrongly accepting a malicious unknown
+  cluster be upscaled (made more negative) independently of
+  `unknown_accept_reward_scale`, without affecting block rewards or
+  known-class accepts.
 - **Blocked** (`action==1`, or any non-zero known-traffic action signal, or
   `action==2` with `epistemic_is_blocking=True`): reward =
   `-relu(group_rewards).sum()`, i.e. only the benign reward the group would
@@ -135,7 +144,7 @@ The DM step counter (`wb_tracker.step_counter`) increments once per individual a
 5. **IM is fully reset every episode** (weights reloaded from disk, replay buffers and curriculum reset); only the DM's network/memory persists across episodes.
 6. **CTI price only decays, never rises**, and decays multiplicatively and stochastically every single decision step (not per-episode or per-purchase) when enabled.
 7. **Greedy-CTI / periodic-CTI / no-epistemic-actions are exclusive override modes** that replace the learned policy's action for the epistemic dimension — useful as ablations, but mean "agent always decides" is only true in the default/else branch.
-8. **Reward magnitudes are a fixed, hand-authored per-class lookup table** (`rewards:` YAML), and that table is the only tunable: there are no separate multiplicative penalty factors or "hard"/"easy" mode layered on top — accept and block share one rule (`_decision_reward`) everywhere.
+8. **Reward magnitudes are a fixed, hand-authored per-class lookup table** (`rewards:` YAML), with two multiplicative knobs layered on top for unknown-cluster accepts specifically: `unknown_accept_reward_scale` (downscales the benign upside) and `unknown_malicious_accept_penalty_scale` (upscales the malicious downside) — both default to `1.0` (no-op), apply only to accepted unknown clusters, and leave known-class accepts and all block rewards unscaled — accept and block otherwise share one rule (`_decision_reward`) everywhere.
 9. **Traffic arrival is exogenous**: the DM's actions never influence which flows/classes appear next; they only affect the budget/reward and the curriculum (which classes are "known" vs. purchasable), not the environment's "physics."
 10. **IM training batches are decoupled from the exact batch the DM just acted on** — IM gradient steps sample fresh i.i.d. batches from replay buffers rather than the literal online tick batch, which is what allows the act-then-train ordering to not create within-tick circular dependency, but also means the IM's loss is not a function of the DM's most recent decisions.
 
