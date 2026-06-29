@@ -84,6 +84,12 @@ class NewTigerEnvironment:
         # Reset every episode so it only ever reflects the current episode's
         # unsupervised behaviour.
         self.unsupervised_costs = {label: 0.0 for label in self.init_knowledge['G2s']}
+        # Count of action-2 purchases whose targeted (majority-vote) label
+        # wasn't actually a purchasable G2 -- e.g. the cluster was a mixed/
+        # spurious one whose majority label is an already-Known class or a
+        # G1 true zero-day with no CTI option. These still cost full price
+        # (see perform_epistemic_action) but acquire nothing.
+        self.wasted_epistemic_actions = 0
 
     def record_reappearances(self, true_label_names, per_sample_rewards):
         """
@@ -150,14 +156,46 @@ class NewTigerEnvironment:
         self.current_cti_price_factor *= max(0.01, min(0.99, random.gauss(0.7,0.4)))
 
 
-    def perform_epistemic_action(self, current_action=0):
+    def perform_epistemic_action(self, target_label=None):
         """
-        Buys CTI for the G2 class at `current_action`'s slot in
-        `current_cti_options`, turning it into a known class. Only called
-        when `epistemic_actions_available == 1` (the DM's action-2 is
-        masked to a block otherwise), so there's always a real label to buy.
+        Buys CTI for `target_label` -- the majority true label among the
+        observed cluster's members, computed by the caller -- turning it
+        into a Known class, *if* it is currently a purchasable G2. Only
+        called when `epistemic_actions_available == 1` (the DM's action-2
+        is masked to a block otherwise), so there's always *some* real G2
+        to buy, but not necessarily the one this particular cluster's
+        majority vote points at.
+
+        If `target_label` is None, falls back to the sole entry in
+        `current_cti_options` (the previous, cluster-agnostic behavior) --
+        kept only as a defensive default, since the one call site always
+        supplies a majority-vote label now.
+
+        If `target_label` is not a purchasable G2 (the cluster turned out
+        to be a mixed/spurious one whose majority label is an already-Known
+        class, or a G1 true zero-day for which no CTI is ever offered), the
+        purchase is wasted: full price is still paid -- computed from the
+        cluster's actual majority label, not from whatever G2 happened to be
+        on offer -- but no class moves between G1s/G2s/Knowns, since there
+        was nothing real to acquire. This is intentional: it's the cost
+        structure a state-conditioned policy can learn to avoid (by reading
+        the cluster's centroid/confidence) and a blind scripted policy
+        (greedy/periodic CTI) cannot.
         """
-        acquired_cti = list(self.current_cti_options.keys())[current_action]
+        g2s = self.current_knowledge['G2s']
+
+        if target_label is None:
+            target_label = list(self.current_cti_options.keys())[0]
+
+        if target_label not in g2s:
+            self.wasted_epistemic_actions += 1
+            price_payed = abs(self.flow_rewards_dict.get(target_label, 0.0) * self.current_cti_price_factor)
+            return {'updated_label': None,
+                    'current_knowledge': self.current_knowledge,
+                    'price_payed': price_payed,
+                    'wasted': True}
+
+        acquired_cti = target_label
 
         self.epistemic_actions += 1
         self.current_knowledge['G2s'].remove(acquired_cti)
@@ -172,7 +210,8 @@ class NewTigerEnvironment:
 
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,
-                'price_payed': price_payed}
+                'price_payed': price_payed,
+                'wasted': False}
 
 
     def restart_budget(self):
