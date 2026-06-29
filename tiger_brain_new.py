@@ -1201,7 +1201,9 @@ class TigerBrain:
         if num_known > 0:
             true_label_names_known = [name for name, is_zda in zip(true_label_names, pred_online_zda_mask.tolist()) if not is_zda]
             pred_label_names_known = self.get_label_names_from_encoded_labels(class_preds)
-            self.env.record_classification_stats(true_label_names_known, pred_label_names_known)
+            g2_classification_metrics = self.env.record_classification_stats(true_label_names_known, pred_label_names_known)
+            if self.wbt and g2_classification_metrics:
+                self.reporter.log_scalars(g2_classification_metrics, step=self.wb_tracker.step_counter)
             if self.agency:
                 self.act_on_known_traffic(
                     num_anom, num_known, hiddens, pred_online_zda_mask, rewards,
@@ -1263,23 +1265,6 @@ class TigerBrain:
                 # actions baseline would also have paid/earned.
                 for label, net_value in self.env.unsupervised_costs.items():
                     episode_metrics[f'unsupervised_costs/{label}'] = net_value
-                # Per-G2 classification-quality series: 0.75th percentile,
-                # across this episode's reencounter ticks, of the recall and
-                # precision for classifying that label once bought -- i.e.
-                # whether the agent is actually learning to recognize a G2
-                # after acquiring CTI for it. The key is omitted entirely
-                # (no point logged, true gap) when a label has no
-                # reencounter ticks this episode (never bought, or bought
-                # but never seen again before episode end) -- logging NaN
-                # instead made wandb's line interpolation/smoothing dip
-                # below zero across the gap, which is not a real value for
-                # a ratio metric.
-                for label, recalls in self.env.g2_classification_recalls.items():
-                    if recalls:
-                        episode_metrics[f'g2_classification_recall_p75/{label}'] = torch.quantile(torch.tensor(recalls), 0.75).item()
-                for label, precisions in self.env.g2_classification_precisions.items():
-                    if precisions:
-                        episode_metrics[f'g2_classification_precision_p75/{label}'] = torch.quantile(torch.tensor(precisions), 0.75).item()
                 self.reporter.log_scalars(episode_metrics, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
