@@ -844,21 +844,25 @@ class TigerBrain:
         else: # baseline
             return probs.mean().unsqueeze(-1)
 
-    def _decision_reward(self, accepted, group_rewards, accept_reward_scale=1.0):
+    def _decision_reward(self, accepted, group_rewards, accept_reward_scale=1.0, malicious_accept_penalty_scale=1.0):
         """
         Single reward rule shared by every DM decision, known-traffic group
         or unknown-traffic cluster alike: a decision is "accept" (let the
         group's traffic stand) or "block" (discard it).
 
         Accepted: per-flow, positive (benign) rewards are scaled by
-        `accept_reward_scale` and negative (malicious) rewards are taken at
-        full value -- so `accept_reward_scale` only discounts the upside of
-        a *correct* accept, never the downside of a wrong one. Defaults to
+        `accept_reward_scale` and negative (malicious) rewards are scaled by
+        `malicious_accept_penalty_scale` -- so `accept_reward_scale` only
+        discounts the upside of a *correct* accept, while
+        `malicious_accept_penalty_scale` upscales (or, left at its default,
+        leaves untouched) the downside of a *wrong* one. Both default to
         1.0 (no-op); unknown-cluster accepts use `unknown_accept_reward_scale`
-        to discount that upside relative to a known-class accept, which is
-        always unscaled. Blocked: the benign reward the group would have
-        earned is forgone (the malicious-content cost is zero, since it's
-        blocked); blocking is never scaled.
+        to discount that upside relative to a known-class accept, and
+        `unknown_malicious_accept_penalty_scale` to upscale that downside,
+        relative to a known-class accept, which is always unscaled. Blocked:
+        the benign reward the group would have earned is forgone (the
+        malicious-content cost is zero, since it's blocked); blocking is
+        never scaled.
 
         An epistemic (CTI-buying) decision reuses this same rule for its
         accept/block component; the caller subtracts the CTI price on top.
@@ -866,7 +870,7 @@ class TigerBrain:
         if accepted:
             positive = torch.relu(group_rewards)
             negative = group_rewards - positive
-            return (accept_reward_scale * positive.sum() + negative.sum()).item()
+            return (accept_reward_scale * positive.sum() + malicious_accept_penalty_scale * negative.sum()).item()
         return -torch.relu(group_rewards).sum().item()
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
@@ -1087,7 +1091,8 @@ class TigerBrain:
 
             current_reward = self._decision_reward(
                 accepted_cluster, rewards_per_cluster[~missing][idx],
-                accept_reward_scale=self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0))
+                accept_reward_scale=self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0),
+                malicious_accept_penalty_scale=self.intrusion_detection_kwargs.get('unknown_malicious_accept_penalty_scale', 1.0))
 
             if accepted_cluster:
                 member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
