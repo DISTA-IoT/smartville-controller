@@ -1032,7 +1032,7 @@ class TigerBrain:
             return self._remap_epistemic_to_block(action)
         return action
 
-    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs):
+    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs, true_label_names_zda):
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
         Each cluster's decision uses its own members' zda_confidence (via
@@ -1042,12 +1042,14 @@ class TigerBrain:
         state belongs to the unknown-cluster regime.
         """
         num_identified = centroids[~missing].shape[0]
-        rewards_per_cluster = (clusters_oh * rewards[zda_mask].unsqueeze(-1)).sum(0)
+        anomalous_rewards = rewards[zda_mask]
+        rewards_per_cluster = (clusters_oh * anomalous_rewards.unsqueeze(-1)).sum(0)
 
         # clusters_oh's rows are the predicted-anomalous online samples, in
-        # the same order as online_anomaly_probs[zda_mask] -- so indexing both
-        # by the same cluster column lines a cluster up with its members' own
-        # anomaly probabilities (see collective_anomaly_detection).
+        # the same order as online_anomaly_probs[zda_mask] (and, by the same
+        # construction, true_label_names_zda) -- so indexing all of them by
+        # the same cluster column lines a cluster up with its members' own
+        # anomaly probabilities and true labels (see collective_anomaly_detection).
         anomalous_probs = online_anomaly_probs[zda_mask].view(-1, 1)
         non_missing_columns = (~missing).nonzero(as_tuple=False).squeeze(-1)
 
@@ -1079,6 +1081,11 @@ class TigerBrain:
                 accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
 
             current_reward = self._decision_reward(accepted_cluster, rewards_per_cluster[~missing][idx])
+
+            if accepted_cluster:
+                member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
+                member_rewards = anomalous_rewards[member_mask].tolist()
+                self.env.record_unsupervised_pass(member_labels, member_rewards)
 
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action()
@@ -1190,7 +1197,8 @@ class TigerBrain:
                 clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
             if self.agency:
                 online_anomaly_probs = zda_predictions[-num_online:]
-                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs)
+                true_label_names_zda = [name for name, is_zda in zip(true_label_names, pred_online_zda_mask.tolist()) if is_zda]
+                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs, true_label_names_zda)
 
         if self.agency:
             with self.profile("onl_inf_ER"):
@@ -1234,6 +1242,12 @@ class TigerBrain:
                 for label, stats in self.env.acquired_g2_stats.items():
                     episode_metrics[f'reappearances/{label}'] = stats['reappearances']
                     episode_metrics[f'net_values/{label}'] = stats['reward_since_purchase'] - stats['price_paid']
+                # Pre-purchase (unsupervised) per-G2 net cost/reward: what
+                # accepting that G2's traffic cost/earned this episode while
+                # it was still unbought, i.e. exactly the gap a no-epistemic-
+                # actions baseline would also have paid/earned.
+                for label, net_value in self.env.unsupervised_costs.items():
+                    episode_metrics[f'unsupervised_costs/{label}'] = net_value
                 self.reporter.log_scalars(episode_metrics, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
