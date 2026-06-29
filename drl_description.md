@@ -63,15 +63,25 @@ The "transition" of the environment as a whole, across ticks, is driven by an ex
 ### 2.4 Reward
 
 Reward is one rule, shared by every DM decision (known-traffic group or
-unknown-traffic cluster alike) — `_decision_reward(accepted, group_rewards)`
-in `tiger_brain_new.py`:
+unknown-traffic cluster alike) — `_decision_reward(accepted, group_rewards,
+accept_reward_scale=1.0)` in `tiger_brain_new.py`:
 
 - **Accepted** (`action==0`, or `action==2` with `epistemic_is_blocking=False`):
-  reward = `sum(group_rewards)`, the group's true per-flow rewards, signed
-  positive for benign content and negative for malicious content. Accepting
-  a benign group/cluster earns its reward; accepting a malicious one costs
-  its reward — no separate correct/incorrect bookkeeping is needed, since
-  the sign of the true reward already encodes that.
+  reward = `accept_reward_scale * relu(group_rewards).sum() + (group_rewards
+  - relu(group_rewards)).sum()`, i.e. the group's true per-flow rewards,
+  signed positive for benign content and negative for malicious content,
+  but split per-flow before summing: the positive (benign) part is scaled
+  by `accept_reward_scale`, the negative (malicious) part is always taken
+  at full value. So `accept_reward_scale` only discounts the upside of a
+  *correct* accept — it never softens the penalty for wrongly accepting
+  malicious content. For known-traffic groups (`act_on_known_traffic`) the
+  call always uses the default `accept_reward_scale=1.0` (fully unscaled).
+  For unknown clusters (`act_on_unknown_clusters`) the call passes
+  `accept_reward_scale=self.intrusion_detection_kwargs.get(
+  'unknown_accept_reward_scale', 1.0)`, a config knob (default `1.0`,
+  i.e. no-op) that lets a benign unknown-cluster accept be discounted
+  relative to a benign known-class accept, without affecting block
+  rewards or the cost of a wrong accept in either regime.
 - **Blocked** (`action==1`, or any non-zero known-traffic action signal, or
   `action==2` with `epistemic_is_blocking=True`): reward =
   `-relu(group_rewards).sum()`, i.e. only the benign reward the group would
