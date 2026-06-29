@@ -84,12 +84,6 @@ class NewTigerEnvironment:
         # Reset every episode so it only ever reflects the current episode's
         # unsupervised behaviour.
         self.unsupervised_costs = {label: 0.0 for label in self.init_knowledge['G2s']}
-        # Fixed-key per-G2 series of per-tick classification recall/precision,
-        # restricted to that label's reencounters (i.e. only ticks occurring
-        # after it has been bought). Used to check whether the IM is actually
-        # learning to classify a G2 once it stops being treated as unknown.
-        self.g2_classification_recalls = {label: [] for label in self.init_knowledge['G2s']}
-        self.g2_classification_precisions = {label: [] for label in self.init_knowledge['G2s']}
 
     def record_reappearances(self, true_label_names, per_sample_rewards):
         """
@@ -109,18 +103,16 @@ class NewTigerEnvironment:
         Called once per online tick with the true and IM-predicted class name
         of every known-predicted sample (i.e. the same population act_on_known_traffic
         decides over). For each G2 label already bought this episode, computes
-        a single recall and precision value for that tick from this tick's
-        reencounters of that label, and appends them to this episode's
-        per-label series. Labels with zero reencounters in this tick (true
-        count == 0) contribute no recall sample; labels with zero predictions
-        of that class in this tick (pred count == 0) contribute no precision
-        sample -- both are skipped rather than counted as 0 or 1, so the
-        episode-end percentile only reflects ticks that actually exercised
-        that label.
+        this tick's recall and precision for that label from its reencounters
+        in this tick only, and returns them in a flat dict keyed by metric
+        name -- no per-episode accumulation, every tick is its own data point.
+        A label is omitted from the returned dict for a given metric when
+        this tick has no occurrences to compute it from: zero true instances
+        of the label (no recall sample) or zero predictions of it (no
+        precision sample) -- skipped rather than counted as 0 or 1.
         """
+        tick_metrics = {}
         bought_labels = [label for label, stats in self.acquired_g2_stats.items() if stats['bought']]
-        if not bought_labels:
-            return
         for label in bought_labels:
             tp = fn = fp = 0
             for true_name, pred_name in zip(true_label_names, pred_label_names):
@@ -132,9 +124,10 @@ class NewTigerEnvironment:
                 elif pred_name == label:
                     fp += 1
             if tp + fn > 0:
-                self.g2_classification_recalls[label].append(tp / (tp + fn))
+                tick_metrics[f'g2_classification_recall/{label}'] = tp / (tp + fn)
             if tp + fp > 0:
-                self.g2_classification_precisions[label].append(tp / (tp + fp))
+                tick_metrics[f'g2_classification_precision/{label}'] = tp / (tp + fp)
+        return tick_metrics
 
     def record_unsupervised_pass(self, true_label_names, per_sample_rewards):
         """
