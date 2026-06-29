@@ -28,7 +28,7 @@ There are three **forced-action overrides** that bypass the agent's own choice, 
 
 These three are mutually exclusive ablation modes, not part of the "default" DM behavior — confirmed against `tiger/config/default.yaml`, where `greedy_cti: False`, `cti_period: -1`, and `no_epistemic_actions: false` are all off, so the actual learned-agent path is the final fallthrough in `_select_unknown_cluster_action`, which returns the agent's own action unmodified unless `epistemic_actions_available == 0`, in which case a `2` is remapped to `1` (block) since there is no G2 class left to buy.
 
-For known-class traffic, the action space is collapsed to a binary choice in effect: if `automatic_cs_acceptance=True` (a config flag, default `false`), action is hard-coded to `0`; otherwise the agent is queried, but **only actions `0` (accept the classifier's verdict) or "anything else" (reject/no-confidence) are semantically distinguished** in the reward logic — see §2.4. So even though `act()` can return `0/1/2` here too, the code only branches on `action_signal.item() == 0` vs. not; there's no real CTI semantics for known traffic, just "trust the IM" vs. "discard its classification and penalize."
+For known-class traffic, the action space is collapsed to a binary choice in effect: if `automatic_cs_acceptance=True` (a config flag, default `false`), action is hard-coded to `0`; otherwise the agent is queried, but **only actions `0` (accept — let this predicted-class group's traffic through) or "anything else" (block — deny it) are semantically distinguished** in the reward logic — see §2.4. So even though `act()` can return `0/1/2` here too, the code only branches on `action_signal.item() == 0` vs. not; there's no real CTI semantics for known traffic, just accept vs. block, scored against the group's true (ground-truth) per-flow rewards regardless of whether the IM's classification was correct.
 
 
 ### 2.2 State space
@@ -68,8 +68,8 @@ in `tiger_brain_new.py`:
 
 - **Accepted** (`action==0`, or `action==2` with `epistemic_is_blocking=False`):
   reward = `sum(group_rewards)`, the group's true per-flow rewards, signed
-  positive for benign content and negative for malicious content. Trusting
-  a benign verdict/cluster earns its reward; trusting a malicious one costs
+  positive for benign content and negative for malicious content. Accepting
+  a benign group/cluster earns its reward; accepting a malicious one costs
   its reward — no separate correct/incorrect bookkeeping is needed, since
   the sign of the true reward already encodes that.
 - **Blocked** (`action==1`, or any non-zero known-traffic action signal, or
