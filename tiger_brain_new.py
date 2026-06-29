@@ -1288,10 +1288,18 @@ class TigerBrain:
                 }
                 # Fixed-key per-G2 CTI-ROI series: same 7 labels every run
                 # (knowledge is static), so these render as 7 line plots
-                # under each of the two wandb sections below.
+                # under each of the wandb sections below. net_values tracks
+                # only the reward earned on accepted reappearances *after*
+                # buyin -- it never nets out the CTI purchase price, so a
+                # benign G2 can be at worst zero (if blocked/absent after
+                # buyin) but never negative. The price paid to acquire the
+                # CTI is reported separately under price_payed/<label>, so the
+                # cost of buyin is visible without contaminating the reward
+                # series.
                 for label, stats in self.env.acquired_g2_stats.items():
                     episode_metrics[f'reappearances/{label}'] = stats['reappearances']
-                    episode_metrics[f'net_values/{label}'] = stats['reward_since_purchase'] - stats['price_paid']
+                    episode_metrics[f'net_values/{label}'] = stats['reward_since_purchase']
+                    episode_metrics[f'price_payed/{label}'] = stats['price_paid']
                 # Pre-purchase (unsupervised) per-G2 net cost/reward: what
                 # accepting that G2's traffic cost/earned this episode while
                 # it was still unbought, i.e. exactly the gap a no-epistemic-

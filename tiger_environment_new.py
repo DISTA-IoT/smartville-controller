@@ -71,8 +71,9 @@ class NewTigerEnvironment:
         self.restart_budget()
         self.reset_intelligence()
         # Fixed-key per-G2 stats, pre-populated every episode so wandb sees
-        # the same 7 series (reappearances/<label>, net gain net of price)
-        # whether or not that label gets bought this episode.
+        # the same 7 series (reappearances/<label>, post-buyin reward, and
+        # CTI price paid -- reported as separate wandb series) whether or not
+        # that label gets bought this episode.
         self.acquired_g2_stats = {
             label: {'bought': False, 'price_paid': 0.0,
                     'reappearances': 0, 'reward_since_purchase': 0.0}
@@ -99,9 +100,12 @@ class NewTigerEnvironment:
         every reencounter of an already-bought G2 label regardless of the
         DM's decision -- it's about the traffic showing up again on the
         wire, not about whether the DM let it through. The reward side
-        (reward_since_purchase, which feeds net_values) only accumulates on
+        (reward_since_purchase, which *is* net_values) only accumulates on
         accepted groups, since a blocked group never earns or costs the raw
-        per-flow reward. Only accumulates for G2 labels already bought this
+        per-flow reward. The CTI purchase price is tracked separately in
+        price_paid and is never netted against this reward, so net_values for
+        a benign G2 floors at zero rather than going negative. Only
+        accumulates for G2 labels already bought this
         episode -- pre-purchase occurrences are accounted for by the
         unknown-cluster reward path, not this CTI-ROI tracker.
         """
