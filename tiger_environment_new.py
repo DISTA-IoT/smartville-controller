@@ -78,6 +78,12 @@ class NewTigerEnvironment:
                     'reappearances': 0, 'reward_since_purchase': 0.0}
             for label in self.init_knowledge['G2s']
         }
+        # Fixed-key per-G2 series for the pre-purchase (unsupervised) regime:
+        # net reward/cost accrued this episode from *accepting* a G2 cluster
+        # in act_on_unknown_clusters, before that label has been bought.
+        # Reset every episode so it only ever reflects the current episode's
+        # unsupervised behaviour.
+        self.unsupervised_costs = {label: 0.0 for label in self.init_knowledge['G2s']}
 
     def record_reappearances(self, true_label_names, per_sample_rewards):
         """
@@ -91,6 +97,23 @@ class NewTigerEnvironment:
             if stats is not None and stats['bought']:
                 stats['reappearances'] += 1
                 stats['reward_since_purchase'] += reward
+
+    def record_unsupervised_pass(self, true_label_names, per_sample_rewards):
+        """
+        Called from act_on_unknown_clusters for the members of a cluster the
+        DM just accepted (let pass), before any CTI was bought for that
+        label. Accumulates the true signed per-sample reward -- negative for
+        malicious G2s let through, positive for benign G2s (echo, doorlock)
+        let through -- into this episode's unsupervised_costs tally. Skips
+        labels already bought this episode, since those are tracked by
+        record_reappearances/acquired_g2_stats instead.
+        """
+        for name, reward in zip(true_label_names, per_sample_rewards):
+            if name not in self.unsupervised_costs:
+                continue
+            if self.acquired_g2_stats[name]['bought']:
+                continue
+            self.unsupervised_costs[name] += reward
 
     def price_decay(self):
         self.current_cti_price_factor *= max(0.01, min(0.99, random.gauss(0.7,0.4)))
