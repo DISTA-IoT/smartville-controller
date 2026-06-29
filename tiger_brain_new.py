@@ -1068,6 +1068,7 @@ class TigerBrain:
 
         clustering_reward = 0
         epistemic_actions_taken = 0
+        wasted_epistemic_actions_taken = 0
         epistemic_costs = 0
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
@@ -1098,14 +1099,25 @@ class TigerBrain:
                 accept_reward_scale=self.unknown_accept_reward_scale,
                 malicious_accept_penalty_scale=self.unknown_malicious_accept_penalty_scale)
 
+            # Ground-truth labels of this cluster's members -- needed both
+            # for the accept-path bookkeeping below and, on the epistemic
+            # path, to target the CTI purchase at this cluster's actual
+            # majority class rather than at whatever G2 happens to be next
+            # in the curriculum list (the centroid is exteroceptive and can
+            # be spurious/mixed-class, so the *targeted* label is decided
+            # by majority vote among the cluster's true labels, not by the
+            # centroid itself).
+            member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
+
             if accepted_cluster:
-                member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
                 member_rewards = anomalous_rewards[member_mask].tolist()
                 self.env.record_unsupervised_pass(member_labels, member_rewards)
 
             if epistemic_action:
-                updates_dict = self.perform_epistemic_action()
+                majority_label = Counter(member_labels).most_common(1)[0][0] if member_labels else None
+                updates_dict = self.perform_epistemic_action(majority_label)
                 current_reward -= updates_dict['price_payed']
+                wasted_epistemic_actions_taken += int(updates_dict.get('wasted', False))
 
             self.env.current_budget += current_reward
             next_state = state_vec.detach().clone()
@@ -1134,9 +1146,10 @@ class TigerBrain:
             rewards_per_accepted_clusters += reward_val if accepted_cluster else 0
             rewards_per_blocked_clusters += reward_val if not accepted_cluster else 0
 
-        if len(centroids[~missing]) > 0 and self.wbt:    
+        if len(centroids[~missing]) > 0 and self.wbt:
             clustering_reward /= len(centroids[~missing])
             epistemic_actions_taken /= len(centroids[~missing])
+            wasted_epistemic_actions_taken /= len(centroids[~missing])
             epistemic_costs /= len(centroids[~missing])
             rewards_per_accepted_clusters /= len(centroids[~missing])
             rewards_per_blocked_clusters /= len(centroids[~missing])
@@ -1146,6 +1159,7 @@ class TigerBrain:
                 AGENT+'/'+'clustering_reward': clustering_reward,
                 AGENT+'/'+'budget': self.env.current_budget,
                 AGENT+'/'+'Epistemic Actions taken': epistemic_actions_taken,
+                AGENT+'/'+'Wasted Epistemic Actions taken': wasted_epistemic_actions_taken,
                 AGENT+'/'+'epistemic_costs': epistemic_costs,
                 AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
@@ -1594,10 +1608,10 @@ class TigerBrain:
                         async_results[f'{EVALUATION}/Mean EVAL AD ACC'], 
                         async_results[f'{EVALUATION}/Mean EVAL KR PREC'])
 
-    @epistemic_thread_safe 
-    def perform_epistemic_action(self, current_action=0):      
+    @epistemic_thread_safe
+    def perform_epistemic_action(self, target_label=None):
         """Acquires a CTI label, updating the knowledge base and replay buffers."""
-        updates = self.env.perform_epistemic_action(current_action)
+        updates = self.env.perform_epistemic_action(target_label)
         new_label = updates['updated_label']
         
         if new_label is not None:
