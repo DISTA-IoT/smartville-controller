@@ -878,7 +878,8 @@ class TigerBrain:
         return -torch.relu(group_rewards).sum().item()
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
-                              class_preds, interest_logits_slice, number_of_known_classes):
+                              class_preds, interest_logits_slice, number_of_known_classes,
+                              true_label_names_known):
         """
         One DM decision per predicted closed-set class-inference group within
         this tick's known-traffic sub-batch, mirroring act_on_unknown_clusters's
@@ -891,6 +892,11 @@ class TigerBrain:
         that this state belongs to the known-traffic regime. Next state's
         exteroceptive part is the next group's centroid, chained sequentially
         within the tick exactly like the cluster loop.
+
+        Only the groups the DM actually accepts (action == 0) feed
+        `record_reappearances` -- the bought-G2 CTI-ROI tracker -- since a
+        blocked group never reaches the network and shouldn't be charged or
+        credited the traffic's raw reward.
         """
         if num_known == 0:
             return
@@ -930,7 +936,12 @@ class TigerBrain:
             self.wb_tracker.step_counter += 1
 
             group_costs = known_samples_costs[member_mask]
-            classification_reward = self._decision_reward(action_signal.item() == 0, group_costs)
+            accepted_group = action_signal.item() == 0
+            classification_reward = self._decision_reward(accepted_group, group_costs)
+
+            if accepted_group:
+                group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
+                self.env.record_reappearances(group_true_labels, group_costs.tolist())
 
             self.env.current_budget += classification_reward
 
@@ -1110,8 +1121,11 @@ class TigerBrain:
             member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
 
             if accepted_cluster:
-                member_rewards = anomalous_rewards[member_mask].tolist()
-                self.env.record_unsupervised_pass(member_labels, member_rewards)
+                member_rewards_tensor = anomalous_rewards[member_mask]
+                positive = torch.relu(member_rewards_tensor) * self.unknown_accept_reward_scale
+                negative = (member_rewards_tensor - torch.relu(member_rewards_tensor)) * self.unknown_malicious_accept_penalty_scale
+                scaled_member_rewards = (positive + negative).tolist()
+                self.env.record_unsupervised_pass(member_labels, scaled_member_rewards)
 
             if epistemic_action:
                 majority_label = Counter(member_labels).most_common(1)[0][0] if member_labels else None
@@ -1209,7 +1223,6 @@ class TigerBrain:
         num_anom = pred_online_zda_mask.sum()
         rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
         true_label_names = self.get_label_names_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
-        self.env.record_reappearances(true_label_names, rewards.tolist())
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
         _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
@@ -1225,7 +1238,8 @@ class TigerBrain:
             if self.agency:
                 self.act_on_known_traffic(
                     num_anom, num_known, hiddens, pred_online_zda_mask, rewards,
-                    class_preds, interest_logits_slice, number_of_known_classes)
+                    class_preds, interest_logits_slice, number_of_known_classes,
+                    true_label_names_known)
 
         if num_anom > 0:
             with self.profile("onl_inf_CAD"):
