@@ -1263,20 +1263,23 @@ class TigerBrain:
                 # actions baseline would also have paid/earned.
                 for label, net_value in self.env.unsupervised_costs.items():
                     episode_metrics[f'unsupervised_costs/{label}'] = net_value
-                # Fixed-key per-G2 classification-quality series: 0.75th
-                # percentile, across this episode's reencounter ticks, of
-                # the recall and precision for classifying that label once
-                # bought -- i.e. whether the agent is actually learning to
-                # recognize a G2 after acquiring CTI for it. NaN (rendered
-                # as a gap in wandb) when a label has no reencounter ticks
-                # this episode (never bought, or bought but never seen
-                # again before episode end).
+                # Per-G2 classification-quality series: 0.75th percentile,
+                # across this episode's reencounter ticks, of the recall and
+                # precision for classifying that label once bought -- i.e.
+                # whether the agent is actually learning to recognize a G2
+                # after acquiring CTI for it. The key is omitted entirely
+                # (no point logged, true gap) when a label has no
+                # reencounter ticks this episode (never bought, or bought
+                # but never seen again before episode end) -- logging NaN
+                # instead made wandb's line interpolation/smoothing dip
+                # below zero across the gap, which is not a real value for
+                # a ratio metric.
                 for label, recalls in self.env.g2_classification_recalls.items():
-                    episode_metrics[f'g2_classification_recall_p75/{label}'] = (
-                        torch.quantile(torch.tensor(recalls), 0.75).item() if recalls else float('nan'))
+                    if recalls:
+                        episode_metrics[f'g2_classification_recall_p75/{label}'] = torch.quantile(torch.tensor(recalls), 0.75).item()
                 for label, precisions in self.env.g2_classification_precisions.items():
-                    episode_metrics[f'g2_classification_precision_p75/{label}'] = (
-                        torch.quantile(torch.tensor(precisions), 0.75).item() if precisions else float('nan'))
+                    if precisions:
+                        episode_metrics[f'g2_classification_precision_p75/{label}'] = torch.quantile(torch.tensor(precisions), 0.75).item()
                 self.reporter.log_scalars(episode_metrics, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
