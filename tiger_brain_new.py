@@ -850,11 +850,13 @@ class TigerBrain:
         or unknown-traffic cluster alike: a decision is "accept" (let the
         group's traffic stand) or "block" (discard it).
 
-        Accepted: the sum of the group's true per-flow rewards -- positive
-        for benign content, negative for malicious content -- scaled by
-        `accept_reward_scale` (defaults to 1.0; unknown-cluster accepts use
-        `unknown_accept_reward_scale` to discount that reward relative to a
-        known-class accept). Blocked: the benign reward the group would have
+        Accepted: per-flow, positive (benign) rewards are scaled by
+        `accept_reward_scale` and negative (malicious) rewards are taken at
+        full value -- so `accept_reward_scale` only discounts the upside of
+        a *correct* accept, never the downside of a wrong one. Defaults to
+        1.0 (no-op); unknown-cluster accepts use `unknown_accept_reward_scale`
+        to discount that upside relative to a known-class accept, which is
+        always unscaled. Blocked: the benign reward the group would have
         earned is forgone (the malicious-content cost is zero, since it's
         blocked); blocking is never scaled.
 
@@ -862,7 +864,9 @@ class TigerBrain:
         accept/block component; the caller subtracts the CTI price on top.
         """
         if accepted:
-            return accept_reward_scale * group_rewards.sum().item()
+            positive = torch.relu(group_rewards)
+            negative = group_rewards - positive
+            return (accept_reward_scale * positive.sum() + negative.sum()).item()
         return -torch.relu(group_rewards).sum().item()
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
