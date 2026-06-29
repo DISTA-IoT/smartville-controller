@@ -93,10 +93,13 @@ class NewTigerEnvironment:
 
     def record_reappearances(self, true_label_names, per_sample_rewards):
         """
-        Called once per online tick with the true label and reward of every
-        online sample. Only accumulates for G2 labels already bought this
-        episode -- pre-purchase occurrences are accounted for by the
-        unknown-cluster reward path, not this CTI-ROI tracker.
+        Called once per accepted known-traffic group (action == 0) from
+        act_on_known_traffic, with the true label and reward of just that
+        group's members -- blocked groups never reach here, since traffic
+        the DM blocks neither earns nor costs the raw per-flow reward. Only
+        accumulates for G2 labels already bought this episode -- pre-purchase
+        occurrences are accounted for by the unknown-cluster reward path,
+        not this CTI-ROI tracker.
         """
         for name, reward in zip(true_label_names, per_sample_rewards):
             stats = self.acquired_g2_stats.get(name)
@@ -139,10 +142,13 @@ class NewTigerEnvironment:
         """
         Called from act_on_unknown_clusters for the members of a cluster the
         DM just accepted (let pass), before any CTI was bought for that
-        label. Accumulates the true signed per-sample reward -- negative for
-        malicious G2s let through, positive for benign G2s (echo, doorlock)
-        let through -- into this episode's unsupervised_costs tally. Skips
-        labels already bought this episode, since those are tracked by
+        label. `per_sample_rewards` already has the same accept-side scaling
+        applied as `_decision_reward` -- positive (benign) part scaled by
+        `unknown_accept_reward_scale`, negative (malicious) part scaled by
+        `unknown_malicious_accept_penalty_scale` -- so this tally matches the
+        actual budget impact of accepting that traffic, not the raw label
+        reward. Accumulates into this episode's unsupervised_costs tally.
+        Skips labels already bought this episode, since those are tracked by
         record_reappearances/acquired_g2_stats instead.
         """
         for name, reward in zip(true_label_names, per_sample_rewards):
