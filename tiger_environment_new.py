@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 
 
 class NewTigerEnvironment:
@@ -25,8 +26,17 @@ class NewTigerEnvironment:
         # fixed-horizon return. Defaults to False (legacy win-termination).
         self.disable_budget_win_termination = bool(
             kwargs.intrusion_detection.get('disable_budget_win_termination', False))
+        # Stable, full set of class names across the episode: the initial
+        # Knowns/G1s/G2s partition. Buying a G2 only moves it from G2s to
+        # Knowns, so this union is invariant and gives every per-class wandb
+        # series a fixed key for the whole run.
+        self.all_class_labels = (
+            list(self.init_knowledge.get('Knowns', []))
+            + list(self.init_knowledge.get('G1s', []))
+            + list(self.init_knowledge.get('G2s', []))
+        )
 
-            
+
     def reset_intelligence(self):
         
         self.current_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in self.init_knowledge.items()}
@@ -96,6 +106,20 @@ class NewTigerEnvironment:
         # Reset every episode so it only ever reflects the current episode's
         # unsupervised behaviour.
         self.unsupervised_costs = {label: 0.0 for label in self.init_knowledge['G2s']}
+        # Per-class episode appearance tally: how many times each class is
+        # seen on the wire this episode, counted from the true labels of the
+        # online traffic regardless of the DM's knowledge state -- so a G2
+        # keeps accruing appearances both before and after it is bought.
+        self.appearances = {label: 0 for label in self.all_class_labels}
+        # Per-class net value for the non-G2 classes (Knowns and G1s),
+        # accumulated from episode init: the raw per-sample reward of their
+        # accepted known-traffic samples. G2 net_values are tracked separately
+        # (post-buyin) in acquired_g2_stats, so they are excluded here to
+        # avoid double counting; together the two cover every class once.
+        self.net_values = {
+            label: 0.0 for label in self.all_class_labels
+            if label not in self.init_knowledge.get('G2s', [])
+        }
         # Count of action-2 purchases whose targeted (majority-vote) label
         # wasn't actually a purchasable G2 -- e.g. the cluster was a mixed/
         # spurious one whose majority label is an already-Known class or a
@@ -115,10 +139,16 @@ class NewTigerEnvironment:
         accepted groups, since a blocked group never earns or costs the raw
         per-flow reward. The CTI purchase price is tracked separately in
         price_paid and is never netted against this reward, so net_values for
-        a benign G2 floors at zero rather than going negative. Only
-        accumulates for G2 labels already bought this
-        episode -- pre-purchase occurrences are accounted for by the
-        unknown-cluster reward path, not this CTI-ROI tracker.
+        a benign G2 floors at zero rather than going negative. Only the
+        reappearance count and reward_since_purchase accumulate for G2 labels
+        already bought this episode -- pre-purchase occurrences are accounted
+        for by the unknown-cluster reward path, not this CTI-ROI tracker.
+
+        The non-G2 classes (Knowns and G1s) instead feed the episode-wide
+        net_values tally here: their accepted known-traffic reward accrues
+        from episode init (Knowns are known from the start), mirroring the
+        bought-G2 reward_since_purchase rule -- raw per-sample reward, accepted
+        groups only -- so net_values reads uniformly across every class.
         """
         for name, reward in zip(true_label_names, per_sample_rewards):
             stats = self.acquired_g2_stats.get(name)
@@ -126,37 +156,52 @@ class NewTigerEnvironment:
                 stats['reappearances'] += 1
                 if accepted:
                     stats['reward_since_purchase'] += reward
+            elif accepted and name in self.net_values:
+                self.net_values[name] += reward
 
     def record_classification_stats(self, true_label_names, pred_label_names):
         """
         Called once per online tick with the true and IM-predicted class name
-        of every known-predicted sample (i.e. the same population act_on_known_traffic
-        decides over). For each G2 label already bought this episode, computes
-        this tick's recall and precision for that label from its reencounters
-        in this tick only, and returns them in a flat dict keyed by metric
-        name -- no per-episode accumulation, every tick is its own data point.
-        A label is omitted from the returned dict for a given metric when
-        this tick has no occurrences to compute it from: zero true instances
-        of the label (no recall sample) or zero predictions of it (no
-        precision sample) -- skipped rather than counted as 0 or 1.
+        of every known-predicted sample (i.e. the same population
+        act_on_known_traffic decides over). For every class observed in this
+        tick -- Knowns, G1s and G2s alike, bought or not -- computes this
+        tick's one-vs-all recall and precision from its reencounters in this
+        tick only, and returns them in a flat dict keyed by metric name -- no
+        per-episode accumulation, every tick is its own data point. A label is
+        omitted from the returned dict for a given metric when this tick has
+        no occurrences to compute it from: zero true instances of the label
+        (no recall sample) or zero predictions of it (no precision sample) --
+        skipped rather than counted as 0 or 1.
         """
         tick_metrics = {}
-        bought_labels = [label for label, stats in self.acquired_g2_stats.items() if stats['bought']]
-        for label in bought_labels:
-            tp = fn = fp = 0
-            for true_name, pred_name in zip(true_label_names, pred_label_names):
-                if true_name == label:
-                    if pred_name == label:
-                        tp += 1
-                    else:
-                        fn += 1
-                elif pred_name == label:
-                    fp += 1
-            if tp + fn > 0:
-                tick_metrics[f'g2_classification_recall/{label}'] = tp / (tp + fn)
-            if tp + fp > 0:
-                tick_metrics[f'g2_classification_precision/{label}'] = tp / (tp + fp)
+        true_counts = Counter(true_label_names)
+        pred_counts = Counter(pred_label_names)
+        # True positives per class: samples whose true and predicted names
+        # agree. One-vs-all recall = tp / true_count, precision = tp / pred_count.
+        tp_counts = Counter(
+            true_name
+            for true_name, pred_name in zip(true_label_names, pred_label_names)
+            if true_name == pred_name)
+        for label in set(true_counts) | set(pred_counts):
+            tp = tp_counts.get(label, 0)
+            if true_counts.get(label, 0) > 0:
+                tick_metrics[f'classification_recall/{label}'] = tp / true_counts[label]
+            if pred_counts.get(label, 0) > 0:
+                tick_metrics[f'classification_precision/{label}'] = tp / pred_counts[label]
         return tick_metrics
+
+    def record_appearances(self, true_label_names):
+        """
+        Called once per online tick with the true class name of every online
+        sample, tallying how many times each class is seen on the wire this
+        episode. Counts every class -- Knowns, G1s and G2s alike -- regardless
+        of the DM's knowledge state, so a G2 keeps accruing appearances both
+        before and after it is bought. A pure observation count: the DM's
+        accept/block decisions never enter it.
+        """
+        for name in true_label_names:
+            if name in self.appearances:
+                self.appearances[name] += 1
 
     def record_unsupervised_pass(self, true_label_names, per_sample_rewards):
         """

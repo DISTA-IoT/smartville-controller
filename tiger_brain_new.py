@@ -1231,6 +1231,10 @@ class TigerBrain:
         num_anom = pred_online_zda_mask.sum()
         rewards = self.get_rewards_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
         true_label_names = self.get_label_names_from_encoded_labels(merged_batch.class_labels[-num_online:].squeeze(-1))
+        # Episode-wide appearance tally over every online sample's true label,
+        # regardless of how it was predicted -- counts all classes (Knowns,
+        # G1s, G2s) on the wire this episode.
+        self.env.record_appearances(true_label_names)
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
         _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
@@ -1240,9 +1244,9 @@ class TigerBrain:
         if num_known > 0:
             true_label_names_known = [name for name, is_zda in zip(true_label_names, pred_online_zda_mask.tolist()) if not is_zda]
             pred_label_names_known = self.get_label_names_from_encoded_labels(class_preds)
-            g2_classification_metrics = self.env.record_classification_stats(true_label_names_known, pred_label_names_known)
-            if self.wbt and g2_classification_metrics:
-                self.reporter.log_scalars(g2_classification_metrics, step=self.wb_tracker.step_counter)
+            classification_metrics = self.env.record_classification_stats(true_label_names_known, pred_label_names_known)
+            if self.wbt and classification_metrics:
+                self.reporter.log_scalars(classification_metrics, step=self.wb_tracker.step_counter)
             if self.agency:
                 self.act_on_known_traffic(
                     num_anom, num_known, hiddens, pred_online_zda_mask, rewards,
@@ -1333,6 +1337,18 @@ class TigerBrain:
                 # actions baseline would also have paid/earned.
                 for label, net_value in self.env.unsupervised_costs.items():
                     episode_metrics[f'unsupervised_costs/{label}'] = net_value
+                # Per-class net value for the non-G2 classes (Knowns, G1s),
+                # tracked from episode init -- how much each known class's
+                # accepted traffic earned/cost this episode. G2 net_values are
+                # emitted above (post-buyin) from acquired_g2_stats; together
+                # the two loops cover every class exactly once.
+                for label, net_value in self.env.net_values.items():
+                    episode_metrics[f'net_values/{label}'] = net_value
+                # Per-class episode appearance counts over every class on the
+                # wire (Knowns, G1s and G2s, the latter both before and after
+                # being bought).
+                for label, count in self.env.appearances.items():
+                    episode_metrics[f'appearances/{label}'] = count
                 self.reporter.log_scalars(episode_metrics, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
