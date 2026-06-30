@@ -200,8 +200,9 @@ def smart_check():
   logger.info("Starting SmartSwitch inference loop")
   check_count = 0
 
+  INFERENCE_LOOP_MIN_PERIOD = 0.05  # seconds
   while not stop_tiger_threads:
-
+    loop_start = time.time()
     check_count += 1
 
     try:
@@ -243,6 +244,9 @@ def smart_check():
         text=f"smart_check() died at check #{check_count}: {error_text}",
       )
       break
+
+    # sleep when there has not been an inference so that OVS can recconnect.
+    time.sleep(max(0.0, INFERENCE_LOOP_MIN_PERIOD - (time.time() - loop_start)))
 
 
 
