@@ -17,7 +17,16 @@ class NewTigerEnvironment:
         self.init_cti_price_factor = float(kwargs.intrusion_detection.cti_price_factor)
         self.current_cti_price_factor = self.init_cti_price_factor
         self.seed = int(kwargs.intrusion_detection.seed)
+        # When True, episodes no longer terminate on hitting max_budget, so an
+        # episode's cumulative reward (sum_episode_rewards) is no longer pinned
+        # to the +max_budget termination threshold and can actually separate a
+        # better agent from a worse one. Episodes then end only on bankruptcy
+        # (< min_budget) or the step horizon (>= max_episode_steps), i.e. a
+        # fixed-horizon return. Defaults to False (legacy win-termination).
+        self.disable_budget_win_termination = bool(
+            kwargs.intrusion_detection.get('disable_budget_win_termination', False))
 
+            
     def reset_intelligence(self):
         
         self.current_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in self.init_knowledge.items()}
@@ -56,8 +65,10 @@ class NewTigerEnvironment:
 
     def has_episode_ended(self):
         if self.current_budget < self.min_budget \
-                or self.steps_done >= self.max_episode_steps\
-                or self.current_budget > self.max_budget:
+                or self.steps_done >= self.max_episode_steps:
+            return True
+        if not self.disable_budget_win_termination \
+                and self.current_budget > self.max_budget:
             return True
         return False
 

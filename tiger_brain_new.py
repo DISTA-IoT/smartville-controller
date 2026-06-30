@@ -147,9 +147,11 @@ class TigerBrain:
         self.update_target_freq = int(args.intrusion_detection.update_target_freq)
         self.unknown_accept_reward_scale = self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0)
         self.unknown_malicious_accept_penalty_scale = self.intrusion_detection_kwargs.get('unknown_malicious_accept_penalty_scale', 1.0)
+        self.useless_epistemic_penalty = float(self.intrusion_detection_kwargs.get('useless_epistemic_penalty', 0.0))
         self.logger_instance.info(
-            "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m",
-            self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale)
+            "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
+            " useless_epistemic_penalty=%s\033[0m",
+            self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale, self.useless_epistemic_penalty)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -1132,7 +1134,12 @@ class TigerBrain:
                 majority_label = Counter(member_labels).most_common(1)[0][0] if member_labels else None
                 updates_dict = self.perform_epistemic_action(majority_label)
                 current_reward -= updates_dict['price_payed']
-                wasted_epistemic_actions_taken += int(updates_dict.get('wasted', False))
+                if updates_dict.get('wasted', False):
+                    wasted_epistemic_actions_taken += 1
+                    # The buy acquired nothing -- penalise it beyond the price
+                    # already paid, so a policy that reads the cluster before
+                    # buying beats one that buys blindly.
+                    current_reward -= self.useless_epistemic_penalty
 
             self.env.current_budget += current_reward
             next_state = state_vec.detach().clone()
@@ -1278,13 +1285,33 @@ class TigerBrain:
 
         if self.agency and self.env.has_episode_ended():
             if self.wbt:
+                steps = self.env.steps_done
+                episode_return = torch.Tensor(self.env.episode_rewards).sum()
+                # Episode outcome: with legacy win-termination on, exactly one
+                # of win/bankrupt/timeout is true; with
+                # disable_budget_win_termination on, only bankrupt/timeout are
+                # reachable. Logged as 0/1 so their running means read directly
+                # as win-rate / failure-rate / timeout-rate 
+                ended_bankrupt = self.env.current_budget < self.env.min_budget
+                ended_timeout = steps >= self.env.max_episode_steps
+                ended_win = (not self.env.disable_budget_win_termination) \
+                    and self.env.current_budget > self.env.max_budget
                 episode_metrics = {
                     'episode_count': self.episode_count,
                     'mean_episode_reward': torch.Tensor(self.env.episode_rewards).mean(),
-                    'sum_episode_rewards': torch.Tensor(self.env.episode_rewards).sum(),
+                    'sum_episode_rewards': episode_return,
+                    # Uncapped per-step return: unlike sum_episode_rewards this
+                    # is not bounded by the termination threshold, so a more
+                    # efficient (e.g. label-buying) agent shows a higher value.
+                    'return_per_step': episode_return / max(1, steps),
                     'mean_episode_budget': torch.Tensor(self.env.episode_budgets).mean(),
+                    'final_episode_budget': self.env.current_budget,
                     'epistemic_actions_per_episode': self.env.epistemic_actions,
-                    'steps_per_episode': self.env.steps_done
+                    'wasted_epistemic_actions_per_episode': self.env.wasted_epistemic_actions,
+                    'steps_per_episode': steps,
+                    'episode_outcome_win': int(ended_win),
+                    'episode_outcome_bankrupt': int(ended_bankrupt),
+                    'episode_outcome_timeout': int(ended_timeout),
                 }
                 # Fixed-key per-G2 CTI-ROI series: same 7 labels every run
                 # (knowledge is static), so these render as 7 line plots
