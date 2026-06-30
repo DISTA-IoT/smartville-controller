@@ -307,9 +307,10 @@ def shutdown_process():
   # return immediately, stopping cache_unprocessed_packets() calls and
   # preventing any further buffer growth between experiments.
   if smart_switch is not None:
-    smart_switch.paused = True
-    logger.info("SmartSwitch paused Flowlogging...")
+    smart_switch.pause()
+    logger.info("SmartSwitch paused Flowlogging and cancelled its timers...")
 
+    
   if metrics_logger is not None:
     metrics_logger.shutdown()
   metrics_logger = None

@@ -367,6 +367,22 @@ class SmartSwitch(EventMixin):
         self.logger.debug(f"Sent sampling rule for flow {flow_id}")
        
 
+    def pause(self):
+      """
+      Quiesce the switch between experiments: stop processing PacketIns and
+      stop the recurring timers. initialize() re-arms everything on the next
+      /initialize. Safe to call repeatedly.
+      """
+      self.paused = True
+
+      if getattr(self, '_expire_timer', None) is not None:
+        self._expire_timer.cancel()
+        self._expire_timer = None
+
+      if getattr(self, 'sampling_rules_timer', None) is not None:
+        self.sampling_rules_timer.cancel()
+        self.sampling_rules_timer = None
+
   def add_ip_to_ip_flow_matching_rule(self, 
                                  switch_id,
                                  source_ip_addr, 
@@ -697,6 +713,8 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_openflow_PacketIn(self, event):
+    if self.paused:
+      return
     self.connection = event.connection
     self.openflow_packets_received += 1
     switch_id = event.connection.dpid
