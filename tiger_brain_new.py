@@ -25,6 +25,7 @@ import random
 import time
 import copy
 import queue
+import inspect
 import traceback
 from collections import Counter
 from functools import wraps
@@ -483,7 +484,17 @@ class TigerBrain:
                 raise RuntimeError(f"A class named {CONFIDENCE_DECODER_CLASS_NAME} was not found in your models.py file")
         
         self.confidence_decoder = model_classes[CONFIDENCE_DECODER_CLASS_NAME](device=self.device)
-        
+        # The confidence decoder's forward signature varies by model file: the
+        # legacy prototypical decoders take only `scores` (the known-class
+        # similarity slice), while the Mahalanobis decoder takes the raw
+        # hiddens + support structure to build per-class Gaussians. Cache which
+        # kwargs this decoder actually accepts so _call_confidence_decoder can
+        # feed each one exactly what it declares, without either coupling the
+        # brain to a specific decoder or editing the other model files.
+        cd_params = inspect.signature(self.confidence_decoder.forward).parameters
+        self._cd_accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in cd_params.values())
+        self._cd_param_names = set(cd_params.keys())
+
         self.os_criterion = nn.BCEWithLogitsLoss().to(self.device)
         self.cs_criterion = nn.SmoothL1Loss(reduction='mean').to(self.device) if self.kwargs['intrusion_detection'].get('use_huber_cs') else nn.CrossEntropyLoss().to(self.device)
         
@@ -735,7 +746,31 @@ class TigerBrain:
             margin = s_max
         return torch.stack([s_max, s_mean, s_min, s_std, margin, entropy, energy]).to(dtype=score_slice.dtype)
 
-    def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask):
+    def _call_confidence_decoder(self, decoder, scores, hidden_vectors, labels, query_mask, known_class_mask):
+        """
+        Invoke `decoder` with exactly the inputs its forward signature
+        declares. Legacy prototypical decoders consume only `scores` (the
+        known-class similarity slice); the Mahalanobis decoder consumes the raw
+        hiddens plus the support structure (labels / query_mask /
+        known_class_mask) to build its per-class Gaussians. The accepted-kwarg
+        plan was cached for self.confidence_decoder in
+        init_inference_neural_modules; the async-evaluation clone is the same
+        class, so the same plan applies to it.
+        """
+        available = {
+            'scores': scores,
+            'hidden_vectors': hidden_vectors,
+            'labels': labels,
+            'query_mask': query_mask,
+            'known_class_mask': known_class_mask,
+        }
+        if self._cd_accepts_kwargs:
+            call_kwargs = available
+        else:
+            call_kwargs = {k: v for k, v in available.items() if k in self._cd_param_names}
+        return decoder(**call_kwargs)
+
+    def online_anomaly_detection(self, batch, logits, hiddens, one_hot_labels, query_mask):
         """
         Performs anomaly detection on the online batch.
         """
@@ -754,7 +789,13 @@ class TigerBrain:
                     known_class_h_mask = candidate_mask
 
             try:
-                zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
+                zda_predictions = self._call_confidence_decoder(
+                    self.confidence_decoder,
+                    scores=logits[:, known_class_h_mask],
+                    hidden_vectors=hiddens,
+                    labels=batch.class_labels,
+                    query_mask=query_mask,
+                    known_class_mask=known_class_h_mask)
             except Exception as e:
                 self.logger_instance.error(f'Confidence decoder error: {e}')
                 raise RuntimeError(f'Confidence decoder error: {e}')
@@ -1323,7 +1364,7 @@ class TigerBrain:
             one_hot_labels = self.get_oh_labels(merged_batch, self.current_known_classes_count)
 
             with self.profile("onl_inf_AD"):
-                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, one_hot_labels, merged_query_mask)
+                zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, hiddens, one_hot_labels, merged_query_mask)
         
         num_online = online_batch.zda_labels.shape[0]
         # Always evaluate to update online stats (CMs) and get metrics
@@ -1745,7 +1786,13 @@ class TigerBrain:
 
         ad_metrics = {}
         if torch.any(known_h_mask):
-            zda_preds = self.confidence_decoder(scores=logits[:, known_h_mask])
+            zda_preds = self._call_confidence_decoder(
+                self.confidence_decoder,
+                scores=logits[:, known_h_mask],
+                hidden_vectors=hiddens,
+                labels=training_batch.class_labels,
+                query_mask=query_mask,
+                known_class_mask=known_h_mask)
             if self.multi_class:
                 zda_loss, _, ad_metrics = self.evaluate_anomaly_detection(training_batch.zda_labels[query_mask], zda_preds, torch.ones(query_mask.sum(), device=self.device).to(torch.bool), TRAINING)
                 loss += zda_loss
@@ -1839,7 +1886,13 @@ class TigerBrain:
                 ad_acc = 0.0
                 if self.multi_class and decoder_clone:
                     if self.use_neural_AD:
-                        zda_p = decoder_clone(scores=logits[:, k_mask])
+                        zda_p = self._call_confidence_decoder(
+                            decoder_clone,
+                            scores=logits[:, k_mask],
+                            hidden_vectors=hiddens,
+                            labels=eval_batch.class_labels,
+                            query_mask=q_mask,
+                            known_class_mask=k_mask)
                         zda_l = eval_batch.zda_labels[q_mask]
                         oh_zda = torch.zeros(size=(zda_l.shape[0], 2), device=self.device).long().scatter(1, zda_l.long().view(-1, 1), 1)
                         b_os_cm = efficient_os_cm(preds=(zda_p > 0.5).long(), targets_onehot=oh_zda)
