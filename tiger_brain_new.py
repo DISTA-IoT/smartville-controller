@@ -174,11 +174,28 @@ class TigerBrain:
         # drift. Default False (legacy behaviour: raw centroid state).
         self.relational_state = bool(
             self.intrusion_detection_kwargs.get('relational_state', False))
+        # Ren et al. (2021) define relative Mahalanobis distance as a
+        # post-hoc, frozen-feature diagnostic: the encoder is trained first,
+        # then RMD is computed against its (fixed) representation. Our
+        # confidence decoders instead sit inside the training graph -- the
+        # AD/BCE loss backprops through `query_h` in
+        # train_inf_module_single_batch every episode, so the encoder's
+        # geometry is continuously reshaped to make pseudo-anomalies (G1s)
+        # score as anomalous, not just diagnosed post-hoc. This knob lets us
+        # detach the confidence decoder's inputs (hidden vectors and known-
+        # class scores) from the encoder's graph, so the AD/BCE loss can
+        # still update the decoder's own parameters (if any) but can no
+        # longer shape the encoder. Default True preserves existing
+        # behaviour (gradients flow to the encoder).
+        self.ad_loss_backprop_to_encoder = bool(
+            self.intrusion_detection_kwargs.get('ad_loss_backprop_to_encoder', True))
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
-            " useless_epistemic_penalty=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s\033[0m",
+            " useless_epistemic_penalty=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
+            "ad_loss_backprop_to_encoder=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
-            self.useless_epistemic_penalty, self.exclude_g1_from_ad_known_set, self.relational_state)
+            self.useless_epistemic_penalty, self.exclude_g1_from_ad_known_set, self.relational_state,
+            self.ad_loss_backprop_to_encoder)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -1789,10 +1806,18 @@ class TigerBrain:
 
         ad_metrics = {}
         if torch.any(known_h_mask):
+            # See ad_loss_backprop_to_encoder docstring in __init__: when
+            # False, feed the decoder detached copies of the encoder's
+            # outputs so the AD/BCE loss below can still train the decoder's
+            # own parameters (if any) but cannot backprop into the encoder
+            # via `query_h`/`scores`, turning RMD back into the frozen-
+            # feature diagnostic Ren et al. (2021) describe.
+            cd_hiddens = hiddens if self.ad_loss_backprop_to_encoder else hiddens.detach()
+            cd_scores = logits[:, known_h_mask] if self.ad_loss_backprop_to_encoder else logits[:, known_h_mask].detach()
             zda_preds = self._call_confidence_decoder(
                 self.confidence_decoder,
-                scores=logits[:, known_h_mask],
-                hidden_vectors=hiddens,
+                scores=cd_scores,
+                hidden_vectors=cd_hiddens,
                 labels=training_batch.class_labels,
                 query_mask=query_mask,
                 known_class_mask=known_h_mask)
