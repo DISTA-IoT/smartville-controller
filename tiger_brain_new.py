@@ -966,12 +966,11 @@ class TigerBrain:
 
             classification_reward_total += classification_reward
 
-        if num_groups > 0 and self.wbt:
+        if self.wbt:
             self.reporter.log_scalars({
-                AGENT+'/'+'generic_reward': self.env.episode_rewards[-1],
-                AGENT+'/'+'classification_reward': classification_reward_total / num_groups,
+                AGENT+'/'+'generic_reward': classification_reward_total,
+                AGENT+'/'+'classification_reward': classification_reward_total,
                 AGENT+'/'+'budget': self.env.current_budget,
-                AGENT+'/'+'known traffic action': last_action.item() if last_action is not None else -1,
                 AGENT+'/'+'known_traffic_groups': num_groups,
             }, step=self.wb_tracker.step_counter)
 
@@ -1169,12 +1168,7 @@ class TigerBrain:
             rewards_per_blocked_clusters += reward_val if not accepted_cluster else 0
 
         if len(centroids[~missing]) > 0 and self.wbt:
-            clustering_reward /= len(centroids[~missing])
-            epistemic_actions_taken /= len(centroids[~missing])
-            wasted_epistemic_actions_taken /= len(centroids[~missing])
-            epistemic_costs /= len(centroids[~missing])
-            rewards_per_accepted_clusters /= len(centroids[~missing])
-            rewards_per_blocked_clusters /= len(centroids[~missing])
+
 
             self.reporter.log_scalars({
                 AGENT+'/'+'generic_reward': clustering_reward,
