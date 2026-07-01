@@ -367,7 +367,7 @@ class SmartSwitch(EventMixin):
         self.logger.debug(f"Sent sampling rule for flow {flow_id}")
        
 
-    def pause(self):
+  def pause(self):
       """
       Quiesce the switch between experiments: stop processing PacketIns and
       stop the recurring timers. initialize() re-arms everything on the next
