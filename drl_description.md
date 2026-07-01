@@ -177,10 +177,12 @@ A collection run is a directory `run_<timestamp>/` (under
   blocks (the same ones documented in §0 and used throughout the rest of
   this file), plus `traffic_dict`, `container_ips`, `ips_containers`,
   `use_packet_feats`, `use_node_feats`, `flow_feat_dim`, `packet_feat_dim`,
-  `hidden_size`, `device`, and `models` (the raw Python source text of the
-  ASAP model classes that gets `exec()`'d, exactly as it does for a live run
-  — see system-description §3/§5). It is JSON despite the suggestive name —
-  there is no `manifest.yaml` anywhere in the recorded-run layout.
+  `hidden_size`, `device`, and `inference_model_variant` (the name of the
+  `im_models/<variant>.py` module — e.g. `default`, `mahalanobis`, `optim` —
+  that gets imported to build the ASAP model classes, exactly as it does for
+  a live run — see system-description §3/§5). It is JSON despite the
+  suggestive name — there is no `manifest.yaml` anywhere in the
+  recorded-run layout.
 - **`shards_index.jsonl`** — one JSON line appended per flushed shard
   (shard filename, `num_samples`, `tick_min`/`tick_max`), for cheap
   inspection without loading the actual tensors.
@@ -211,16 +213,17 @@ kwargs = {
     "health": dict(manifest.get("health", {})),
     "wandb": dict(manifest.get("wandb", {})),
     ...
-    "models": manifest.get("models", ""),
+    "inference_model_variant": manifest.get("inference_model_variant", "default"),
 }
 ```
 
 So every quantity discussed in §2 — action space, reward magnitudes
 (`rewards:` lookup table), CTI pricing/decay, budget bounds, epsilon decay,
 PER/n-step settings, the agent type (`intrusion_detection.agent`), the
-curriculum (`Knowns`/`G1s`/`G2s`), and even which ASAP model source
-(`models`) gets `exec()`'d — is whatever that *specific collection run* was
-configured with when it captured the data, not anything chosen by
+curriculum (`Knowns`/`G1s`/`G2s`), and even which ASAP model variant
+(`inference_model_variant`) gets loaded — is whatever that *specific
+collection run* was configured with when it captured the data, not anything
+chosen by
 `offline_replay.py` itself. Replaying a given `run_dir` therefore always
 re-runs the live experiment's own DM/IM configuration, not the controller's
 current `tiger/config/default.yaml` or any override file.

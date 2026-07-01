@@ -26,6 +26,7 @@ import time
 import copy
 import queue
 import inspect
+import importlib
 import traceback
 from collections import Counter
 from functools import wraps
@@ -264,7 +265,7 @@ class TigerBrain:
                 "packet_feat_dim": self.packet_feat_dim,
                 "hidden_size": self.hidden_size,
                 "device": self.device,
-                "models": self.kwargs.get('models', ''),
+                "inference_model_variant": self.kwargs.get('inference_model_variant', 'default'),
             }
         except Exception:
             self.logger_instance.error(
@@ -277,7 +278,7 @@ class TigerBrain:
                 f"device={self.device} use_packet_feats={self.use_packet_feats} "
                 f"use_node_feats={self.use_node_feats} flow_feat_dim={self.flow_feat_dim} "
                 f"packet_feat_dim={self.packet_feat_dim} hidden_size={self.hidden_size} "
-                f"models_source_len={len(self.kwargs.get('models', '') or '')} "
+                f"inference_model_variant={self.kwargs.get('inference_model_variant', 'default')} "
                 f"container_ips_count={len(self.container_ips or {})} "
                 f"ips_containers_count={len(self.ips_containers or {})} "
                 f"traffic_dict_keys={list((self.traffic_dict or {}).keys())}"
@@ -451,34 +452,36 @@ class TigerBrain:
             size=(2, 2),
             device=self.device)
 
-    def load_models_from_source(self):
+    def load_models_from_variant(self):
         """
-        Safely load models from source code string provided in kwargs.
+        Loads the ASAP model classes (classifier, confidence decoder, kernel
+        regression loss) from the im_models sub-package, picking the variant
+        (e.g. 'default', 'mahalanobis', 'optim') named in kwargs.
         """
+        variant_name = self.kwargs.get('inference_model_variant', 'default')
         try:
-            namespace = {}
-            exec(self.kwargs['models'], namespace)
-            
-            model_classes = {}
-            for name, obj in namespace.items():
-                if (isinstance(obj, type) and 
-                    hasattr(obj, '__bases__') and 
-                    any('Module' in base.__name__ for base in obj.__bases__ if hasattr(base, '__name__'))):
-                    model_classes[name] = obj
-            
-            return model_classes
-            
-        except Exception as e:
-            self.logger_instance.error(f"Error loading models from source: {e}")
-            return {}
-    
+            module = importlib.import_module(f'smartController.im_models.{variant_name}')
+        except ImportError as e:
+            raise RuntimeError(
+                f"Unknown inference_model_variant '{variant_name}': no module "
+                f"im_models/{variant_name}.py found: {e}")
+
+        model_classes = {}
+        for name, obj in vars(module).items():
+            if (isinstance(obj, type) and
+                hasattr(obj, '__bases__') and
+                any('Module' in base.__name__ for base in obj.__bases__ if hasattr(base, '__name__'))):
+                model_classes[name] = obj
+
+        return model_classes
+
     def init_inference_neural_modules(self):
         """
         Initializes neural modules (classifier, confidence decoder, criterion).
         Loads pre-trained weights if specified.
         """
         torch.manual_seed(self.seed)
-        model_classes = self.load_models_from_source()
+        model_classes = self.load_models_from_variant()
 
         if CONFIDENCE_DECODER_CLASS_NAME not in model_classes:
                 raise RuntimeError(f"A class named {CONFIDENCE_DECODER_CLASS_NAME} was not found in your models.py file")
