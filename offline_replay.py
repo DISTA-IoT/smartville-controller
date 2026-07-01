@@ -95,7 +95,7 @@ def load_manifest(run_dir, logger):
         f"[offline_replay] Manifest loaded: keys={sorted(manifest.keys())} "
         f"device={manifest.get('device')} use_packet_feats={manifest.get('use_packet_feats')} "
         f"use_node_feats={manifest.get('use_node_feats')} hidden_size={manifest.get('hidden_size')} "
-        f"models_source_len={len(manifest.get('models', '') or '')}"
+        f"inference_model_variant={manifest.get('inference_model_variant')}"
     )
     return manifest
 
@@ -150,9 +150,9 @@ def build_kwargs(manifest, logger, args):
     Reconstructs the kwargs dict TigerBrain.__init__ expects, from the
     manifest snapshot plus CLI overrides. Mirrors how dash.py's
     init_controller_args() assembles the live controller's kwargs (Hydra
-    cfg as a dict, plus container_ips/ips_containers/traffic_dict/models),
-    minus everything offline replay legitimately doesn't need (monitor_ip,
-    POX/network wiring, etc).
+    cfg as a dict, plus container_ips/ips_containers/traffic_dict/
+    inference_model_variant), minus everything offline replay legitimately
+    doesn't need (monitor_ip, POX/network wiring, etc).
     """
     kwargs = {
         "intrusion_detection": dict(manifest.get("intrusion_detection", {})),
@@ -167,16 +167,9 @@ def build_kwargs(manifest, logger, args):
         "use_packet_feats": bool(manifest.get("use_packet_feats", False)),
         "node_features": bool(manifest.get("use_node_feats", False)),
         "device": args.device or manifest.get("device", "cpu"),
-        "models": manifest.get("models", ""),
+        "inference_model_variant": manifest.get("inference_model_variant", "default"),
         "logger": logger,
     }
-
-    if not kwargs["models"]:
-        logger.error(
-            "[offline_replay] manifest has no 'models' source -- TigerBrain cannot "
-            "instantiate its classifier/confidence_decoder/kr_criterion classes. Aborting."
-        )
-        raise RuntimeError("manifest missing 'models' source code")
 
     # --- Critical override: never let the replayed TigerBrain spin up a SECOND
     # FlowDataRecorder. The whole point of this script is to consume already-recorded
