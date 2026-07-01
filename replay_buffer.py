@@ -17,6 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 import torch
 import random
+import warnings
 import numpy as np
 from collections import deque
 
@@ -94,6 +95,22 @@ class PrioritizedReplayBuffer:
         np.random.seed(seed)
 
     def _get_priority(self, error):
+        # Guard against a non-finite TD error (upstream NaN/inf, e.g. a diverged
+        # encoder producing NaN states). A single inf/NaN priority would set
+        # max_priority=inf, poison every subsequent push, drive tree.total() to
+        # inf, and make sample()'s np.random.uniform raise "Range exceeds valid
+        # bounds" -- a run-killing crash far from the real cause. Treat it as a
+        # zero-error (lowest) priority and warn once so the divergence is
+        # visible rather than silently swallowed.
+        if not np.isfinite(error):
+            if not getattr(self, '_warned_nonfinite_priority', False):
+                warnings.warn(
+                    "PrioritizedReplayBuffer: non-finite TD error encountered; "
+                    "clamping its priority to the minimum. This indicates an "
+                    "upstream NaN/inf (e.g. a diverged model producing NaN "
+                    "states/Q-values) -- investigate the source.")
+                self._warned_nonfinite_priority = True
+            error = 0.0
         return (np.abs(error) + self.epsilon) ** self.alpha
 
     def push(self, sample):
