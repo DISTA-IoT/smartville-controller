@@ -85,6 +85,11 @@ class TigerBrain:
     Responsible for flow classification, anomaly detection, clustering, and mitigation.
     """
 
+    # Width of the fixed-size relational exteroceptive state block produced by
+    # _relational_summary when `relational_state` is enabled. Kept in sync with
+    # the number of summary statistics that method stacks.
+    RELATIONAL_STATE_DIM = 7
+
     def __init__(self, kwargs, wb_tracker=None):
         """
         Initializes the TigerBrain module with provided configuration and optional WandB tracker.
@@ -148,10 +153,30 @@ class TigerBrain:
         self.unknown_accept_reward_scale = self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0)
         self.unknown_malicious_accept_penalty_scale = self.intrusion_detection_kwargs.get('unknown_malicious_accept_penalty_scale', 1.0)
         self.useless_epistemic_penalty = float(self.intrusion_detection_kwargs.get('useless_epistemic_penalty', 0.0))
+        # When True, the online anomaly detector scores each sample only
+        # against the *true* Known-class prototypes, excluding G1 columns from
+        # its known-set. By default G1 is folded into the inference known-set
+        # (G1 carries zda_label 0 at inference), so a real zero-day (G2) that
+        # happens to sit near a G1 prototype is scored as non-anomalous and
+        # missed. Excluding G1 removes that specific blind spot. Default False
+        # (legacy behaviour: G1 counts as known at inference).
+        self.exclude_g1_from_ad_known_set = bool(
+            self.intrusion_detection_kwargs.get('exclude_g1_from_ad_known_set', False))
+        # When True, the DM's exteroceptive state is a fixed-size, relational
+        # summary of the group's/cluster's similarity to the known-class
+        # prototypes (see _relational_summary), instead of the absolute
+        # hidden-space centroid. This keeps the decision layer consistent with
+        # the prototypical/relational-bottleneck inductive bias of the
+        # perception layers, is invariant to the number of known classes, and
+        # is far more stable than absolute coordinates under representation
+        # drift. Default False (legacy behaviour: raw centroid state).
+        self.relational_state = bool(
+            self.intrusion_detection_kwargs.get('relational_state', False))
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
-            " useless_epistemic_penalty=%s\033[0m",
-            self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale, self.useless_epistemic_penalty)
+            " useless_epistemic_penalty=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s\033[0m",
+            self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
+            self.useless_epistemic_penalty, self.exclude_g1_from_ad_known_set, self.relational_state)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -326,16 +351,29 @@ class TigerBrain:
         """
         Initializes the mitigation agent (e.g., DQN, DAI variants).
         """
-        self.state_space_dim = self.hidden_size
-        if self.use_node_feats:
-            self.state_space_dim += self.hidden_size
-        if self.use_packet_feats:
-            self.state_space_dim += self.hidden_size
+        # Exteroceptive block of the state vector. Two mutually-exclusive
+        # encodings, selected by the `relational_state` config flag:
+        #  - relational_state=False (default): the raw hidden-space centroid
+        #    of the group/cluster, whose width scales with the number of
+        #    active feature streams (flow [+node] [+packet]).
+        #  - relational_state=True: a fixed-size relational summary of the
+        #    group's/cluster's similarity to the known-class prototypes
+        #    (RELATIONAL_STATE_DIM dims), independent of stream count and of
+        #    how many known classes exist. See _relational_summary.
+        if self.relational_state:
+            self.exteroceptive_dim = self.RELATIONAL_STATE_DIM
+        else:
+            self.exteroceptive_dim = self.hidden_size
+            if self.use_node_feats:
+                self.exteroceptive_dim += self.hidden_size
+            if self.use_packet_feats:
+                self.exteroceptive_dim += self.hidden_size
+        self.state_space_dim = self.exteroceptive_dim
 
         # State space components:
-        # 0. exteroceptive centroid: for unknown traffic, the hidden-space
-        #    centroid of the current anomaly cluster; for known traffic, the
-        #    hidden-space centroid of the current predicted-class group
+        # 0. exteroceptive block: for unknown traffic, the centroid (or
+        #    relational summary) of the current anomaly cluster; for known
+        #    traffic, that of the current predicted-class group
         #    (a -1-filled placeholder only when there is no next group/cluster
         #    to chain to within the tick).
         # 1. number of anomalies inferred in the tick's batch
@@ -648,13 +686,73 @@ class TigerBrain:
             }
         return [self._label_names_lookup[label.item()] for label in encoded_labels]
 
+    def _g1_column_mask(self, num_cols):
+        """
+        Boolean mask over the classifier's `num_cols` logit columns marking
+        the columns that belong to G1 classes. Logit columns are indexed by
+        the encoder's class code (get_oh_labels scatters by class label), so a
+        G1 class's column index is exactly its encoded code.
+        """
+        mask = torch.zeros(num_cols, dtype=torch.bool, device=self.device)
+        g1_codes = [c for c in self.encoder.get_codes_for_labels(self.env.current_knowledge['G1s']) if c < num_cols]
+        if g1_codes:
+            mask[torch.tensor(g1_codes, device=self.device)] = True
+        return mask
+
+    def _relational_summary(self, score_slice):
+        """
+        Fixed-size, permutation-invariant relational summary of a group's or
+        cluster's prototypical similarity scores to the known-class prototypes
+        (`score_slice`: [n_members, K] inverse-distance similarities, i.e. the
+        `logits` the prototypical classifier produces). Returns a
+        RELATIONAL_STATE_DIM-vector that depends ONLY on the relation to known
+        classes -- never on absolute hidden coordinates -- so it stays
+        consistent with the prototypical / relational-bottleneck inductive
+        bias of the perception layer, is invariant to how many known classes
+        currently exist (K can grow as CTI is bought), and is far more stable
+        than an absolute centroid under representation drift.
+
+        The stats (kept in sync with RELATIONAL_STATE_DIM): closeness to the
+        nearest / farthest / mean prototype, spread across prototypes, the
+        top-2 margin (ambiguity), the assignment entropy, and the energy
+        (logsumexp) -- the same relational quantities the confidence-strategy
+        helpers already use, exposed as a vector rather than a single scalar.
+        """
+        s = score_slice.mean(dim=0)  # [K] mean similarity to each known prototype
+        k = s.shape[0]
+        p = torch.softmax(s, dim=0)
+        entropy = -(p * torch.log(p + 1e-10)).sum()
+        energy = torch.logsumexp(s, dim=0)
+        s_max = s.max()
+        s_min = s.min()
+        s_mean = s.mean()
+        if k > 1:
+            s_std = s.std(unbiased=False)
+            top2 = torch.topk(s, 2).values
+            margin = top2[0] - top2[1]
+        else:
+            s_std = torch.zeros((), device=s.device, dtype=s.dtype)
+            margin = s_max
+        return torch.stack([s_max, s_mean, s_min, s_std, margin, entropy, energy]).to(dtype=score_slice.dtype)
+
     def online_anomaly_detection(self, batch, logits, one_hot_labels, query_mask):
         """
         Performs anomaly detection on the online batch.
         """
         if self.use_neural_AD:
             known_class_h_mask = self.get_known_classes_mask(batch, one_hot_labels)
-            
+
+            # Targeted fix for the "G2-near-G1" blind spot: at inference G1
+            # carries zda_label 0, so get_known_classes_mask folds G1 columns
+            # into the AD's known-set and a real zero-day sitting near a G1
+            # prototype scores as non-anomalous. When enabled, drop the G1
+            # columns so the detector scores only against true Known-class
+            # prototypes. Skipped if it would empty the known-set.
+            if self.exclude_g1_from_ad_known_set:
+                candidate_mask = known_class_h_mask & ~self._g1_column_mask(known_class_h_mask.shape[0])
+                if candidate_mask.any():
+                    known_class_h_mask = candidate_mask
+
             try:
                 zda_predictions = self.confidence_decoder(scores=logits[:, known_class_h_mask])
             except Exception as e:
@@ -914,6 +1012,12 @@ class TigerBrain:
 
         group_member_masks = [class_preds == cls for cls in unique_classes]
         group_centroids = [known_hiddens[mask].mean(dim=0) for mask in group_member_masks]
+        # Exteroceptive state block per group: relational summary of the
+        # group's similarity to the known prototypes, or the raw centroid.
+        if self.relational_state:
+            group_exteroceptive = [self._relational_summary(interest_logits_slice[mask]) for mask in group_member_masks]
+        else:
+            group_exteroceptive = group_centroids
 
         classification_reward_total = 0.0
         last_action = None
@@ -925,7 +1029,7 @@ class TigerBrain:
             group_confidence = self._cs_confidence_for_slice(
                 interest_logits_slice[member_mask], class_preds[member_mask], number_of_known_classes)
 
-            centroid = group_centroids[idx].unsqueeze(0)
+            centroid = group_exteroceptive[idx].unsqueeze(0)
             state_vec = self.assembly_state_vector(
                 centroid, num_of_anomalies, num_known,
                 0.0, group_confidence.item(), self.env.current_budget)
@@ -951,7 +1055,7 @@ class TigerBrain:
             if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
                 new_state = state_vec.detach().clone()
                 if idx < num_groups - 1:
-                    new_state[:-6] = group_centroids[idx + 1]
+                    new_state[:-6] = group_exteroceptive[idx + 1]
                 else:
                     new_state[:-6] = -1 * torch.ones_like(new_state[:-6])
                 new_state[-1] = self.env.current_budget
@@ -1058,7 +1162,7 @@ class TigerBrain:
             return self._remap_epistemic_to_block(action)
         return action
 
-    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs, true_label_names_zda):
+    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs, true_label_names_zda, anomalous_logits=None):
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
         Each cluster's decision uses its own members' zda_confidence (via
@@ -1066,6 +1170,11 @@ class TigerBrain:
         state vector is zeroed, since these samples were never classified
         into a known class -- the zero also signals to the agent that this
         state belongs to the unknown-cluster regime.
+
+        `anomalous_logits` are the predicted-anomalous online samples' rows of
+        prototypical similarity scores (same ordering as clusters_oh's rows),
+        used only when `relational_state` is enabled to build each cluster's
+        relational exteroceptive state block.
         """
         num_identified = centroids[~missing].shape[0]
         anomalous_rewards = rewards[zda_mask]
@@ -1079,6 +1188,17 @@ class TigerBrain:
         anomalous_probs = online_anomaly_probs[zda_mask].view(-1, 1)
         non_missing_columns = (~missing).nonzero(as_tuple=False).squeeze(-1)
 
+        # Exteroceptive state block per cluster: relational summary of the
+        # cluster's similarity to the known prototypes, or the raw centroid.
+        cluster_centroids = centroids[~missing]
+        if self.relational_state:
+            cluster_exteroceptive = [
+                self._relational_summary(anomalous_logits[clusters_oh[:, non_missing_columns[i]].bool()])
+                for i in range(num_identified)
+            ]
+        else:
+            cluster_exteroceptive = [c for c in cluster_centroids]
+
         clustering_reward = 0
         epistemic_actions_taken = 0
         wasted_epistemic_actions_taken = 0
@@ -1086,7 +1206,7 @@ class TigerBrain:
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
 
-        for idx, centroid in enumerate(centroids[~missing]):
+        for idx in range(num_identified):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
             accepted_cluster = False
             epistemic_action = False
@@ -1096,7 +1216,7 @@ class TigerBrain:
             cluster_zda_confidence = self._zda_confidence_for_subset(anomalous_probs[member_mask])
 
             state_vec = self.assembly_state_vector(
-                centroid.unsqueeze(0), num_anom, num_known,
+                cluster_exteroceptive[idx].unsqueeze(0), num_anom, num_known,
                 cluster_zda_confidence.item(), 0.0, self.env.current_budget)
 
             action = self._select_unknown_cluster_action(state_vec)
@@ -1144,7 +1264,7 @@ class TigerBrain:
             next_state = state_vec.detach().clone()
             
             if idx < num_identified - 1:
-                next_state[:-6] = centroids[~missing][idx+1]
+                next_state[:-6] = cluster_exteroceptive[idx+1]
             else:
                 next_state[:-6] = -1 * torch.ones_like(next_state[:-6])
             
@@ -1253,7 +1373,10 @@ class TigerBrain:
             if self.agency:
                 online_anomaly_probs = zda_predictions[-num_online:]
                 true_label_names_zda = [name for name, is_zda in zip(true_label_names, pred_online_zda_mask.tolist()) if is_zda]
-                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs, true_label_names_zda)
+                # Anomalous online samples' prototypical-score rows, in the
+                # same order as clusters_oh's rows -- used by relational_state.
+                anomalous_logits = logits[-num_online:][pred_online_zda_mask]
+                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs, true_label_names_zda, anomalous_logits=anomalous_logits)
 
         if self.agency:
             with self.profile("onl_inf_ER"):
