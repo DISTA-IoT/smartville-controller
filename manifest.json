@@ -32,6 +32,7 @@
     "use_neural_AD": true,
     "use_neural_KR": true,
     "use_neural_CS": true,
+    "ad_loss_backprop_to_encoder": true,
     "online_evaluation": false,
     "online_evaluation_rounds": 10,
     "pretrained_inference": true,
