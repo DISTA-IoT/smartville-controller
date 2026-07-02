@@ -713,8 +713,7 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_openflow_PacketIn(self, event):
-    if self.paused:
-      return
+    
     self.connection = event.connection
     self.openflow_packets_received += 1
     switch_id = event.connection.dpid
@@ -730,7 +729,7 @@ class SmartSwitch(EventMixin):
       self.logger.warning(f"switch {switch_id}, port {incomming_port}: ignoring unparsed packet")
       return
   
-    # ── NEW ──────────────────────────────────────────────────────────────────
+    
     # Packet was explicitly forwarded here by a sampling flow rule (OFPR_ACTION).
     # Only cache it for ML feature extraction; do NOT touch routing/ARP/buffers.
     if event.ofp.reason == of.OFPR_ACTION:
@@ -740,7 +739,6 @@ class SmartSwitch(EventMixin):
                 dst_ip=packet.next.dstip,
                 packet=packet)
         return
-    # ─────────────────────────────────────────────────────────────────────────
 
     if switch_id not in self.arpTables:
       # New switch -- create an empty table
@@ -751,13 +749,14 @@ class SmartSwitch(EventMixin):
       #Ignore lldp packets
       return
 
+    
     if isinstance(packet.next, ipv4):
-      
-        self.handle_ipv4_packet_in(
-          switch_id=switch_id,
-          incomming_port=incomming_port,
-          packet_in_event=event,
-          packet=packet)
+        
+          self.handle_ipv4_packet_in(
+            switch_id=switch_id,
+            incomming_port=incomming_port,
+            packet_in_event=event,
+            packet=packet)
 
     elif isinstance(packet.next, arp):
         self.handle_arp_packet_in(
