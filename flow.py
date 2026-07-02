@@ -84,6 +84,14 @@ class Flow():
         # means unbounded. Once full, newly captured packets are dropped
         # (see queue_packet_feature) rather than queued indefinitely.
         self.max_pending_packet_feats = max_pending_packet_feats
+        # High-water mark of len(pending_packet_feats) since the last time it
+        # was read (see snapshot_pending_stats). Purely for monitoring: the
+        # consumer (TigerBrain.process_input) drains this queue in a tight
+        # loop, so its instantaneous length is almost always ~0 even while
+        # packets are being captured in dense bursts. The peak preserves the
+        # burst so a low-frequency observer (e.g. the dashboard polling every
+        # few seconds) can still see it instead of only ever sampling zeros.
+        self.pending_high_water_mark = 0
 
 
     def get_flow_features(self):
@@ -102,7 +110,47 @@ class Flow():
            len(self.pending_packet_feats) >= self.max_pending_packet_feats:
             return False
         self.pending_packet_feats.append(packet_tensor)
+        if len(self.pending_packet_feats) > self.pending_high_water_mark:
+            self.pending_high_water_mark = len(self.pending_packet_feats)
         return True
+
+    def snapshot_pending_stats(self, reset_peak=True):
+        """
+        Returns a small, JSON-friendly snapshot of this flow's pending-packet
+        queue for monitoring (e.g. the dashboard utilisation gauges). Reads
+        only, with no effect on the ML data path.
+
+        `pending` is the instantaneous queue depth right now; `peak_pending`
+        is the high-water mark since the previous snapshot -- the useful one,
+        since bursts are usually drained between two low-frequency reads. It is
+        max(deepest the queue got via arrivals since the last read, current
+        depth), so it reports each capture burst exactly once and still
+        reflects a standing/growing backlog. When `reset_peak` is True the mark
+        is rearmed to 0 afterwards, so a burst that fully drains before the
+        next read is not double-counted into that read's window.
+
+        `capacity` is max_pending_packet_feats (may be None = unbounded).
+        `utilization`/`peak_utilization` are fractions in [0, 1] of that
+        capacity (None when capacity is None); captures past the cap are
+        dropped rather than queued, so neither exceeds 1.0.
+        """
+        pending = len(self.pending_packet_feats)
+        peak = max(self.pending_high_water_mark, pending)
+        if reset_peak:
+            self.pending_high_water_mark = 0
+        capacity = self.max_pending_packet_feats
+        util = (pending / capacity) if capacity else None
+        peak_util = (peak / capacity) if capacity else None
+        return {
+            "flow_id": self.flow_id,
+            "element_class": self.element_class,
+            "pending": pending,
+            "peak_pending": peak,
+            "capacity": capacity,
+            "utilization": util,
+            "peak_utilization": peak_util,
+            "packet_count": self.packet_count,
+        }
 
     def drain_packet_feature_chunks(self, chunk_size, max_chunks=None):
         """
