@@ -43,12 +43,15 @@ import logging
 
 
 SUPPRESSED_ENDPOINTS = [
-   '/check_zookeeper', 
+   '/check_zookeeper',
    '/check_kafka',
    '/check_prometheus',
    '/check_grafana',
    '/metrics',
-   '/echo'
+   '/echo',
+   # Polled a few times a second by the dashboard's pending-packet gauges;
+   # keep it out of the access log so it doesn't drown everything else.
+   '/pending_packet_feats_stats',
  ]
 
 class SuppressEndpointFilter(logging.Filter):
@@ -365,6 +368,97 @@ def launch(**kwargs):
           "applied_agent": args['intrusion_detection'].get('agent') if args is not None else None,
         }
 
+
+
+    @app.get("/pending_packet_feats_stats")
+    def pending_packet_feats_stats():
+        """
+        Live utilisation of every flow's `pending_packet_feats` queue, grouped
+        by traffic class, for the dashboard's packet-queue gauges.
+
+        Defined as a plain (sync) route so Starlette runs it in a threadpool:
+        it briefly takes `tiger_lock`, so it must not block the event loop.
+
+        For each class we report the instantaneous fill and, more usefully,
+        the peak fill since the previous poll -- the consumer drains these
+        queues in a tight loop, so a bare instantaneous read is almost always
+        ~0 even while packets are being captured in bursts (which is exactly
+        the "no packets captured this tick" confusion this endpoint exists to
+        make legible). The peak is read-and-rearmed each poll (see
+        Flow.snapshot_pending_stats), so callers should treat every successful
+        response as consuming that interval's peak; polling from two places at
+        once will split the peaks between them.
+        """
+        if flow_logger is None:
+          return {
+            "status_code": 200,
+            "initialized": False,
+            "msg": "controller not initialized",
+            "flows": [],
+            "classes": {},
+          }
+
+        # Mirror smart_check()'s access pattern: snapshot the flow objects
+        # under tiger_lock so we don't iterate flows_dict while process_input
+        # is mutating it. Bounded acquire so a wedged inference loop can never
+        # hang the dashboard poll.
+        got_lock = tiger_lock.acquire(timeout=2.0)
+        try:
+          # flows_dict can still be grown by the FlowStatsReceived callback on
+          # POX's thread (which doesn't take tiger_lock), so a snapshot can
+          # race with insertion; retry once on the CPython "changed size
+          # during iteration" error rather than 500-ing a monitoring poll.
+          for _attempt in range(2):
+            try:
+              flow_objs = list(flow_logger.flows_dict.values())
+              break
+            except RuntimeError:
+              flow_objs = []
+          snapshots = [f.snapshot_pending_stats(reset_peak=True) for f in flow_objs]
+        finally:
+          if got_lock:
+            tiger_lock.release()
+
+        classes = {}
+        for snap in snapshots:
+          cls = snap["element_class"]
+          agg = classes.setdefault(cls, {
+            "element_class": cls,
+            "num_flows": 0,
+            "pending": 0,
+            "peak_pending": 0,
+            "capacity": 0,
+            "capacity_is_bounded": True,
+            "packet_count": 0,
+          })
+          agg["num_flows"] += 1
+          agg["pending"] += snap["pending"]
+          agg["peak_pending"] += snap["peak_pending"]
+          agg["packet_count"] += snap["packet_count"]
+          if snap["capacity"] is None:
+            agg["capacity_is_bounded"] = False
+          else:
+            agg["capacity"] += snap["capacity"]
+
+        # Derive per-class utilisation fractions from the summed totals.
+        for agg in classes.values():
+          if agg["capacity_is_bounded"] and agg["capacity"] > 0:
+            agg["utilization"] = agg["pending"] / agg["capacity"]
+            agg["peak_utilization"] = agg["peak_pending"] / agg["capacity"]
+          else:
+            agg["utilization"] = None
+            agg["peak_utilization"] = None
+
+        return {
+          "status_code": 200,
+          "initialized": True,
+          "lock_timed_out": not got_lock,
+          "max_pending_packet_feats": (
+            flow_logger.max_pending_packet_feats
+            if flow_logger.max_pending_packet_feats is not None else None),
+          "flows": snapshots,
+          "classes": classes,
+        }
 
 
     @app.post("/sync_wandb")
