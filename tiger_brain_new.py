@@ -370,6 +370,12 @@ class TigerBrain:
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
+        # CTI-acquisition-latency tracker: label -> step_counter at which that
+        # G2 was bought this episode, kept until the first later online tick
+        # whose batch actually contains that class again (which closes it and
+        # emits epistemic_delay/<label>). See perform_epistemic_action /
+        # _log_epistemic_delays.
+        self._pending_epistemic_delays = {}
         self.reset_train_cms()
         self.reset_test_cms()
         self.replay_buffers = {}
@@ -380,8 +386,13 @@ class TigerBrain:
         """
         Resets the environment and initializes inference modules.
         """
-        self.env.reset()    
+        self.env.reset()
         self.init_inference_neural_modules()
+        # A new episode forgets all bought CTI (env.reset restores the G2 set),
+        # so any purchase still waiting on its class to reappear is void: drop
+        # the pending epistemic-delay markers rather than closing them against
+        # the next episode's traffic.
+        self._pending_epistemic_delays = {}
         self.episode_count += 1
         
     def init_agents(self, args):
@@ -1129,6 +1140,20 @@ class TigerBrain:
             group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
             self.env.record_reappearances(group_true_labels, group_costs.tolist(), accepted=accepted_group)
 
+            # Post-buyin (supervised) confidence of an acquired G2: attribute
+            # this predicted-class group to the MAJORITY TRUE label of its
+            # members; if that label is a G2 already bought this episode, log
+            # the closed-set classification confidence the model now assigns
+            # its traffic. One point per occurrence, keyed per class -> a
+            # no-aggregation supervised_scores/<label> line per acquired G2.
+            if self.wbt and group_true_labels:
+                majority_true = Counter(group_true_labels).most_common(1)[0][0]
+                g2_stats = self.env.acquired_g2_stats.get(majority_true)
+                if g2_stats is not None and g2_stats['bought']:
+                    self.reporter.log_scalars(
+                        {f'supervised_scores/{majority_true}': group_confidence.item()},
+                        step=self.wb_tracker.step_counter)
+
             self.env.current_budget += classification_reward
 
             if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
@@ -1321,6 +1346,20 @@ class TigerBrain:
             # centroid itself).
             member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
 
+            # Pre-buyin (unsupervised) confidence for a not-yet-bought G2:
+            # attribute this anomaly cluster to the MAJORITY TRUE label of its
+            # members; if that label is a G2 not yet bought this episode,
+            # remember to log the prototypical anomaly-detection confidence the
+            # detector assigns its traffic *before* CTI is acquired. Captured
+            # here -- before this iteration's own possible purchase flips the
+            # label's bought flag -- so the value is genuinely pre-buy.
+            unsup_label = None
+            if member_labels:
+                cand = Counter(member_labels).most_common(1)[0][0]
+                cand_stats = self.env.acquired_g2_stats.get(cand)
+                if cand_stats is not None and not cand_stats['bought']:
+                    unsup_label = cand
+
             if accepted_cluster:
                 member_rewards_tensor = anomalous_rewards[member_mask]
                 positive = torch.relu(member_rewards_tensor) * self.unknown_accept_reward_scale
@@ -1352,6 +1391,15 @@ class TigerBrain:
 
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
+
+            # Emitted at this cluster-decision's own step (post-increment), one
+            # point per occurrence -> a no-aggregation unsupervised_scores/<label>
+            # line per G2 while it is still unbought.
+            if self.wbt and unsup_label is not None:
+                self.reporter.log_scalars(
+                    {f'unsupervised_scores/{unsup_label}': cluster_zda_confidence.item()},
+                    step=self.wb_tracker.step_counter)
+
             end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
 
             self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
@@ -1379,6 +1427,25 @@ class TigerBrain:
                 AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
             }, step=self.wb_tracker.step_counter)
+
+    def _log_epistemic_delays(self, present_labels):
+        """
+        For every G2 bought in an earlier tick whose class now appears among
+        this tick's online true labels (`present_labels`), emit
+        epistemic_delay/<label> = current step_counter - purchase step_counter,
+        then stop tracking it. This is the CTI-acquisition latency: how many DM
+        steps elapse between paying for a class and the model next actually
+        seeing that class on the wire (where it can start being classified /
+        trained on as a Known). One point per acquisition -> a no-aggregation
+        line per G2.
+        """
+        closed = {}
+        for label, buy_step in list(self._pending_epistemic_delays.items()):
+            if label in present_labels:
+                closed[f'epistemic_delay/{label}'] = self.wb_tracker.step_counter - buy_step
+                del self._pending_epistemic_delays[label]
+        if closed and self.wbt:
+            self.reporter.log_scalars(closed, step=self.wb_tracker.step_counter)
 
     def online_inference(self, online_batch):
         """
@@ -1428,6 +1495,13 @@ class TigerBrain:
         # regardless of how it was predicted -- counts all classes (Knowns,
         # G1s, G2s) on the wire this episode.
         self.env.record_appearances(true_label_names)
+
+        # Close out CTI-acquisition latencies here -- before act_on_unknown_clusters
+        # can perform this tick's own purchases -- so a class bought this very tick
+        # never self-triggers a zero delay; only a *later* tick that actually
+        # carries the bought class on the wire closes it.
+        if self.agency and self._pending_epistemic_delays:
+            self._log_epistemic_delays(set(true_label_names))
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
         _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
@@ -1904,13 +1978,20 @@ class TigerBrain:
         """Acquires a CTI label, updating the knowledge base and replay buffers."""
         updates = self.env.perform_epistemic_action(target_label)
         new_label = updates['updated_label']
-        
+
         if new_label is not None:
             if self.encoder.update_label(new_label=new_label, logger=self.logger_instance):
                 self.current_known_classes_count += 1
                 self.add_replay_buffer(new_label)
                 self.reset_train_cms()
                 self.reset_test_cms()
+            # Stamp the purchase step so online_inference can later emit
+            # epistemic_delay/<label> = (steps until this class next shows up
+            # among an online batch's true labels). Recorded before this
+            # action's own step_counter increment (act_on_unknown_clusters
+            # increments it after perform_epistemic_action returns), i.e. the
+            # step of the buying decision itself.
+            self._pending_epistemic_delays[new_label] = self.wb_tracker.step_counter
         return updates
 
     def start_async_evaluation(self):
