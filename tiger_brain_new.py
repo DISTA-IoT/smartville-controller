@@ -150,6 +150,21 @@ class TigerBrain:
         self.repulsive_weight = float(args.intrusion_detection.repulsive_weight)
         self.learning_rate = float(args.intrusion_detection.learning_rate)
         self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
+        # K1: decouple the inference-module training cadence from the (inference)
+        # tick. online_inference still runs every tick for live metrics; training
+        # can run more or fewer gradient steps against the balanced buffers.
+        # Defaults (1 step, every tick) reproduce the original one-step-per-tick
+        # behaviour exactly. train_steps_per_tick>1 -> more gradient steps per
+        # training tick (faster convergence, costlier tick); train_every_n_ticks>1
+        # -> train only every n-th training-eligible tick (cheaper tick).
+        self.train_steps_per_tick = max(0, int(args.intrusion_detection.get('train_steps_per_tick', 1)))
+        self.train_every_n_ticks = max(1, int(args.intrusion_detection.get('train_every_n_ticks', 1)))
+        # K2: when a flow captured no fresh packet this tick, whether it still
+        # contributes a sample built from its sticky last-packets window (True,
+        # legacy behaviour) or is skipped for this tick (False). Only has any
+        # effect when packet features are in use (see stack_flow_tensors).
+        self.cache_flows_with_no_packets = bool(
+            args.intrusion_detection.get('cache_flows_with_no_packets', True))
         self.pretrained_models_dir = args.intrusion_detection.pretrained_models_dir
         self.update_target_freq = int(args.intrusion_detection.update_target_freq)
         self.unknown_accept_reward_scale = self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0)
@@ -349,6 +364,9 @@ class TigerBrain:
         self.eval_queue = queue.Queue()
         self.current_known_classes_count = 0
         self.batch_processing_allowed = False
+        # K1: counts training-eligible ticks since the last training step, so
+        # training can fire once every train_every_n_ticks such ticks.
+        self._ticks_since_train = 0
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
@@ -1571,6 +1589,11 @@ class TigerBrain:
                 if self.data_collection_mode and self.data_recorder is not None:
                     with self.profile("input_assembly"):
                         batch, row_flow_indices = self.stack_flow_tensors(flows, node_feats)
+                    # batch is None when no flow produced a row this tick (only
+                    # reachable with use_packet_feats=True and
+                    # cache_flows_with_no_packets=False): nothing to record/train on.
+                    if batch is None:
+                        return
                     tick = self.wb_tracker.step_counter
                     self._record_flows_for_data_collection(batch, flows, row_flow_indices, tick)
                     if self.data_collection_skip_training:
@@ -1585,6 +1608,8 @@ class TigerBrain:
                 else:
                     with self.profile("input_assembly"):
                         batch = self.assembly_input_tensor(flows, node_feats)
+                    if batch is None:
+                        return
 
                 self._process_batch(batch)
 
@@ -1609,9 +1634,17 @@ class TigerBrain:
 
             # we check again if batch_processing allowed because
             # knowledge can change during online inference.
+            # K1: inference above runs every tick (live metrics); training below
+            # is throttled to once every train_every_n_ticks eligible ticks, and
+            # then runs train_steps_per_tick gradient steps. Defaults (1, 1)
+            # reproduce the original single-step-every-tick behaviour.
             if self.batch_processing_allowed:
-                with self.profile("train_inf_module_single_batch"):
-                    self.train_inf_module_single_batch()
+                self._ticks_since_train += 1
+                if self._ticks_since_train >= self.train_every_n_ticks:
+                    self._ticks_since_train = 0
+                    for _ in range(self.train_steps_per_tick):
+                        with self.profile("train_inf_module_single_batch"):
+                            self.train_inf_module_single_batch()
 
             if not self.agency:
                 # If there's no agency, the step increments here,
@@ -2044,11 +2077,15 @@ class TigerBrain:
         dropping the rest of the burst), every queued packet for a flow is
         turned into its own row, all sharing that flow's current (still valid)
         flow_feat window. A flow with no freshly-queued packets this tick still
-        contributes its one sticky last-known-packet row, so it isn't starved.
+        contributes its one sticky last-known-packet row, so it isn't starved --
+        unless cache_flows_with_no_packets is False (K2), in which case such a
+        flow is skipped for this tick instead of re-emitting a stale row.
 
         Returns (batch, row_flow_indices) where row_flow_indices[i] is the
         index into `flows` that produced batch row i -- needed downstream to
         repeat labels/flow_ids correctly since flows no longer map 1:1 to rows.
+        Returns (None, []) when no flow produced any row this tick (only
+        reachable with use_packet_feats=True and cache_flows_with_no_packets=False).
         """
         flow_feat_rows = []
         packet_feat_rows = [] if self.use_packet_feats else None
@@ -2072,7 +2109,7 @@ class TigerBrain:
                         f"({len(packet_chunks) * self.packets_per_sample} packet(s) total, "
                         f"{backlog_note}")
                     flow.packet_count += len(packet_chunks) * self.packets_per_sample
-                else:
+                elif self.cache_flows_with_no_packets:
                     # Nothing freshly captured this tick: fall back to the
                     # sticky last-known packet so the flow still contributes.
                     self.logger_instance.warning(
@@ -2080,6 +2117,14 @@ class TigerBrain:
                         f"captured this tick; using sticky last packet"
                     )
                     packet_chunks = [flow.get_packet_features()]
+                else:
+                    # K2 (cache_flows_with_no_packets=False): skip this flow for
+                    # this tick rather than re-emitting its stale sticky packet(s).
+                    self.logger_instance.debug(
+                        f"[TigerBrain] flow {flow.flow_id}: no packets captured "
+                        f"this tick; skipping (cache_flows_with_no_packets=False)"
+                    )
+                    continue
 
             n_rows_for_flow = len(packet_chunks) if self.use_packet_feats else 1
             for row_i in range(n_rows_for_flow):
@@ -2088,14 +2133,29 @@ class TigerBrain:
                 if self.use_node_feats: node_feat_rows.append(node_feat_vec)
                 row_flow_indices.append(flow_idx)
 
+        if not flow_feat_rows:
+            # No flow produced a row this tick (only reachable with
+            # use_packet_feats=True and cache_flows_with_no_packets=False, when
+            # every flow's pending queue happened to be empty). Signal "nothing
+            # to do" so the caller skips this tick cleanly.
+            return None, []
+
         f_batch = torch.stack(flow_feat_rows)
-        p_batch = torch.stack(packet_feat_rows) if self.use_packet_feats else None
+        # Packet rows are uint8 (raw bytes) from build_packet_tensor all the way
+        # through the per-flow window/queue; cast to float32 once here, per
+        # batch, instead of once per packet on the PacketIn thread. .to() is
+        # device-preserving, so this stays correct for a GPU deployment where
+        # the rows may already live on the accelerator.
+        p_batch = torch.stack(packet_feat_rows).to(torch.float32) if self.use_packet_feats else None
         n_batch = torch.stack(node_feat_rows) if self.use_node_feats else None
         return Batch(flow_features=f_batch, packet_features=p_batch, node_features=n_batch), row_flow_indices
 
     def assembly_input_tensor(self, flows, node_feats):
-        """Assemblies a batch from current flow observations."""
+        """Assemblies a batch from current flow observations. Returns None when
+        stack_flow_tensors produced no rows this tick (see its docstring)."""
         batch, row_flow_indices = self.stack_flow_tensors(flows, node_feats)
+        if batch is None:
+            return None
         batch.class_labels = self.get_labels(flows, row_flow_indices)
         return batch
 

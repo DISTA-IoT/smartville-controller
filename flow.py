@@ -16,41 +16,21 @@
 # Additional licensing information for third-party dependencies
 # used in this file can be found in the accompanying `NOTICE` file.
 import torch
+from collections import deque
 
 BENIGN = "Benign"
 
-class CircularBuffer:
-    def __init__(self, buffer_size=10, feature_size=4):
-        self.buffer_size = buffer_size
-        self.feature_size = feature_size
-        self.buffer = torch.zeros(buffer_size, feature_size)
-        self.is_full = False
-        self.calls_to_add = 0
-        self.curr_elements = 0
-
-
-    def add(self, new_tensor):
-        # Roll the buffer up by 1 along the first dimension
-        self.buffer = torch.roll(self.buffer, shifts=-1, dims=0)
-        # Add new tensor to the last row
-        self.buffer[-1] = new_tensor
-        self.calls_to_add += 1
-        self.curr_elements += 1
-        if self.calls_to_add >= self.buffer_size:
-            self.is_full = True
-            self.curr_elements = self.buffer_size
 
 class Flow():
     def __init__(
-        self, 
-        source_ip, 
-        dest_ip, 
+        self,
+        source_ip,
+        dest_ip,
         switch_output_port,
         flow_feat_dim,
         flows_per_sample,
         packet_feat_dim,
         packets_per_sample,
-        replay_buffer_max_capacity,
         max_pending_packet_feats=None):
 
         self.source_ip = source_ip
@@ -58,15 +38,33 @@ class Flow():
         self.switch_output_port = switch_output_port
         self.flow_id = self.source_ip + "_" + self.dest_ip + "_" + str(self.switch_output_port)
         self.switch_input_port = None
-        self.replay_buffer_max_capacity = replay_buffer_max_capacity
+        self.flow_feat_dim = flow_feat_dim
+        self.packet_feat_dim = packet_feat_dim
         self.flows_per_sample = flows_per_sample
-        self.flow_feat_circular_buffer = CircularBuffer(
-                            buffer_size=replay_buffer_max_capacity, 
-                            feature_size=flow_feat_dim)
         self.packets_per_sample = packets_per_sample
-        self.packet_feat_circular_buffer = CircularBuffer(
-                            buffer_size=replay_buffer_max_capacity, 
-                            feature_size=packet_feat_dim)
+
+        # Rolling window of the most recent flow-stats feature vectors. Only the
+        # last `flows_per_sample` are ever read (get_flow_features), so the window
+        # is sized exactly to that -- not to the (much larger) per-class training
+        # buffer capacity. A maxlen deque drops the oldest row on append in O(1);
+        # pre-filled with zeros so get_flow_features always returns a full,
+        # fixed-size [flows_per_sample, flow_feat_dim] window even before any
+        # flow-stats have arrived (matching the old zero-initialised buffer).
+        self.flow_feat_window = deque(
+            (torch.zeros(flow_feat_dim) for _ in range(flows_per_sample)),
+            maxlen=flows_per_sample)
+
+        # Sticky "last packets" window: the last `packets_per_sample` sampled
+        # packets, used as a fallback sample for a flow that captured no fresh
+        # packet this tick (see TigerBrain.stack_flow_tensors). Same rationale as
+        # above -- sized to the window, O(1) append, pre-filled with zeros. Kept
+        # as uint8 (raw packet bytes are integral in [0, 255]): 4x smaller than
+        # float32 and it avoids a per-packet float cast on the hot PacketIn
+        # thread; the single float32 cast happens once per batch downstream.
+        self.packet_feat_window = deque(
+            (torch.zeros(packet_feat_dim, dtype=torch.uint8) for _ in range(packets_per_sample)),
+            maxlen=packets_per_sample)
+
         self.node_feats = None
         self.element_class = BENIGN
         self.zda = False
@@ -95,10 +93,21 @@ class Flow():
 
 
     def get_flow_features(self):
-        return self.flow_feat_circular_buffer.buffer[-self.flows_per_sample:]
+        # Fresh [flows_per_sample, flow_feat_dim] tensor from the rolling window.
+        return torch.stack(tuple(self.flow_feat_window))
 
     def get_packet_features(self):
-        return self.packet_feat_circular_buffer.buffer[-self.packets_per_sample:]
+        # Fresh [packets_per_sample, packet_feat_dim] uint8 tensor (sticky
+        # fallback). The caller casts to float32 once per assembled batch.
+        return torch.stack(tuple(self.packet_feat_window))
+
+    def add_flow_feature(self, flow_feat_tensor):
+        """Append one flow-stats feature vector to the rolling flow window."""
+        self.flow_feat_window.append(flow_feat_tensor)
+
+    def add_packet_feature(self, packet_tensor):
+        """Append one sampled packet to the sticky last-packets window."""
+        self.packet_feat_window.append(packet_tensor)
 
     def queue_packet_feature(self, packet_tensor):
         """
@@ -162,7 +171,8 @@ class Flow():
         deep backlog, e.g. mid-burst, drains it gradually over several ticks
         instead of all at once), while still guaranteeing every captured
         packet eventually becomes a sample.
-        Returns a (possibly empty) list of [chunk_size, packet_feat_dim] tensors.
+        Returns a (possibly empty) list of [chunk_size, packet_feat_dim] tensors
+        (uint8; the caller casts to float32 once per assembled batch).
         """
         n_chunks = len(self.pending_packet_feats) // chunk_size
         if max_chunks is not None:
