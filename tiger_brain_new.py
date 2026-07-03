@@ -1140,20 +1140,6 @@ class TigerBrain:
             group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
             self.env.record_reappearances(group_true_labels, group_costs.tolist(), accepted=accepted_group)
 
-            # Post-buyin (supervised) confidence of an acquired G2: attribute
-            # this predicted-class group to the MAJORITY TRUE label of its
-            # members; if that label is a G2 already bought this episode, log
-            # the closed-set classification confidence the model now assigns
-            # its traffic. One point per occurrence, keyed per class -> a
-            # no-aggregation supervised_scores/<label> line per acquired G2.
-            if self.wbt and group_true_labels:
-                majority_true = Counter(group_true_labels).most_common(1)[0][0]
-                g2_stats = self.env.acquired_g2_stats.get(majority_true)
-                if g2_stats is not None and g2_stats['bought']:
-                    self.reporter.log_scalars(
-                        {f'supervised_scores/{majority_true}': group_confidence.item()},
-                        step=self.wb_tracker.step_counter)
-
             self.env.current_budget += classification_reward
 
             if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
@@ -1447,6 +1433,34 @@ class TigerBrain:
         if closed and self.wbt:
             self.reporter.log_scalars(closed, step=self.wb_tracker.step_counter)
 
+    def _log_supervised_zda_scores(self, true_label_names, online_anomaly_probs):
+        """
+        Post-buyin counterpart of the unsupervised_scores series, using the SAME
+        prototypical anomaly-detection confidence (_zda_confidence_for_subset),
+        NOT the closed-set classification confidence. For every G2 already bought
+        this episode whose traffic is present this tick, compute that class's
+        AD confidence over its own samples' anomaly probabilities -- selected by
+        TRUE label, over all online samples regardless of the known/anomaly
+        split -- and emit supervised_scores/<label>. So the same score that
+        unsupervised_scores tracks before the buy is tracked after it, letting
+        you read precisely how the anomaly score of a class's traffic shifts
+        once its prototype exists (even though the samples are no longer ZdAs).
+        One point per tick per bought G2 -> a no-aggregation line per G2.
+
+        `online_anomaly_probs` is zda_predictions[-num_online:] (per-online-sample
+        anomaly probability), aligned element-for-element with `true_label_names`.
+        """
+        scores = {}
+        for label in set(true_label_names):
+            stats = self.env.acquired_g2_stats.get(label)
+            if stats is None or not stats['bought']:
+                continue
+            member_idx = [i for i, name in enumerate(true_label_names) if name == label]
+            member_probs = online_anomaly_probs[member_idx]
+            scores[f'supervised_scores/{label}'] = self._zda_confidence_for_subset(member_probs).item()
+        if scores and self.wbt:
+            self.reporter.log_scalars(scores, step=self.wb_tracker.step_counter)
+
     def online_inference(self, online_batch):
         """
         Executes the online inference loop.
@@ -1502,6 +1516,15 @@ class TigerBrain:
         # carries the bought class on the wire closes it.
         if self.agency and self._pending_epistemic_delays:
             self._log_epistemic_delays(set(true_label_names))
+
+        # Post-buyin anomaly-detection confidence per already-bought G2 (the
+        # supervised_scores series). Same _zda_confidence measure as the
+        # pre-buy unsupervised_scores, now that the class has a prototype --
+        # so the two series read as one continuous before/after story of that
+        # class's AD score. Computed here so it sees every occurrence of the
+        # class, independent of the known/anomaly split downstream.
+        if self.agency:
+            self._log_supervised_zda_scores(true_label_names, zda_predictions[-num_online:])
 
         self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
         _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
