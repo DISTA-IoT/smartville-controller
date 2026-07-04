@@ -1048,12 +1048,13 @@ class TigerBrain:
         exteroceptive part is the next group's centroid, chained sequentially
         within the tick exactly like the cluster loop.
 
-        Every group -- accepted or blocked -- feeds `record_reappearances`,
-        the bought-G2 CTI-ROI tracker, since a reappearance is about the
-        traffic showing up again on the wire, not about the DM's decision.
-        Only accepted groups contribute their reward to that tracker's
-        net_values series, since a blocked group never earns or costs the
-        raw per-flow reward.
+        Every accepted group feeds `record_reappearances` for its reward side
+        (net_values / reward_since_purchase); a blocked group never earns or
+        costs the raw per-flow reward. The reappearance *counts* and their
+        cti_shots/cti_misses split are tallied separately, once per tick by true
+        label, in record_cti_reappearances -- so a bought-G2 sample the IM
+        deemed anomalous (a miss, which never reaches this known-traffic path)
+        is still counted.
         """
         if num_known == 0:
             return
@@ -1449,6 +1450,18 @@ class TigerBrain:
         # G1s, G2s) on the wire this episode.
         self.env.record_appearances(true_label_names)
 
+        # Post-buyin CTI hit/miss accounting per already-bought G2, split by the
+        # IM's anomaly-detection verdict (deemed Known = shot, still deemed
+        # anomaly = miss), independent of the DM's later decision. Counted by
+        # TRUE label over the whole online batch so misses (which flow to the
+        # unknown-cluster path, not act_on_known_traffic) are included, keeping
+        # reappearances == cti_shots + cti_misses. Per-episode scalars, reported
+        # at episode end. Runs before act_on_unknown_clusters performs this
+        # tick's own buys, so a class bought this very tick isn't counted until
+        # it next reappears (matching "after buying the label").
+        if self.agency:
+            self.env.record_cti_reappearances(true_label_names, pred_online_zda_mask.tolist())
+
         # Close out CTI-acquisition latencies here -- before act_on_unknown_clusters
         # can perform this tick's own purchases -- so a class bought this very tick
         # never self-triggers a zero delay; only a *later* tick that actually
@@ -1558,6 +1571,10 @@ class TigerBrain:
                     episode_metrics[f'reappearances/{label}'] = stats['reappearances']
                     episode_metrics[f'net_values/{label}'] = stats['reward_since_purchase']
                     episode_metrics[f'price_payed/{label}'] = stats['price_paid']
+                    # Post-buyin IM verdict split of the reappearances:
+                    # cti_shots + cti_misses == reappearances.
+                    episode_metrics[f'cti_shots/{label}'] = stats['cti_shots']
+                    episode_metrics[f'cti_misses/{label}'] = stats['cti_misses']
                 # Pre-purchase (unsupervised) per-G2 net cost/reward: what
                 # accepting that G2's traffic cost/earned this episode while
                 # it was still unbought, i.e. exactly the gap a no-epistemic-
