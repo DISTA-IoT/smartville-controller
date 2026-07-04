@@ -95,9 +95,15 @@ class NewTigerEnvironment:
         # the same 7 series (reappearances/<label>, post-buyin reward, and
         # CTI price paid -- reported as separate wandb series) whether or not
         # that label gets bought this episode.
+        # cti_shots / cti_misses split every post-buyin reappearance by the
+        # IM's anomaly-detection verdict on that sample (deemed Known vs. still
+        # deemed anomalous), independent of what the DM decides afterwards.
+        # Per-episode scalars, reported once at episode end alongside
+        # reappearances, and reappearances == cti_shots + cti_misses.
         self.acquired_g2_stats = {
             label: {'bought': False, 'price_paid': 0.0,
-                    'reappearances': 0, 'reward_since_purchase': 0.0}
+                    'reappearances': 0, 'reward_since_purchase': 0.0,
+                    'cti_shots': 0, 'cti_misses': 0}
             for label in self.init_knowledge['G2s']
         }
         # Fixed-key per-G2 series for the pre-purchase (unsupervised) regime:
@@ -127,22 +133,48 @@ class NewTigerEnvironment:
         # (see perform_epistemic_action) but acquire nothing.
         self.wasted_epistemic_actions = 0
 
+    def record_cti_reappearances(self, true_label_names, predicted_zda_flags):
+        """
+        Called once per online tick with the true label and the IM's anomaly-
+        detection verdict (predicted-zda True/False) of *every* online sample,
+        regardless of how the DM later acts on it. For each already-bought G2,
+        tallies how the IM now handles its post-purchase traffic on the wire:
+
+          - cti_shots  : samples correctly deemed KNOWN (not predicted-zda) --
+                         the freshly-installed prototype is catching them.
+          - cti_misses : samples still deemed ANOMALY (predicted-zda) despite
+                         the class having been bought -- the prototype isn't.
+
+        reappearances is their sum: every post-buyin reencounter on the wire,
+        so reappearances == cti_shots + cti_misses by construction. Counting is
+        by TRUE label over the whole online batch (both the known- and anomaly-
+        predicted splits), so a miss -- which flows to the unknown-cluster path
+        downstream, not act_on_known_traffic -- is still counted here. All three
+        are per-episode scalars, reset in reset() and reported at episode end.
+        """
+        for name, is_zda in zip(true_label_names, predicted_zda_flags):
+            stats = self.acquired_g2_stats.get(name)
+            if stats is None or not stats['bought']:
+                continue
+            stats['reappearances'] += 1
+            if is_zda:
+                stats['cti_misses'] += 1
+            else:
+                stats['cti_shots'] += 1
+
     def record_reappearances(self, true_label_names, per_sample_rewards, accepted):
         """
         Called once per known-traffic group from act_on_known_traffic,
         whether the DM accepted or blocked it, with the true label and
-        reward of just that group's members. The reappearance count tracks
-        every reencounter of an already-bought G2 label regardless of the
-        DM's decision -- it's about the traffic showing up again on the
-        wire, not about whether the DM let it through. The reward side
-        (reward_since_purchase, which *is* net_values) only accumulates on
-        accepted groups, since a blocked group never earns or costs the raw
-        per-flow reward. The CTI purchase price is tracked separately in
-        price_paid and is never netted against this reward, so net_values for
-        a benign G2 floors at zero rather than going negative. Only the
-        reappearance count and reward_since_purchase accumulate for G2 labels
-        already bought this episode -- pre-purchase occurrences are accounted
-        for by the unknown-cluster reward path, not this CTI-ROI tracker.
+        reward of just that group's members. Handles only the *reward* side of
+        the CTI-ROI tracker now (the reappearance/shot/miss counts live in
+        record_cti_reappearances, counted per tick by true label so misses are
+        included too). reward_since_purchase (which *is* net_values for a bought
+        G2) only accumulates on accepted groups, since a blocked group never
+        earns or costs the raw per-flow reward. The CTI purchase price is
+        tracked separately in price_paid and is never netted against this
+        reward, so net_values for a benign G2 floors at zero rather than going
+        negative.
 
         The non-G2 classes (Knowns and G1s) instead feed the episode-wide
         net_values tally here: their accepted known-traffic reward accrues
@@ -153,7 +185,6 @@ class NewTigerEnvironment:
         for name, reward in zip(true_label_names, per_sample_rewards):
             stats = self.acquired_g2_stats.get(name)
             if stats is not None and stats['bought']:
-                stats['reappearances'] += 1
                 if accepted:
                     stats['reward_since_purchase'] += reward
             elif accepted and name in self.net_values:
