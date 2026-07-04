@@ -370,6 +370,12 @@ class TigerBrain:
         self.best_cs_accuracy = 0
         self.best_AD_accuracy = 0
         self.best_KR_accuracy = 0
+        # CTI-acquisition-latency tracker: label -> step_counter at which that
+        # G2 was bought this episode, kept until the first later online tick
+        # whose batch actually contains that class again (which closes it and
+        # emits epistemic_delay/<label>). See perform_epistemic_action /
+        # _log_epistemic_delays.
+        self._pending_epistemic_delays = {}
         self.reset_train_cms()
         self.reset_test_cms()
         self.replay_buffers = {}
@@ -380,8 +386,13 @@ class TigerBrain:
         """
         Resets the environment and initializes inference modules.
         """
-        self.env.reset()    
+        self.env.reset()
         self.init_inference_neural_modules()
+        # A new episode forgets all bought CTI (env.reset restores the G2 set),
+        # so any purchase still waiting on its class to reappear is void: drop
+        # the pending epistemic-delay markers rather than closing them against
+        # the next episode's traffic.
+        self._pending_epistemic_delays = {}
         self.episode_count += 1
         
     def init_agents(self, args):
@@ -961,48 +972,13 @@ class TigerBrain:
         metrics = {mode+'/'+CS_ACC: acc.item(), mode+'/'+CS_LOSS: cs_loss.item()}
         return cs_loss, acc, metrics
 
-    def evaluate_zda_confidence(self, zda_predictions, predicted_online_zda_mask, num_of_online_samples):
-        """
-        Calculates confidence for anomaly detection.
-        """
-        online_anomaly_probs = zda_predictions[-num_of_online_samples:]
-
-        strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
-
-        if strategy == 'entropy':
-            probs = torch.cat([1 - online_anomaly_probs, online_anomaly_probs], dim=1)
-            self.zda_confidence = (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
-        elif strategy == 'energy':
-            p = online_anomaly_probs.clamp(1e-10, 1-1e-10)
-            l = torch.log(p / (1 - p))
-            # Symmetric energy: log(exp(l) + exp(-l)) using logsumexp for stability
-            logits = torch.cat([-l, l], dim=1)
-            self.zda_confidence = torch.logsumexp(logits, dim=1).mean().unsqueeze(-1)
-        elif strategy == 'margin':
-            self.zda_confidence = torch.abs(2 * online_anomaly_probs - 1).mean().unsqueeze(-1)
-        else: # baseline
-            online_non_anomaly_pred_probs = online_anomaly_probs[~predicted_online_zda_mask]
-            online_anomaly_pred_probs = online_anomaly_probs[predicted_online_zda_mask]
-
-            conf_normalizer = 0
-            if online_non_anomaly_pred_probs.shape[0] > 0:
-                self.zda_confidence += (1 - online_non_anomaly_pred_probs).mean()
-                conf_normalizer += 1
-            if online_anomaly_pred_probs.shape[0] > 0:
-                self.zda_confidence += online_anomaly_pred_probs.mean()
-                conf_normalizer += 1
-            if conf_normalizer > 0:
-                self.zda_confidence /= conf_normalizer
 
     def _zda_confidence_for_subset(self, probs):
         """
         Anomaly-detection confidence over an arbitrary subset of predicted-
         anomalous online samples (e.g. one collective-anomaly cluster's
-        members) -- same four strategies as evaluate_zda_confidence, which
-        stays as the tick-level (broadcast) metric for W&B reporting. This
-        is what act_on_unknown_clusters uses instead, so each cluster's
-        decision sees its own members' confidence rather than the whole
-        tick's.
+        members). Thisis what act_on_unknown_clusters uses, so each cluster's
+        decision sees its own members' confidence.
 
         Every member here is, by construction, predicted-anomalous (clusters
         are built only from the predicted-unknown subset), so the baseline
@@ -1352,6 +1328,7 @@ class TigerBrain:
 
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
+
             end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
 
             self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
@@ -1380,12 +1357,55 @@ class TigerBrain:
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
             }, step=self.wb_tracker.step_counter)
 
+    def _log_epistemic_delays(self, present_labels):
+        """
+        For every G2 bought in an earlier tick whose class now appears among
+        this tick's online true labels (`present_labels`), emit
+        epistemic_delay/<label> = current step_counter - purchase step_counter,
+        then stop tracking it. This is the CTI-acquisition latency: how many DM
+        steps elapse between paying for a class and the model next actually
+        seeing that class on the wire (where it can start being classified /
+        trained on as a Known). One point per acquisition -> a no-aggregation
+        line per G2.
+        """
+        closed = {}
+        for label, buy_step in list(self._pending_epistemic_delays.items()):
+            if label in present_labels:
+                closed[f'epistemic_delay/{label}'] = self.wb_tracker.step_counter - buy_step
+                del self._pending_epistemic_delays[label]
+        if closed and self.wbt:
+            self.reporter.log_scalars(closed, step=self.wb_tracker.step_counter)
+
+    def _log_zda_probs(self, true_label_names, online_anomaly_probs):
+        """
+        For every G2  this episode whose traffic is present this tick, 
+        compute that class's own samples' anomaly probabilities 
+        -- selected by TRUE label, over all online samples regardless of the known/anomaly
+        split -- and emit supervised_scores/<label>. 
+
+        `online_anomaly_probs` is zda_predictions[-num_online:] (per-online-sample
+        anomaly probability), aligned element-for-element with `true_label_names`.
+        """
+        scores = {}
+        for label in set(true_label_names):
+            stats = self.env.acquired_g2_stats.get(label)
+            if stats is None:
+                continue
+            
+            member_idx = [i for i, name in enumerate(true_label_names) if name == label]
+            member_probs = online_anomaly_probs[member_idx]
+            if not stats['bought']:
+                scores[f'unsupervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
+            else:
+                scores[f'supervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
+
+        if scores and self.wbt:
+            self.reporter.log_scalars(scores, step=self.wb_tracker.step_counter)
+
     def online_inference(self, online_batch):
         """
         Executes the online inference loop.
         """
-        self.cs_classif_confidence = torch.zeros(1)
-        self.zda_confidence = torch.zeros(1)
         
         self.classifier.eval()
         self.confidence_decoder.eval()
@@ -1429,9 +1449,22 @@ class TigerBrain:
         # G1s, G2s) on the wire this episode.
         self.env.record_appearances(true_label_names)
 
-        self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
+        # Close out CTI-acquisition latencies here -- before act_on_unknown_clusters
+        # can perform this tick's own purchases -- so a class bought this very tick
+        # never self-triggers a zero delay; only a *later* tick that actually
+        # carries the bought class on the wire closes it.
+        if self.agency and self._pending_epistemic_delays:
+            self._log_epistemic_delays(set(true_label_names))
+
+        # Anomaly-detection probabilities per G2s.
+        # Computed here so it sees every occurrence of the
+        # class, independent of the known/anomaly split downstream.
+        if self.agency:
+            self._log_zda_probs(true_label_names, zda_predictions[-num_online:])
+
         _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
             self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
+
 
         kr_metrics = {}
         if num_known > 0:
@@ -1471,8 +1504,6 @@ class TigerBrain:
                 'online_inference/real_num_of_anomalies': online_batch.zda_labels.sum().item(),
                 'online_inference/num_predicted_knowns': num_known.item(),
                 'online_inference/num_predicted_unknowns': num_anom.item(),
-                'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
-                'online_inference/zda_classif_confidence': self.zda_confidence.item(),
             }
             all_metrics.update(ad_metrics)
             all_metrics.update(cs_metrics)
@@ -1904,13 +1935,20 @@ class TigerBrain:
         """Acquires a CTI label, updating the knowledge base and replay buffers."""
         updates = self.env.perform_epistemic_action(target_label)
         new_label = updates['updated_label']
-        
+
         if new_label is not None:
             if self.encoder.update_label(new_label=new_label, logger=self.logger_instance):
                 self.current_known_classes_count += 1
                 self.add_replay_buffer(new_label)
                 self.reset_train_cms()
                 self.reset_test_cms()
+            # Stamp the purchase step so online_inference can later emit
+            # epistemic_delay/<label> = (steps until this class next shows up
+            # among an online batch's true labels). Recorded before this
+            # action's own step_counter increment (act_on_unknown_clusters
+            # increments it after perform_epistemic_action returns), i.e. the
+            # step of the buying decision itself.
+            self._pending_epistemic_delays[new_label] = self.wb_tracker.step_counter
         return updates
 
     def start_async_evaluation(self):
