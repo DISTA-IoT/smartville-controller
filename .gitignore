@@ -4,5 +4,6 @@ PrometheusLogs
 *.log
 tiger_data_collection
 .venv
-pre_recorded_data
+*.jsonl
+shard*
 .ipynb_checkpoints
