@@ -177,6 +177,7 @@ def job_overrides(
         # the recording happened to have set.
         "intrusion_detection.agency=false",
         "intrusion_detection.pretrained_inference=false",
+        "intrusion_detection.ad_loss_backprop_to_encoder=true",
         # Required for check_progress_and_save() to ever run -- see module
         # docstring. Harmless if the manifest already had it on.
         "intrusion_detection.online_evaluation=true",
