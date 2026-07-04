@@ -1297,20 +1297,6 @@ class TigerBrain:
             # centroid itself).
             member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
 
-            # Pre-buyin (unsupervised) confidence for a not-yet-bought G2:
-            # attribute this anomaly cluster to the MAJORITY TRUE label of its
-            # members; if that label is a G2 not yet bought this episode,
-            # remember to log the prototypical anomaly-detection confidence the
-            # detector assigns its traffic *before* CTI is acquired. Captured
-            # here -- before this iteration's own possible purchase flips the
-            # label's bought flag -- so the value is genuinely pre-buy.
-            unsup_label = None
-            if member_labels:
-                cand = Counter(member_labels).most_common(1)[0][0]
-                cand_stats = self.env.acquired_g2_stats.get(cand)
-                if cand_stats is not None and not cand_stats['bought']:
-                    unsup_label = cand
-
             if accepted_cluster:
                 member_rewards_tensor = anomalous_rewards[member_mask]
                 positive = torch.relu(member_rewards_tensor) * self.unknown_accept_reward_scale
@@ -1409,9 +1395,9 @@ class TigerBrain:
             member_idx = [i for i, name in enumerate(true_label_names) if name == label]
             member_probs = online_anomaly_probs[member_idx]
             if not stats['bought']:
-                scores[f'supervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
-            else:
                 scores[f'unsupervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
+            else:
+                scores[f'supervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
 
         if scores and self.wbt:
             self.reporter.log_scalars(scores, step=self.wb_tracker.step_counter)
@@ -1420,7 +1406,6 @@ class TigerBrain:
         """
         Executes the online inference loop.
         """
-        self.cs_classif_confidence = torch.zeros(1)
         
         self.classifier.eval()
         self.confidence_decoder.eval()
@@ -1477,6 +1462,10 @@ class TigerBrain:
         if self.agency:
             self._log_zda_probs(true_label_names, zda_predictions[-num_online:])
 
+        _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
+            self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
+
+
         kr_metrics = {}
         if num_known > 0:
             true_label_names_known = [name for name, is_zda in zip(true_label_names, pred_online_zda_mask.tolist()) if not is_zda]
@@ -1515,7 +1504,6 @@ class TigerBrain:
                 'online_inference/real_num_of_anomalies': online_batch.zda_labels.sum().item(),
                 'online_inference/num_predicted_knowns': num_known.item(),
                 'online_inference/num_predicted_unknowns': num_anom.item(),
-                'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
             }
             all_metrics.update(ad_metrics)
             all_metrics.update(cs_metrics)
