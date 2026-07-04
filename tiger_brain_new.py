@@ -204,13 +204,28 @@ class TigerBrain:
         # behaviour (gradients flow to the encoder).
         self.ad_loss_backprop_to_encoder = bool(
             self.intrusion_detection_kwargs.get('ad_loss_backprop_to_encoder', True))
+        # Max global grad-norm for the IM (classifier + confidence_decoder)
+        # update. The Mahalanobis confidence decoder backprops into the encoder
+        # through detached, floored whitening denominators (see
+        # im_models/mahalanobis.py): the surviving gradient into the hidden
+        # vectors is scaled by 1/within_var, which is bounded only by
+        # 1/var_floor = 1e4 and grows without bound as the representation
+        # collapses (Mahalanobis distance is scale-invariant in the forward
+        # pass, but its gradient w.r.t. the un-whitened coordinates scales as
+        # 1/scale). Over offline_replay's repeated passes this runs the encoder
+        # off to inf/NaN, which later surfaces as a NaN value/critic loss the
+        # moment those weights are loaded for an agency run (the DM's
+        # exteroceptive state is a summary of these hidden vectors). Clipping
+        # the update norm breaks that runaway. Set <= 0 to disable.
+        self.grad_clip_max_norm = float(
+            self.intrusion_detection_kwargs.get('grad_clip_max_norm', 10.0))
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
-            "ad_loss_backprop_to_encoder=%s\033[0m",
+            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.exclude_g1_from_ad_known_set, self.relational_state,
-            self.ad_loss_backprop_to_encoder)
+            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -605,21 +620,43 @@ class TigerBrain:
             self.classifier_path = f"{self.pretrained_models_dir}multiclass_flow{feats_str}_classifier_pretrained_h{self.hidden_size}.pt"
             self.confidence_decoder_path = f"{self.pretrained_models_dir}flow{feats_str}_confidence_decoder_pretrained_h{self.hidden_size}.pt"
 
-        if self.load_pretrained_inference_module:               
+        if self.load_pretrained_inference_module:
             if os.path.exists(self.pretrained_models_dir):
                 if os.path.exists(self.classifier_path):
                     self.classifier.load_state_dict(torch.load(self.classifier_path, weights_only=True))
+                    self._warn_if_non_finite(self.classifier, self.classifier_path, "classifier")
                     self.logger_instance.info(f"Pre-trained weights loaded from {self.classifier_path}")
                 else:
                     self.logger_instance.error(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
-                    
+
                 if self.multi_class and os.path.exists(self.confidence_decoder_path):
                     self.confidence_decoder.load_state_dict(torch.load(self.confidence_decoder_path, weights_only=True))
+                    self._warn_if_non_finite(self.confidence_decoder, self.confidence_decoder_path, "confidence decoder")
                     self.logger_instance.info(f"Pre-trained weights loaded from {self.confidence_decoder_path}")
                 else:
                     self.logger_instance.error(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
             else:
                 self.logger_instance.info(f"Pre-trained folder not found at {self.pretrained_models_dir}.")
+
+    def _warn_if_non_finite(self, model, path, name):
+        """Loudly flag (and sanitise) a pretrained checkpoint that already
+        contains NaN/Inf weights -- e.g. one written by a diverged Mahalanobis
+        pretraining run before the save guard existed. Left unsanitised these
+        weights NaN the DM's value loss the moment inference runs under agency.
+        We nan_to_num them so the run can at least start, but the model is
+        effectively untrained: retrain the IM with a lower learning rate or a
+        tighter intrusion_detection.grad_clip_max_norm."""
+        bad = [k for k, v in model.state_dict().items()
+               if torch.is_tensor(v) and not torch.isfinite(v).all()]
+        if bad:
+            self.logger_instance.error(
+                f'\033[91mLoaded {name} from {path} has non-finite (NaN/Inf) weights in '
+                f'{bad} -- this checkpoint is from a diverged pretraining run. Sanitising to '
+                f'zeros so the run can start, but retrain the IM (lower learning_rate / '
+                f'grad_clip_max_norm) before trusting these results.\033[0m')
+            with torch.no_grad():
+                for p in model.parameters():
+                    torch.nan_to_num_(p, nan=0.0, posinf=0.0, neginf=0.0)
 
     def infer(self, classifier, batch, known_classes_count, query_mask):
         """
@@ -1616,7 +1653,7 @@ class TigerBrain:
         the agent which regime (known vs. unknown traffic) this state
         belongs to.
         """
-        return torch.cat([
+        state_vec = torch.cat([
             centroid.squeeze(0),
             torch.tensor([
                 float(num_anom), float(zda_confidence),
@@ -1624,6 +1661,13 @@ class TigerBrain:
                 float(self.env.epistemic_actions_available), float(curr_budget)
             ], device=centroid.device, dtype=centroid.dtype)
         ])
+        # The exteroceptive block is a summary of the IM's hidden vectors; if a
+        # loaded encoder is corrupt (non-finite weights from a diverged
+        # pretraining run) this can be NaN/Inf, which propagates straight into
+        # the replay buffer and NaNs the agent's value/critic loss. Sanitise
+        # here, at the single point every state passes through, so the DM update
+        # stays finite regardless of the IM's health.
+        return torch.nan_to_num(state_vec, nan=0.0, posinf=0.0, neginf=0.0)
     
     def act(self, state_vec):
         """Gets action from the mitigation agent."""
@@ -1917,6 +1961,15 @@ class TigerBrain:
 
         self.optimizer.zero_grad()
         loss.backward()
+        # Clip the global grad-norm before stepping. Without this the
+        # Mahalanobis AD loss can amplify the encoder's gradient by 1/within_var
+        # (up to 1e4, unbounded as the representation collapses) and diverge the
+        # encoder to inf/NaN over offline_replay's repeated passes -- which then
+        # NaNs the DM's value loss when those weights are loaded for agency.
+        if self.grad_clip_max_norm and self.grad_clip_max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                list(self.classifier.parameters()) + list(self.confidence_decoder.parameters()),
+                self.grad_clip_max_norm)
         self.optimizer.step()
 
         
@@ -2085,7 +2138,21 @@ class TigerBrain:
 
     def save_model(self, model, path, name):
         """Saves a model's state dictionary to a file."""
-        torch.save(model.state_dict(), path)
+        state_dict = model.state_dict()
+        # Never persist a diverged checkpoint. A NaN/Inf in the classifier or
+        # confidence-decoder weights (e.g. after the Mahalanobis AD loss ran the
+        # encoder off to infinity) would otherwise be written to disk and later
+        # loaded for an agency run, where it NaNs the DM's value loss. Refuse to
+        # overwrite the last-good checkpoint with a corrupt one.
+        bad = [k for k, v in state_dict.items()
+               if torch.is_tensor(v) and not torch.isfinite(v).all()]
+        if bad:
+            self.logger_instance.error(
+                f'\033[91mRefusing to save {name}: non-finite (NaN/Inf) weights in '
+                f'{bad} -- the model has diverged. Keeping the previous checkpoint at '
+                f'{path}. Lower the learning rate or intrusion_detection.grad_clip_max_norm.\033[0m')
+            return
+        torch.save(state_dict, path)
         self.logger_instance.info(f'\033[95mNew {name} model version saved to {path}\033[0m')
 
     def get_accuracy(self, logits_preds, decimal_labels, accuracy_mask=None):

@@ -184,6 +184,13 @@ class ConfidenceDecoder(nn.Module):
         # while preserving the natural RMD=0 -> prob 0.5 decision boundary
         # (< 0.5 in-distribution, > 0.5 novelty).
         z = min_rmd / float(D)
+        # Defensive guard: sanitise any non-finite z (e.g. if the encoder's
+        # hidden vectors have already blown up under some other loss) and clamp
+        # to a wide finite range before the sigmoid. sigmoid(+-30) is already
+        # 0/1 to ~1e-13, so this is a no-op on the healthy regime's forward
+        # scores, but it stops a NaN/inf from ever propagating out of the AD
+        # head into the BCE loss (and thence into the encoder / the DM state).
+        z = torch.nan_to_num(z, nan=0.0, posinf=30.0, neginf=-30.0).clamp(-30.0, 30.0)
         return torch.sigmoid(z).unsqueeze(-1)                                 # [Q, 1]
 
 
