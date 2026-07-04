@@ -972,48 +972,13 @@ class TigerBrain:
         metrics = {mode+'/'+CS_ACC: acc.item(), mode+'/'+CS_LOSS: cs_loss.item()}
         return cs_loss, acc, metrics
 
-    def evaluate_zda_confidence(self, zda_predictions, predicted_online_zda_mask, num_of_online_samples):
-        """
-        Calculates confidence for anomaly detection.
-        """
-        online_anomaly_probs = zda_predictions[-num_of_online_samples:]
-
-        strategy = self.kwargs['intrusion_detection'].get('confidence_strategy', 'baseline')
-
-        if strategy == 'entropy':
-            probs = torch.cat([1 - online_anomaly_probs, online_anomaly_probs], dim=1)
-            self.zda_confidence = (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
-        elif strategy == 'energy':
-            p = online_anomaly_probs.clamp(1e-10, 1-1e-10)
-            l = torch.log(p / (1 - p))
-            # Symmetric energy: log(exp(l) + exp(-l)) using logsumexp for stability
-            logits = torch.cat([-l, l], dim=1)
-            self.zda_confidence = torch.logsumexp(logits, dim=1).mean().unsqueeze(-1)
-        elif strategy == 'margin':
-            self.zda_confidence = torch.abs(2 * online_anomaly_probs - 1).mean().unsqueeze(-1)
-        else: # baseline
-            online_non_anomaly_pred_probs = online_anomaly_probs[~predicted_online_zda_mask]
-            online_anomaly_pred_probs = online_anomaly_probs[predicted_online_zda_mask]
-
-            conf_normalizer = 0
-            if online_non_anomaly_pred_probs.shape[0] > 0:
-                self.zda_confidence += (1 - online_non_anomaly_pred_probs).mean()
-                conf_normalizer += 1
-            if online_anomaly_pred_probs.shape[0] > 0:
-                self.zda_confidence += online_anomaly_pred_probs.mean()
-                conf_normalizer += 1
-            if conf_normalizer > 0:
-                self.zda_confidence /= conf_normalizer
 
     def _zda_confidence_for_subset(self, probs):
         """
         Anomaly-detection confidence over an arbitrary subset of predicted-
         anomalous online samples (e.g. one collective-anomaly cluster's
-        members) -- same four strategies as evaluate_zda_confidence, which
-        stays as the tick-level (broadcast) metric for W&B reporting. This
-        is what act_on_unknown_clusters uses instead, so each cluster's
-        decision sees its own members' confidence rather than the whole
-        tick's.
+        members). Thisis what act_on_unknown_clusters uses, so each cluster's
+        decision sees its own members' confidence.
 
         Every member here is, by construction, predicted-anomalous (clusters
         are built only from the predicted-unknown subset), so the baseline
@@ -1378,14 +1343,6 @@ class TigerBrain:
             self.env.steps_done += 1
             self.wb_tracker.step_counter += 1
 
-            # Emitted at this cluster-decision's own step (post-increment), one
-            # point per occurrence -> a no-aggregation unsupervised_scores/<label>
-            # line per G2 while it is still unbought.
-            if self.wbt and unsup_label is not None:
-                self.reporter.log_scalars(
-                    {f'unsupervised_scores/{unsup_label}': cluster_zda_confidence.item()},
-                    step=self.wb_tracker.step_counter)
-
             end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
 
             self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
@@ -1433,19 +1390,12 @@ class TigerBrain:
         if closed and self.wbt:
             self.reporter.log_scalars(closed, step=self.wb_tracker.step_counter)
 
-    def _log_supervised_zda_scores(self, true_label_names, online_anomaly_probs):
+    def _log_zda_probs(self, true_label_names, online_anomaly_probs):
         """
-        Post-buyin counterpart of the unsupervised_scores series, using the SAME
-        prototypical anomaly-detection confidence (_zda_confidence_for_subset),
-        NOT the closed-set classification confidence. For every G2 already bought
-        this episode whose traffic is present this tick, compute that class's
-        AD confidence over its own samples' anomaly probabilities -- selected by
-        TRUE label, over all online samples regardless of the known/anomaly
-        split -- and emit supervised_scores/<label>. So the same score that
-        unsupervised_scores tracks before the buy is tracked after it, letting
-        you read precisely how the anomaly score of a class's traffic shifts
-        once its prototype exists (even though the samples are no longer ZdAs).
-        One point per tick per bought G2 -> a no-aggregation line per G2.
+        For every G2  this episode whose traffic is present this tick, 
+        compute that class's own samples' anomaly probabilities 
+        -- selected by TRUE label, over all online samples regardless of the known/anomaly
+        split -- and emit supervised_scores/<label>. 
 
         `online_anomaly_probs` is zda_predictions[-num_online:] (per-online-sample
         anomaly probability), aligned element-for-element with `true_label_names`.
@@ -1453,11 +1403,16 @@ class TigerBrain:
         scores = {}
         for label in set(true_label_names):
             stats = self.env.acquired_g2_stats.get(label)
-            if stats is None or not stats['bought']:
+            if stats is None:
                 continue
+            
             member_idx = [i for i, name in enumerate(true_label_names) if name == label]
             member_probs = online_anomaly_probs[member_idx]
-            scores[f'supervised_scores/{label}'] = self._zda_confidence_for_subset(member_probs).item()
+            if not stats['bought']:
+                scores[f'supervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
+            else:
+                scores[f'unsupervised_scores/{label}'] = member_probs.mean().unsqueeze(-1).item()
+
         if scores and self.wbt:
             self.reporter.log_scalars(scores, step=self.wb_tracker.step_counter)
 
@@ -1466,7 +1421,6 @@ class TigerBrain:
         Executes the online inference loop.
         """
         self.cs_classif_confidence = torch.zeros(1)
-        self.zda_confidence = torch.zeros(1)
         
         self.classifier.eval()
         self.confidence_decoder.eval()
@@ -1517,18 +1471,11 @@ class TigerBrain:
         if self.agency and self._pending_epistemic_delays:
             self._log_epistemic_delays(set(true_label_names))
 
-        # Post-buyin anomaly-detection confidence per already-bought G2 (the
-        # supervised_scores series). Same _zda_confidence measure as the
-        # pre-buy unsupervised_scores, now that the class has a prototype --
-        # so the two series read as one continuous before/after story of that
-        # class's AD score. Computed here so it sees every occurrence of the
+        # Anomaly-detection probabilities per G2s.
+        # Computed here so it sees every occurrence of the
         # class, independent of the known/anomaly split downstream.
         if self.agency:
-            self._log_supervised_zda_scores(true_label_names, zda_predictions[-num_online:])
-
-        self.evaluate_zda_confidence(zda_predictions, pred_online_zda_mask, num_online)
-        _, cs_acc, class_preds, interest_logits_slice, number_of_known_classes = \
-            self.perform_cs_inference(merged_batch, logits, pred_online_zda_mask, num_online, num_known)
+            self._log_zda_probs(true_label_names, zda_predictions[-num_online:])
 
         kr_metrics = {}
         if num_known > 0:
@@ -1569,7 +1516,6 @@ class TigerBrain:
                 'online_inference/num_predicted_knowns': num_known.item(),
                 'online_inference/num_predicted_unknowns': num_anom.item(),
                 'online_inference/known_classif_confidente': self.cs_classif_confidence.item(),
-                'online_inference/zda_classif_confidence': self.zda_confidence.item(),
             }
             all_metrics.update(ad_metrics)
             all_metrics.update(cs_metrics)
