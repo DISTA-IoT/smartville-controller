@@ -1820,7 +1820,7 @@ class TigerBrain:
             cummulative_os_cm += batch_os_cm
             zda_balance = zda_labels[accuracy_mask].to(torch.float32).mean().item()
             neg_w = 1 - zda_balance
-            cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, positive_weight=zda_balance, negative_weight=neg_w)
+            cummulative_os_acc = get_balanced_accuracy(cummulative_os_cm, negative_weight=neg_w)
 
         metrics = {mode+'/'+OS_ACC: cummulative_os_acc.item(), mode+'/'+OS_LOSS: os_loss.item(), mode+'/'+ANOMALY_BALANCE: zda_balance}
         return os_loss, cummulative_os_acc, metrics
@@ -1999,7 +1999,7 @@ class TigerBrain:
                         l_os_cm += b_os_cm
                         pos_w = zda_l.to(torch.float32).mean().item()
                         neg_w = 1 - pos_w
-                        ad_acc = get_balanced_accuracy(b_os_cm, positive_weight=pos_w, negative_weight=neg_w).item()
+                        ad_acc = get_balanced_accuracy(b_os_cm, negative_weight=neg_w).item()
                     else:
                         ad_acc = 1.0
                         zda_l = eval_batch.zda_labels[q_mask]
