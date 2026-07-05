@@ -1630,6 +1630,8 @@ class TigerBrain:
                     # cti_shots + cti_misses == reappearances.
                     episode_metrics[f'cti_shots/{label}'] = stats['cti_shots']
                     episode_metrics[f'cti_misses/{label}'] = stats['cti_misses']
+                    # Reencounters after the AD oracle (level 2) was bought.
+                    episode_metrics[f'oracled_reappearances/{label}'] = stats['oracled_reappearances']
                 # Pre-purchase (unsupervised) per-G2 net cost/reward: what
                 # accepting that G2's traffic cost/earned this episode while
                 # it was still unbought, i.e. exactly the gap a no-epistemic-

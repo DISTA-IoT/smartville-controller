@@ -118,7 +118,8 @@ class NewTigerEnvironment:
             label: {'bought': False, 'price_paid': 0.0,
                     'reappearances': 0, 'reward_since_purchase': 0.0,
                     'cti_shots': 0, 'cti_misses': 0,
-                    'oracle_ad': False, 'oracle_price_paid': 0.0}
+                    'oracle_ad': False, 'oracle_price_paid': 0.0,
+                    'oracled_reappearances': 0}
             for label in self.init_knowledge['G2s']
         }
         # Labels whose AD oracle has been bought (level-2 epistemic action):
@@ -176,6 +177,9 @@ class NewTigerEnvironment:
             if stats is None or not stats['bought']:
                 continue
             stats['reappearances'] += 1
+            # Post-oracle (level-2) reencounters, a subset of reappearances.
+            if name in self.ad_oracle_labels:
+                stats['oracled_reappearances'] += 1
             if is_zda:
                 stats['cti_misses'] += 1
             else:
