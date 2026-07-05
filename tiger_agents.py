@@ -42,7 +42,7 @@ class DAIF_Agent:
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs).to(self.device)
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
-                self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
+                self.kl_divergence_regularisation_factor = float(kwargs['transitionnet_kl_divergence_regularisation_factor'])
             else:
                 self.transitionnet = NewTransitionNet(kwargs).to(self.device)
 
@@ -320,7 +320,7 @@ class DAIP_Agent:
             if self.variational_t_model:
                 self.transitionnet = VariationalTransitionNet(kwargs).to(self.device)
                 self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
-                self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
+                self.kl_divergence_regularisation_factor = float(kwargs['transitionnet_kl_divergence_regularisation_factor'])
             else:
                 self.transitionnet = NewTransitionNet(kwargs).to(self.device)
 
@@ -584,7 +584,7 @@ class DAIA_Agent:
         if self.variational_t_model:
             self.transitionnet = VariationalTransitionNet(kwargs).to(self.device)
             self.variational_variational_transition_loss = kwargs['variational_variational_transition_loss']
-            self.kl_divergence_regularisation_factor = kwargs['transitionnet_kl_divergence_regularisation_factor']
+            self.kl_divergence_regularisation_factor = float(kwargs['transitionnet_kl_divergence_regularisation_factor'])
         else:
             self.transitionnet = NewTransitionNet(kwargs).to(self.device)
 
@@ -826,14 +826,14 @@ class DAISA_Agent:
 
         self.policynet = PolicyNet(kwargs).to(self.device)
         self.policynet_optimizer = optim.Adam(self.policynet.parameters(), lr=kwargs['learning_rate'])
-        self.temperature_for_action_sampling = kwargs['temperature_for_action_sampling']
-        self.entropy_reg_coefficient = kwargs['entropy_reg_coefficient']
+        self.temperature_for_action_sampling = float(kwargs['temperature_for_action_sampling'])
+        self.entropy_reg_coefficient = float(kwargs['entropy_reg_coefficient'])
         self.greedy_update = kwargs['greedy_update']
         self.memory_size = int(kwargs['agent_memory_size'])
         self.memory = [None] * self.memory_size
         self.memory_position = 0
         self.memory_size_actual = 0
-        self.sequential_memory_size = kwargs['actor_train_interval_steps']
+        self.sequential_memory_size = int(kwargs['actor_train_interval_steps'])
         self.reset_sequential_memory()
         self.replay_batch_size = int(kwargs['replay_batch_size'])
         self.value_loss_fn = nn.MSELoss(reduction='mean')
