@@ -891,6 +891,24 @@ class TigerBrain:
             zda_predictions = batch.zda_labels[query_mask]
             predicted_zda_mask = zda_predictions.to(torch.bool).squeeze(-1)
 
+        # Two-level epistemic action: for any class whose AD oracle was bought
+        # (level 2), stop using the IM's verdict and take the ground-truth zda
+        # label (Known, since the class moved to Knowns at level 1). Composes
+        # with use_neural_AD -- a no-op when it is off (that branch already uses
+        # ground truth). Overriding the whole query subset is safe: only the
+        # online tail feeds downstream decisions/metrics.
+        if self.env.ad_oracle_labels:
+            codes = self.encoder.get_codes_for_labels(self.env.ad_oracle_labels)
+            if codes:
+                codes_t = torch.tensor(codes, device=self.device, dtype=batch.class_labels.dtype)
+                oracle_mask = torch.isin(batch.class_labels[query_mask].squeeze(-1), codes_t)
+                if oracle_mask.any():
+                    gt = batch.zda_labels[query_mask]
+                    zda_predictions = zda_predictions.clone()
+                    zda_predictions[oracle_mask] = gt[oracle_mask].to(zda_predictions.dtype)
+                    predicted_zda_mask = predicted_zda_mask.clone()
+                    predicted_zda_mask[oracle_mask] = gt[oracle_mask].squeeze(-1).to(torch.bool)
+
         return zda_predictions, predicted_zda_mask
     
     def prepare_online_batch(self, online_batch):
@@ -1568,12 +1586,12 @@ class TigerBrain:
             if self.wbt:
                 steps = self.env.steps_done
                 episode_return = torch.Tensor(self.env.episode_rewards).sum()
-                # Episode outcome: with legacy win-termination on, exactly one
-                # of win/bankrupt/timeout is true; with
-                # disable_budget_win_termination on, only bankrupt/timeout are
-                # reachable. Logged as 0/1 so their running means read directly
-                # as win-rate / failure-rate / timeout-rate 
-                ended_bankrupt = self.env.current_budget < self.env.min_budget
+                # Episode outcome flags, each gated by its termination knob so a
+                # flag is set only when that condition actually ends the episode.
+                # With both win/bankrupt termination on, exactly one is true.
+                # Logged as 0/1 so their means read as win/failure/timeout rate.
+                ended_bankrupt = (not self.env.disable_budget_bankrupt_termination) \
+                    and self.env.current_budget < self.env.min_budget
                 ended_timeout = steps >= self.env.max_episode_steps
                 ended_win = (not self.env.disable_budget_win_termination) \
                     and self.env.current_budget > self.env.max_budget
@@ -1612,6 +1630,8 @@ class TigerBrain:
                     # cti_shots + cti_misses == reappearances.
                     episode_metrics[f'cti_shots/{label}'] = stats['cti_shots']
                     episode_metrics[f'cti_misses/{label}'] = stats['cti_misses']
+                    # Reencounters after the AD oracle (level 2) was bought.
+                    episode_metrics[f'oracled_reappearances/{label}'] = stats['oracled_reappearances']
                 # Pre-purchase (unsupervised) per-G2 net cost/reward: what
                 # accepting that G2's traffic cost/earned this episode while
                 # it was still unbought, i.e. exactly the gap a no-epistemic-

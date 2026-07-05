@@ -26,6 +26,19 @@ class NewTigerEnvironment:
         # fixed-horizon return. Defaults to False (legacy win-termination).
         self.disable_budget_win_termination = bool(
             kwargs.intrusion_detection.get('disable_budget_win_termination', False))
+        # When True, episodes no longer terminate on bankruptcy (< min_budget),
+        # so a run can keep exploring past a deep negative budget. Episodes then
+        # end only on the step horizon (and, unless disabled, the win threshold).
+        # Default False (legacy bankrupt termination).
+        self.disable_budget_bankrupt_termination = bool(
+            kwargs.intrusion_detection.get('disable_budget_bankrupt_termination', False))
+        # Two-level epistemic actions: when True, a second epistemic action on
+        # an already-acquired G2 (bought at level 1, now a Known) is no longer
+        # wasted -- it buys the AD oracle for that class (see
+        # perform_epistemic_action / online_anomaly_detection). Default False
+        # reproduces the single-level behaviour (a repeat buy is wasted).
+        self.two_level_epistemic = bool(
+            kwargs.intrusion_detection.get('two_level_epistemic_actions', False))
         # Stable, full set of class names across the episode: the initial
         # Knowns/G1s/G2s partition. Buying a G2 only moves it from G2s to
         # Knowns, so this union is invariant and gives every per-class wandb
@@ -66,16 +79,25 @@ class NewTigerEnvironment:
             if idx < num_g2s:
                 label = g2s[idx]
                 self.current_cti_options[label] = abs(self.flow_rewards_dict[label] * self.current_cti_price_factor)
-                self.epistemic_actions_available = 1
             else:
                 # if we do not have unknowns anymore, then lets put a placeholder in the state space (with high cost).
-                self.current_cti_options[f'placeholder_{idx}'] = 100 
-                self.epistemic_actions_available = 0
+                self.current_cti_options[f'placeholder_{idx}'] = 100
+
+        # A level-1 buy is available while an unbought G2 remains. With
+        # two_level_epistemic on, a level-2 buy (the AD oracle) is available for
+        # any already-bought G2 not yet oracle'd. getattr guards the first call,
+        # which runs (via reset_intelligence) before reset() sets these.
+        level2_available = self.two_level_epistemic and any(
+            s['bought'] and label not in getattr(self, 'ad_oracle_labels', set())
+            for label, s in getattr(self, 'acquired_g2_stats', {}).items())
+        self.epistemic_actions_available = 1 if (num_g2s > 0 or level2_available) else 0
 
 
     def has_episode_ended(self):
-        if self.current_budget < self.min_budget \
-                or self.steps_done >= self.max_episode_steps:
+        if self.steps_done >= self.max_episode_steps:
+            return True
+        if not self.disable_budget_bankrupt_termination \
+                and self.current_budget < self.min_budget:
             return True
         if not self.disable_budget_win_termination \
                 and self.current_budget > self.max_budget:
@@ -103,9 +125,15 @@ class NewTigerEnvironment:
         self.acquired_g2_stats = {
             label: {'bought': False, 'price_paid': 0.0,
                     'reappearances': 0, 'reward_since_purchase': 0.0,
-                    'cti_shots': 0, 'cti_misses': 0}
+                    'cti_shots': 0, 'cti_misses': 0,
+                    'oracle_ad': False, 'oracle_price_paid': 0.0,
+                    'oracled_reappearances': 0}
             for label in self.init_knowledge['G2s']
         }
+        # Labels whose AD oracle has been bought (level-2 epistemic action):
+        # their online samples are forced Known without consulting the IM for
+        # the rest of the episode. Reset every episode, like the knowledge base.
+        self.ad_oracle_labels = set()
         # Fixed-key per-G2 series for the pre-purchase (unsupervised) regime:
         # net reward/cost accrued this episode from *accepting* a G2 cluster
         # in act_on_unknown_clusters, before that label has been bought.
@@ -157,6 +185,9 @@ class NewTigerEnvironment:
             if stats is None or not stats['bought']:
                 continue
             stats['reappearances'] += 1
+            # Post-oracle (level-2) reencounters, a subset of reappearances.
+            if name in self.ad_oracle_labels:
+                stats['oracled_reappearances'] += 1
             if is_zda:
                 stats['cti_misses'] += 1
             else:
@@ -283,6 +314,10 @@ class NewTigerEnvironment:
         structure a state-conditioned policy can learn to avoid (by reading
         the cluster's centroid/confidence) and a blind scripted policy
         (greedy/periodic CTI) cannot.
+
+        Exception (two_level_epistemic on): if `target_label` is a G2 already
+        bought at level 1 but not yet AD-oracle'd, the buy is a level-2 action
+        instead of wasted -- it acquires the AD oracle for that class.
         """
         g2s = self.current_knowledge['G2s']
 
@@ -290,6 +325,26 @@ class NewTigerEnvironment:
             target_label = list(self.current_cti_options.keys())[0]
 
         if target_label not in g2s:
+            # Second-level epistemic action: the target is a G2 already acquired
+            # at level 1 (now a Known) but not yet AD-oracle'd. With
+            # two_level_epistemic on, this is productive rather than wasted -- it
+            # buys the AD oracle for that class (full price, nothing added to the
+            # knowledge base). Its samples are henceforth flagged Known without
+            # consulting the IM (see online_anomaly_detection).
+            stats = self.acquired_g2_stats.get(target_label)
+            if self.two_level_epistemic and stats is not None \
+                    and stats['bought'] and target_label not in self.ad_oracle_labels:
+                self.epistemic_actions += 1
+                self.ad_oracle_labels.add(target_label)
+                price_payed = abs(self.flow_rewards_dict[target_label] * self.current_cti_price_factor)
+                stats['oracle_ad'] = True
+                stats['oracle_price_paid'] = price_payed
+                self.update_cti_options()
+                return {'updated_label': None,
+                        'current_knowledge': self.current_knowledge,
+                        'price_payed': price_payed,
+                        'wasted': False}
+
             self.wasted_epistemic_actions += 1
             price_payed = abs(self.flow_rewards_dict.get(target_label, 0.0) * self.current_cti_price_factor)
             return {'updated_label': None,
@@ -304,11 +359,14 @@ class NewTigerEnvironment:
         self.current_knowledge['Knowns'].append(acquired_cti)
         self.current_knowledge['updated_labels'].append(acquired_cti)
         price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
-        self.update_cti_options()
 
+        # Mark bought before update_cti_options so it can see this class as a
+        # fresh level-2 candidate (relevant once this is the last unbought G2).
         stats = self.acquired_g2_stats[acquired_cti]
         stats['bought'] = True
         stats['price_paid'] = price_payed
+
+        self.update_cti_options()
 
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,
