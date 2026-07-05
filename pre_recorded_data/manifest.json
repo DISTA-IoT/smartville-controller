@@ -35,6 +35,7 @@
     "use_neural_CS": true,
     "ad_loss_backprop_to_encoder": false,
     "exclude_g1_from_ad_known_set": false,
+    "ad_threshold": 0.75,
     "online_evaluation": false,
     "online_evaluation_rounds": "10",
     "pretrained_inference": true,
