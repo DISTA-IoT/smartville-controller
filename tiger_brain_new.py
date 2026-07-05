@@ -193,6 +193,12 @@ class TigerBrain:
         # (legacy behaviour: G1 counts as known at inference).
         self.exclude_g1_from_ad_known_set = bool(
             self.intrusion_detection_kwargs.get('exclude_g1_from_ad_known_set', False))
+        # Decision threshold applied to the confidence decoder's anomaly
+        # probability (zda_predictions) to obtain the binary Known/anomaly
+        # verdict, both for the online decision path and for the AD
+        # confusion-matrix/accuracy metrics.
+        self.ad_threshold = float(
+            self.intrusion_detection_kwargs.get('ad_threshold', 0.75))
         # When True, the DM's exteroceptive state is a fixed-size, relational
         # summary of the group's/cluster's similarity to the known-class
         # prototypes (see _relational_summary), instead of the absolute
@@ -236,10 +242,10 @@ class TigerBrain:
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
-            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s\033[0m",
+            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.exclude_g1_from_ad_known_set, self.relational_state,
-            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm)
+            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -915,7 +921,7 @@ class TigerBrain:
                 self.logger_instance.error(f'Confidence decoder error: {e}')
                 raise RuntimeError(f'Confidence decoder error: {e}')
         
-            predicted_zda_mask = (zda_predictions > 0.5).to(torch.bool).squeeze(-1)
+            predicted_zda_mask = (zda_predictions > self.ad_threshold).to(torch.bool).squeeze(-1)
         else:
             zda_predictions = batch.zda_labels[query_mask]
             predicted_zda_mask = zda_predictions.to(torch.bool).squeeze(-1)
@@ -1290,7 +1296,7 @@ class TigerBrain:
         # bypassing no_epistemic_actions entirely.
         cti_period = int(self.intrusion_detection_kwargs.get('cti_period', -1))
         if cti_period != -1:
-            if self.wb_tracker.step_counter % cti_period == 0 \
+            if self.env.steps_done % cti_period == 0 \
                     and self.env.epistemic_actions_available == 1:
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
@@ -2025,7 +2031,7 @@ class TigerBrain:
             onehot_zda_labels = torch.zeros(size=(zda_labels.shape[0], 2), device=self.device).long()
             onehot_zda_labels.scatter_(1, zda_labels.long().view(-1, 1), 1)
 
-            batch_os_cm = efficient_os_cm(preds=(zda_predictions[accuracy_mask].detach() > 0.5).long(), targets_onehot=onehot_zda_labels[accuracy_mask].long())
+            batch_os_cm = efficient_os_cm(preds=(zda_predictions[accuracy_mask].detach() > self.ad_threshold).long(), targets_onehot=onehot_zda_labels[accuracy_mask].long())
 
             cummulative_os_cm = (self.training_os_cm if mode == TRAINING else self.eval_os_cm)
             cummulative_os_cm += batch_os_cm
@@ -2260,7 +2266,7 @@ class TigerBrain:
                             known_class_mask=k_mask)
                         zda_l = eval_batch.zda_labels[q_mask]
                         oh_zda = torch.zeros(size=(zda_l.shape[0], 2), device=self.device).long().scatter(1, zda_l.long().view(-1, 1), 1)
-                        b_os_cm = efficient_os_cm(preds=(zda_p > 0.5).long(), targets_onehot=oh_zda)
+                        b_os_cm = efficient_os_cm(preds=(zda_p > self.ad_threshold).long(), targets_onehot=oh_zda)
                         l_os_cm += b_os_cm
                         pos_w = zda_l.to(torch.float32).mean().item()
                         neg_w = 1 - pos_w
