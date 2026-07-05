@@ -35,6 +35,7 @@
     "use_neural_CS": true,
     "ad_loss_backprop_to_encoder": false,
     "exclude_g1_from_ad_known_set": false,
+    "ad_threshold": 0.75,
     "online_evaluation": false,
     "online_evaluation_rounds": "10",
     "pretrained_inference": true,
@@ -46,7 +47,7 @@
     "max_episode_steps": "1500",
     "multi_class": true,
     "tiger_init_budget": "1",
-    "cti_price_factor": "2",
+    "cti_price_factor": "200",
     "price_decay": false,
     "replay_batch_size": "32",
     "replay_buffer_max_capacity": "10000",
@@ -91,7 +92,13 @@
     "use_critic_to_act": true,
     "greedy_update": true,
     "leaky_relu_alpha": "0.2",
-    "custom_inference_model_path": false
+    "custom_inference_model_path": false,
+    "cti_label_noise": 0.0, 
+    "cti_label_noise_mode": "nearest",
+    "cti_capture_fraction": 1.0,
+    "cti_delivery_delay": 0,
+    "cti_delivery_jitter": 0,
+    "cti_quality_coupling": "none"
   },
   "neural_modules": {
     "first_stream_input_size": "4",
