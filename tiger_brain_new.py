@@ -1586,12 +1586,12 @@ class TigerBrain:
             if self.wbt:
                 steps = self.env.steps_done
                 episode_return = torch.Tensor(self.env.episode_rewards).sum()
-                # Episode outcome: with legacy win-termination on, exactly one
-                # of win/bankrupt/timeout is true; with
-                # disable_budget_win_termination on, only bankrupt/timeout are
-                # reachable. Logged as 0/1 so their running means read directly
-                # as win-rate / failure-rate / timeout-rate 
-                ended_bankrupt = self.env.current_budget < self.env.min_budget
+                # Episode outcome flags, each gated by its termination knob so a
+                # flag is set only when that condition actually ends the episode.
+                # With both win/bankrupt termination on, exactly one is true.
+                # Logged as 0/1 so their means read as win/failure/timeout rate.
+                ended_bankrupt = (not self.env.disable_budget_bankrupt_termination) \
+                    and self.env.current_budget < self.env.min_budget
                 ended_timeout = steps >= self.env.max_episode_steps
                 ended_win = (not self.env.disable_budget_win_termination) \
                     and self.env.current_budget > self.env.max_budget

@@ -26,6 +26,12 @@ class NewTigerEnvironment:
         # fixed-horizon return. Defaults to False (legacy win-termination).
         self.disable_budget_win_termination = bool(
             kwargs.intrusion_detection.get('disable_budget_win_termination', False))
+        # When True, episodes no longer terminate on bankruptcy (< min_budget),
+        # so a run can keep exploring past a deep negative budget. Episodes then
+        # end only on the step horizon (and, unless disabled, the win threshold).
+        # Default False (legacy bankrupt termination).
+        self.disable_budget_bankrupt_termination = bool(
+            kwargs.intrusion_detection.get('disable_budget_bankrupt_termination', False))
         # Two-level epistemic actions: when True, a second epistemic action on
         # an already-acquired G2 (bought at level 1, now a Known) is no longer
         # wasted -- it buys the AD oracle for that class (see
@@ -88,8 +94,10 @@ class NewTigerEnvironment:
 
 
     def has_episode_ended(self):
-        if self.current_budget < self.min_budget \
-                or self.steps_done >= self.max_episode_steps:
+        if self.steps_done >= self.max_episode_steps:
+            return True
+        if not self.disable_budget_bankrupt_termination \
+                and self.current_budget < self.min_budget:
             return True
         if not self.disable_budget_win_termination \
                 and self.current_budget > self.max_budget:
