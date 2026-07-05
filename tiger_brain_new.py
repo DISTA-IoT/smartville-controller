@@ -2124,6 +2124,18 @@ class TigerBrain:
 
         
 
+        # Plot the training confusion matrices BEFORE the report block resets
+        # them. plot_step_freq (default 150) is a multiple of report_step_freq
+        # (default 5), so every plotting step is also a reporting step; running
+        # the report block first (which calls reset_train_cms) would zero
+        # training_cs_cm / training_os_cm before reporter.report reads them,
+        # rendering an all-zero confusion matrix in wandb. Plotting first shows
+        # the matrices accumulated over the current report window, then the
+        # report block windows the scalar metrics and resets, as before.
+        if self.wb_tracker.step_counter % self.plot_step_freq == 0:
+            plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
+            if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
+
         if self.wb_tracker.step_counter % self.report_step_freq == 0:
             all_metrics = {}
             all_metrics.update(ad_metrics)
@@ -2131,10 +2143,6 @@ class TigerBrain:
             all_metrics.update(cs_metrics)
             self.reset_train_cms()
             self.reporter.log_scalars(all_metrics, step=self.wb_tracker.step_counter)
-
-        if self.wb_tracker.step_counter % self.plot_step_freq == 0:
-            plots = self.reporter.report(logits[:,known_h_mask], hiddens.detach(), training_batch.class_labels, pred_clusters, query_mask, TRAINING, training_cs_cm=self.training_cs_cm, training_os_cm=self.training_os_cm)
-            if self.wbt: self.wb_run.log(plots, step=self.wb_tracker.step_counter)
         
         if self.online_evaluation and self.wb_tracker.step_counter % self.online_eval_step_freq == 0:
             self.start_async_evaluation()
