@@ -113,10 +113,11 @@ ABLATION_RUN_NAME = {
 }
 
 
-def wb_run_name(agent: str, mode: str) -> str:
-    if mode == "baseline":
-        return agent
-    return f"{agent}-{ABLATION_RUN_NAME[mode]}"
+def wb_run_name(agent: str, mode: str, postfix: str | None = None) -> str:
+    name = agent if mode == "baseline" else f"{agent}-{ABLATION_RUN_NAME[mode]}"
+    if postfix:
+        name = f"{name}-{postfix}"
+    return name
 
 
 def modes_for_agent(agent: str, ablation_modes: list[str], ablated_agents: list[str]) -> list[str]:
@@ -171,6 +172,7 @@ def run_one(
     group_name: str,
     wandb_enabled: bool,
     passthrough_args: list[str],
+    postfix: str | None = None,
 ) -> None:
     # label is just for console/log messages -- fully descriptive (agent,
     # mode, seed). The wandb run name (set below) is collapsed to the
@@ -188,7 +190,7 @@ def run_one(
 
     cmd = [sys.executable, str(offline_replay_path), str(run_dir), "--agency"]
     if wandb_enabled:
-        cmd += ["--wandb", "--wandb-run-name", wb_run_name(agent, mode)]
+        cmd += ["--wandb", "--wandb-run-name", wb_run_name(agent, mode, postfix)]
     for override in overrides:
         cmd += ["--set", override]
     cmd += passthrough_args
@@ -256,6 +258,15 @@ def main() -> int:
         "--no-wandb", action="store_true",
         help="Disable real wandb tracking for this sweep (default: enabled, with --wandb-run-name "
              "set via wb_run_name(agent, mode), since grouping by run_name is the point of this script).",
+    )
+    parser.add_argument(
+        "--postfix", default=None,
+        help="Optional suffix appended to every wandb run name in this sweep, as "
+             "'<wb_run_name(agent, mode)>-<postfix>'. Use this when re-running the same "
+             "--wandb-group-name with different hyperparameters (e.g. --postfix lr1e-4): the "
+             "group stays the same for wandb's 'group by name' aggregation, but each variant "
+             "gets its own run name -- and its own checkpoint path -- instead of overwriting "
+             "the previous sweep's runs of the same agent/mode.",
     )
     parser.add_argument(
         "--offline-replay-path", type=Path,
@@ -332,6 +343,7 @@ def main() -> int:
                     group_name=args.wandb_group_name,
                     wandb_enabled=not args.no_wandb,
                     passthrough_args=passthrough_args,
+                    postfix=args.postfix,
                 )
 
     print("\n[done] Offline seeded sweep completed.", flush=True)

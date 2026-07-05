@@ -142,6 +142,7 @@ def run_job(
     passthrough_args: list[str],
     logs_dir: Path,
     print_lock: threading.Lock,
+    postfix: str | None = None,
 ) -> JobResult:
     gpu_id = gpu_queue.get()
     try:
@@ -156,7 +157,7 @@ def run_job(
             "--agency", "--device", f"cuda:{gpu_id}",
         ]
         if wandb_enabled:
-            cmd += ["--wandb", "--wandb-run-name", seq.wb_run_name(job.agent, job.mode)]
+            cmd += ["--wandb", "--wandb-run-name", seq.wb_run_name(job.agent, job.mode, postfix)]
         for override in overrides:
             cmd += ["--set", override]
         cmd += passthrough_args
@@ -202,6 +203,15 @@ def main() -> int:
     parser.add_argument("--cti-period", type=int, default=seq.DEFAULT_CTI_PERIOD, help=f"intrusion_detection.cti_period for the 'periodic_cti' mode (default: {seq.DEFAULT_CTI_PERIOD}).")
     parser.add_argument("--wandb-group-name", default=seq.DEFAULT_WANDB_GROUP_NAME, help=f"wandb.wb_group_name shared by every run (default: {seq.DEFAULT_WANDB_GROUP_NAME!r}).")
     parser.add_argument("--no-wandb", action="store_true", help="Disable real wandb tracking for this sweep (default: enabled, --wandb-run-name set to the agent string).")
+    parser.add_argument(
+        "--postfix", default=None,
+        help="Optional suffix appended to every wandb run name in this sweep, as "
+             "'<wb_run_name(agent, mode)>-<postfix>'. Use this when re-running the same "
+             "--wandb-group-name with different hyperparameters (e.g. --postfix lr1e-4): the "
+             "group stays the same for wandb's 'group by name' aggregation, but each variant "
+             "gets its own run name -- and its own checkpoint path -- instead of overwriting "
+             "the previous sweep's runs of the same agent/mode.",
+    )
     parser.add_argument("--save", action="store_true", help="Enable model checkpoint saving (default: disabled -- see offline_seeded_agents.py docstring on checkpoint-name collisions).")
     parser.add_argument("--repetitions", type=int, default=None, help="Forwarded to offline_replay.py --repetitions (default: offline_replay.py's own default of 20).")
     parser.add_argument("--max-shards", type=int, default=None, help="Forwarded to offline_replay.py --max-shards (e.g. for a smoke-test sweep).")
@@ -288,7 +298,8 @@ def main() -> int:
                 *seq.ablation_set_overrides(job.mode, args.cti_period),
                 f"wandb.wb_group_name={args.wandb_group_name}",
             ]
-            print(f"[dry-run] {job.label}: --set " + " --set ".join(overrides))
+            run_name = seq.wb_run_name(job.agent, job.mode, args.postfix)
+            print(f"[dry-run] {job.label}: --wandb-run-name {run_name} --set " + " --set ".join(overrides))
         return 0
 
     gpu_queue: "queue.Queue[int]" = queue.Queue()
@@ -305,6 +316,7 @@ def main() -> int:
             executor.submit(
                 run_job, job, gpu_queue, offline_replay_path, run_dir, args.cti_period,
                 args.wandb_group_name, not args.no_wandb, passthrough_args, logs_dir, print_lock,
+                postfix=args.postfix,
             )
             for job in jobs
         ]
