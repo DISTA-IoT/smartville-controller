@@ -1258,6 +1258,50 @@ class TigerBrain:
             return torch.tensor([1], device=self.device).long()
         return action
 
+    def _can_afford_cti(self):
+        """
+        Affordability guard for the greedy-CTI ablation: a CTI purchase must
+        not bankrupt the agent. Bankruptcy is `current_budget < min_budget`
+        (see NewTigerEnvironment.has_episode_ended), so a buy is affordable
+        only if paying its price leaves the budget at or above min_budget
+        (equal survives; strictly below dies).
+
+        This runs before the cluster's majority label -- and thus the exact
+        label that will be charged -- is known, so it guards the worst case:
+        the most expensive CTI action currently on offer. A level-1 buy is
+        charged the price listed in env.current_cti_options; with
+        two_level_epistemic on, a level-2 (AD-oracle) buy is charged the same
+        `abs(reward * price_factor)` against an already-bought, not-yet-oracle'd
+        class, so those candidates are folded in too. If even the priciest of
+        these keeps budget >= min_budget, any actual buy this tick is safe.
+
+        When bankruptcy termination is disabled (disable_budget_bankrupt_
+        termination), there is no "dying", so every buy is affordable.
+        """
+        if self.env.disable_budget_bankrupt_termination:
+            return True
+
+        # Level-1 options: real purchasable G2s (skip the high-cost
+        # placeholders update_cti_options inserts when no G2 remains).
+        prices = [
+            price for label, price in self.env.current_cti_options.items()
+            if not str(label).startswith('placeholder_')
+        ]
+
+        # Level-2 options: an AD-oracle buy on an already-acquired class.
+        if getattr(self.env, 'two_level_epistemic', False):
+            oracle_labels = getattr(self.env, 'ad_oracle_labels', set())
+            for label, stats in getattr(self.env, 'acquired_g2_stats', {}).items():
+                if stats.get('bought') and label not in oracle_labels:
+                    prices.append(
+                        abs(self.env.flow_rewards_dict[label] * self.env.current_cti_price_factor))
+
+        if not prices:
+            return False
+
+        worst_case_price = max(prices)
+        return (self.env.current_budget - worst_case_price) >= self.env.min_budget
+
     def _select_unknown_cluster_action(self, state_vec):
         """
         Chooses the action for one unknown-traffic cluster.
@@ -1277,9 +1321,13 @@ class TigerBrain:
           whenever no G2 class remains, even on a periodic step), the agent is
           still queried, but any 2 it returns is remapped to 1 (block), since
           CTI is reserved for the periodic slot.
-        - greedy_cti: forces action 2 whenever there is still an unbought
-          G2 class available (`self.env.epistemic_actions_available == 1`);
-          otherwise behaves like the periodic case (query + remap 2 -> 1).
+        - greedy_cti: buys (action 2) whenever there is still an unbought
+          G2 class available (`self.env.epistemic_actions_available == 1`)
+          AND the buy is affordable -- i.e. paying the price would not
+          bankrupt the agent (`_can_afford_cti`, budget stays >= min_budget).
+          When a G2 is available but the buy is unaffordable, or no G2
+          remains, it behaves like the periodic case (query + remap 2 -> 1),
+          so a broke greedy agent blocks instead of buying itself to death.
         - no_epistemic_actions: queries the agent normally but remaps any 2
           it returns to 1, fully disabling epistemic actions as a no-CTI
           baseline.
@@ -1302,7 +1350,7 @@ class TigerBrain:
             return self._remap_epistemic_to_block(self.act(state_vec))
 
         if self.intrusion_detection_kwargs.get('greedy_cti'):
-            if self.env.epistemic_actions_available == 1:
+            if self.env.epistemic_actions_available == 1 and self._can_afford_cti():
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
 
