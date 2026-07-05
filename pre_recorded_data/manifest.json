@@ -68,7 +68,7 @@
     "epistemic_is_blocking": false,
     "no_epistemic_actions": false,
     "two_level_epistemic_actions": true,
-    "disable_budget_bankrupt_termination": true,
+    "disable_budget_bankrupt_termination": false,
     "disable_budget_win_termination": true,
     "boltzmann_sampling": false,
     "update_target_freq": "50",
