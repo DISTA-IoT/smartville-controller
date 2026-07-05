@@ -1252,9 +1252,16 @@ class TigerBrain:
         Only when none of these is active does the agent's own action 2
         survive unmodified.
         """
-        cti_period = self.intrusion_detection_kwargs.get('cti_period', -1)
+        # Coerce to int before the -1 guard: config numbers travel as JSON/
+        # form strings (see int(...) at every other use site, e.g.
+        # update_target_freq / agent_memory_size), so cti_period can arrive as
+        # the string "-1". Comparing that raw string to the int -1 is always
+        # True, which would wrongly enter the periodic-CTI branch and (since
+        # step % int("-1") == 0 for every step) force action 2 on every step --
+        # bypassing no_epistemic_actions entirely.
+        cti_period = int(self.intrusion_detection_kwargs.get('cti_period', -1))
         if cti_period != -1:
-            if self.wb_tracker.step_counter % int(cti_period) == 0 \
+            if self.wb_tracker.step_counter % cti_period == 0 \
                     and self.env.epistemic_actions_available == 1:
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
