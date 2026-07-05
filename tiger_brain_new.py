@@ -1275,7 +1275,7 @@ class TigerBrain:
         # bypassing no_epistemic_actions entirely.
         cti_period = int(self.intrusion_detection_kwargs.get('cti_period', -1))
         if cti_period != -1:
-            if self.wb_tracker.step_counter % cti_period == 0 \
+            if self.env.steps_done % cti_period == 0 \
                     and self.env.epistemic_actions_available == 1:
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
