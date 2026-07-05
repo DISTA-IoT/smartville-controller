@@ -39,7 +39,7 @@ from smartController.tiger_agents import (
     ValueLearningAgent, DAIP_Agent, DAIA_Agent,
     DAIF_Agent, DAISA_Agent, PPO_Agent, A2C_Agent
 )
-from smartController.attr_dict import AttrDict
+from smartController.attr_dict import AttrDict, coerce_config_types
 from smartController.data_recorder import FlowDataRecorder
 
 # Local imports
@@ -96,8 +96,22 @@ class TigerBrain:
         """
         Initializes the TigerBrain module with provided configuration and optional WandB tracker.
         """
+        # Config values reach us as JSON / HTML-form text (from the dashboard
+        # online, from manifest.json + CLI overrides offline), so numeric
+        # hyperparameters arrive as strings and boolean flags as "true"/"false".
+        # Coerce the two RL/ML config blocks once here, at the shared entry
+        # point for both the online and offline paths, so every downstream
+        # reader (this class, NewTigerEnvironment, the agents, the neural
+        # modules) sees already-typed values instead of relying on a correct
+        # int()/float() cast at every scattered call site. Mutating kwargs in
+        # place also covers self.intrusion_detection_kwargs and the AttrDict
+        # built below (both alias these same dicts).
+        for _cfg_block in ('intrusion_detection', 'neural_modules'):
+            if isinstance(kwargs.get(_cfg_block), dict):
+                kwargs[_cfg_block] = coerce_config_types(kwargs[_cfg_block])
+
         args = AttrDict(kwargs)
-        
+
         # Concurrency and logging
         self._lock = threading.Lock()
         self._epistemic_lock = threading.Lock()
