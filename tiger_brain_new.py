@@ -704,7 +704,22 @@ class TigerBrain:
             masked_packet = packet_input_batch[mask] if self.use_packet_feats else None
             masked_node = node_feat_input_batch[mask] if self.use_node_feats else None
             masked_labels = batch_labels[mask]
-            
+
+            # Partial-capture channel (RC 3.4): a corrupted acquired class admits
+            # only a fraction of its samples into its buffer, so its prototype is
+            # built from sparser, noisier evidence. Randomly drop the rest before
+            # pushing. Guarded by `enabled` so the clean regime draws no RNG and
+            # admits every sample, exactly as before.
+            if self.env.cti_delivery.enabled and masked_flow.shape[0] > 0:
+                capture = self.env.cti_delivery.capture_for(
+                    self.encoder.inverse_transform(label.view(1))[0])
+                if capture < 1.0:
+                    keep = torch.rand(masked_flow.shape[0], device=masked_flow.device) < capture
+                    masked_flow = masked_flow[keep]
+                    masked_packet = masked_packet[keep] if self.use_packet_feats else None
+                    masked_node = masked_node[keep] if self.use_node_feats else None
+                    masked_labels = masked_labels[keep]
+
             for sample_idx in range(masked_flow.shape[0]):
                 try:
                     buffers[label.item()].push(
@@ -1382,9 +1397,31 @@ class TigerBrain:
                 self.env.record_unsupervised_pass(member_labels, scaled_member_rewards)
 
             if epistemic_action:
-                majority_label = Counter(member_labels).most_common(1)[0][0] if member_labels else None
-                updates_dict = self.perform_epistemic_action(majority_label)
+                # Majority true label AND its purity (fraction of the cluster
+                # that is the majority class): purity is the hidden cluster-
+                # quality signal the CTI delivery model (RC 3.4) couples
+                # corruption severity to, alongside the observed anomaly-
+                # confidence. A messy, low-purity buy yields worse intelligence.
+                if member_labels:
+                    majority_label, majority_count = Counter(member_labels).most_common(1)[0]
+                    cluster_purity = majority_count / len(member_labels)
+                else:
+                    majority_label, cluster_purity = None, None
+                updates_dict = self.perform_epistemic_action(
+                    majority_label, purity=cluster_purity,
+                    confidence=cluster_zda_confidence.item())
                 current_reward -= updates_dict['price_payed']
+                # Instant delivery of a real acquisition: log the corruption it
+                # arrived with (delayed deliveries log the same in
+                # _poll_cti_deliveries). No-op-valued (0.0 / 1.0) in the clean
+                # regime; only emitted for genuine acquisitions.
+                if updates_dict['updated_label'] is not None and self.wbt \
+                        and self.env.cti_delivery.enabled:
+                    lbl = updates_dict['updated_label']
+                    self.reporter.log_scalars({
+                        f'cti_effective_noise/{lbl}': self.env.cti_delivery.noise_for(lbl),
+                        f'cti_capture/{lbl}': self.env.cti_delivery.capture_for(lbl),
+                    }, step=self.wb_tracker.step_counter)
                 if updates_dict.get('wasted', False):
                     wasted_epistemic_actions_taken += 1
                     # The buy acquired nothing -- penalise it beyond the price
@@ -1486,6 +1523,12 @@ class TigerBrain:
         
         self.classifier.eval()
         self.confidence_decoder.eval()
+
+        # Deliver any purchased CTI whose (delayed) arrival is now due, before
+        # this tick reads the knowledge state -- so a class delivered this tick
+        # is treated as Known from here on. No-op in the instant-delivery regime.
+        if self.agency:
+            self._poll_cti_deliveries()
 
         online_batch_tuple = self.prepare_online_batch(online_batch)
         if online_batch_tuple is None: return
@@ -1628,6 +1671,13 @@ class TigerBrain:
                     'final_episode_budget': self.env.current_budget,
                     'epistemic_actions_per_episode': self.env.epistemic_actions,
                     'wasted_epistemic_actions_per_episode': self.env.wasted_epistemic_actions,
+                    # CTI delivery fidelity (RC 3.4): how many real acquisitions
+                    # this episode arrived imperfectly (any label-noise, partial
+                    # capture, or delivery delay), and their share of all real
+                    # acquisitions. Both 0 in the clean regime.
+                    'cti_corrupt_buys_per_episode': self.env.corrupt_cti_buys,
+                    'cti_bad_buy_rate': (self.env.corrupt_cti_buys / self.env.total_cti_buys
+                                         if self.env.total_cti_buys > 0 else 0.0),
                     'steps_per_episode': steps,
                     'episode_outcome_win': int(ended_win),
                     'episode_outcome_bankrupt': int(ended_bankrupt),
@@ -1874,6 +1924,15 @@ class TigerBrain:
             except:
                 continue
 
+            # Label-noise channel (RC 3.4): a corrupted acquired class's training
+            # labels are flipped to a wrong known class with its effective noise
+            # probability, poisoning its prototype. Guarded by `enabled` so the
+            # clean regime draws no RNG and stays byte-identical to before.
+            if mode == TRAINING and self.env.cti_delivery.enabled:
+                noise = self.env.cti_delivery.noise_for(nl_label)
+                if noise > 0.0:
+                    l = self._apply_cti_label_noise(l, noise, int(l.view(-1)[0].item()))
+
             all_flow.append(f)
             all_labels.append(l)
             all_zda.append(zda_labels)
@@ -1883,6 +1942,56 @@ class TigerBrain:
 
         if not all_flow: return None
         return Batch(flow_features=torch.cat(all_flow, dim=0), packet_features=(torch.cat(all_packet, dim=0) if all_packet else None), node_features=(torch.cat(all_node, dim=0) if all_node else None), class_labels=torch.cat(all_labels, dim=0), zda_labels=torch.cat(all_zda, dim=0), test_zda_labels=torch.cat(all_test_zda, dim=0))
+
+    def _apply_cti_label_noise(self, labels, noise, true_code):
+        """
+        Flip a `noise` fraction of a corrupted CTI class's training-label draws
+        to a wrong known class (RC 3.4 label-noise channel). 'symmetric' picks a
+        uniformly-random other currently-known class; 'nearest' targets the class
+        this one is most confused with in the current training confusion matrix
+        (a more plausible, adversarial-leaning corruption), falling back to a
+        random other class when no confusion signal exists yet. Returns the
+        (possibly cloned) label tensor; a no-op when no row is selected to flip.
+        """
+        n = labels.shape[0]
+        if n == 0:
+            return labels
+        flip_mask = torch.rand(n, device=labels.device) < noise
+        k = int(flip_mask.sum().item())
+        if k == 0:
+            return labels
+        candidates = [c for c in self.encoder.get_codes_for_labels(self.env.current_knowledge['Knowns'])
+                      if c != true_code and c < self.current_known_classes_count]
+        if not candidates:
+            return labels
+        labels = labels.clone()
+        if self.env.cti_delivery.label_noise_mode == 'nearest':
+            wrong = self._most_confused_known_class(true_code, candidates)
+            wrong_codes = torch.full((k,), wrong, device=labels.device, dtype=labels.dtype)
+        else:
+            cand_t = torch.tensor(candidates, device=labels.device, dtype=labels.dtype)
+            wrong_codes = cand_t[torch.randint(0, len(candidates), (k,), device=labels.device)]
+        flat = labels.view(-1)
+        flat[flip_mask] = wrong_codes
+        return labels
+
+    def _most_confused_known_class(self, true_code, candidates):
+        """
+        The candidate known class most often confused with `true_code` in the
+        current training confusion matrix (training_cs_cm, rows = true labels,
+        cols = predictions); the first candidate if the matrix carries no signal
+        for this class yet.
+        """
+        cm = getattr(self, 'training_cs_cm', None)
+        if cm is not None and true_code < cm.shape[0]:
+            row = cm[true_code]
+            best, best_val = None, 0.0
+            for c in candidates:
+                if c < row.shape[0] and row[c].item() > best_val:
+                    best_val, best = row[c].item(), c
+            if best is not None:
+                return best
+        return candidates[0]
 
     def get_canonical_query_mask(self, whole_batch_size):
         """Creates a query mask based on the K-shot parameter."""
@@ -2043,25 +2152,62 @@ class TigerBrain:
                         async_results[f'{EVALUATION}/Mean EVAL KR PREC'])
 
     @epistemic_thread_safe
-    def perform_epistemic_action(self, target_label=None):
-        """Acquires a CTI label, updating the knowledge base and replay buffers."""
-        updates = self.env.perform_epistemic_action(target_label)
-        new_label = updates['updated_label']
+    def perform_epistemic_action(self, target_label=None, purity=None, confidence=None):
+        """Acquires a CTI label, updating the knowledge base and replay buffers.
 
+        Delegates to the environment. Under the CTI delivery model (RC 3.4) the
+        purchase is charged now but its delivery may be degraded, partially
+        captured, and/or delayed; `purity`/`confidence` are the cluster-quality
+        signals corruption severity is coupled to. When delivery is instant (the
+        clean regime, or a zero delay) `updated_label` is set and the class is
+        registered here; when it is deferred, `updated_label` is None and the
+        registration happens later via _poll_cti_deliveries once the delay
+        elapses.
+        """
+        updates = self.env.perform_epistemic_action(
+            target_label, current_step=self.wb_tracker.step_counter,
+            purity=purity, confidence=confidence)
+        new_label = updates['updated_label']
         if new_label is not None:
-            if self.encoder.update_label(new_label=new_label, logger=self.logger_instance):
-                self.current_known_classes_count += 1
-                self.add_replay_buffer(new_label)
-                self.reset_train_cms()
-                self.reset_test_cms()
-            # Stamp the purchase step so online_inference can later emit
-            # epistemic_delay/<label> = (steps until this class next shows up
-            # among an online batch's true labels). Recorded before this
-            # action's own step_counter increment (act_on_unknown_clusters
-            # increments it after perform_epistemic_action returns), i.e. the
-            # step of the buying decision itself.
-            self._pending_epistemic_delays[new_label] = self.wb_tracker.step_counter
+            self._register_delivered_cti(new_label)
         return updates
+
+    def _register_delivered_cti(self, new_label):
+        """
+        Register a just-delivered CTI class with the label encoder, open its
+        replay buffer if it is genuinely new, and stamp its acquisition-latency
+        clock. Shared by instant delivery (perform_epistemic_action) and delayed
+        delivery (_poll_cti_deliveries), so both paths register a class the same
+        way.
+        """
+        if self.encoder.update_label(new_label=new_label, logger=self.logger_instance):
+            self.current_known_classes_count += 1
+            self.add_replay_buffer(new_label)
+            self.reset_train_cms()
+            self.reset_test_cms()
+        # Stamp the delivery step so online_inference can later emit
+        # epistemic_delay/<label> = (steps until this class next shows up among
+        # an online batch's true labels, i.e. once it can actually be trained
+        # on). For instant delivery this is the buying step; for delayed
+        # delivery it is the step the CTI actually arrives.
+        self._pending_epistemic_delays[new_label] = self.wb_tracker.step_counter
+
+    def _poll_cti_deliveries(self):
+        """
+        Deliver any purchased CTI whose (delayed) arrival is now due, registering
+        each newly-trainable class and logging the corruption it arrived with.
+        Called once per online tick; a no-op (nothing pending) in the
+        instant-delivery regime.
+        """
+        if not self.env.cti_delivery.has_pending():
+            return
+        for label in self.env.deliver_pending_cti(self.wb_tracker.step_counter):
+            self._register_delivered_cti(label)
+            if self.wbt:
+                self.reporter.log_scalars({
+                    f'cti_effective_noise/{label}': self.env.cti_delivery.noise_for(label),
+                    f'cti_capture/{label}': self.env.cti_delivery.capture_for(label),
+                }, step=self.wb_tracker.step_counter)
 
     def start_async_evaluation(self):
         """Starts a background thread for model evaluation."""

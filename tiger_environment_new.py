@@ -1,6 +1,8 @@
 import random
 from collections import Counter
 
+from smartController.cti_delivery import CTIDeliveryModel
+
 
 class NewTigerEnvironment:
 
@@ -48,6 +50,10 @@ class NewTigerEnvironment:
             + list(self.init_knowledge.get('G1s', []))
             + list(self.init_knowledge.get('G2s', []))
         )
+        # Imperfect CTI delivery (RC 3.4): degrades/partially-captures/delays a
+        # purchase's delivery. A strict no-op in the clean regime (all knobs at
+        # default), so existing runs are unaffected. See cti_delivery.py.
+        self.cti_delivery = CTIDeliveryModel(kwargs.intrusion_detection)
 
 
     def reset_intelligence(self):
@@ -69,8 +75,14 @@ class NewTigerEnvironment:
         """
         
         # set a list of n_options available cti options:
-        self.current_cti_options = {}  
-        g2s = self.current_knowledge['G2s']
+        self.current_cti_options = {}
+        # A G2 whose CTI has been paid for but not yet delivered (delivery delay)
+        # is no longer offered for purchase -- it must not be paid for twice --
+        # even though it is still a G2 (unlearnable) until delivery. getattr
+        # guards the first call, which runs before __init__ sets cti_delivery.
+        pending = getattr(self, 'cti_delivery', None)
+        pending = pending.pending_labels() if pending is not None else set()
+        g2s = [g for g in self.current_knowledge['G2s'] if g not in pending]
         num_g2s = len(g2s)
 
         for idx in range(n_options):
@@ -111,6 +123,14 @@ class NewTigerEnvironment:
         self.episode_budgets = []
         self.epistemic_actions = 0
         self.steps_done = 0
+        # Per-episode CTI-delivery bookkeeping: total real acquisitions and how
+        # many of them were delivered imperfectly (any noise/partial/delay),
+        # reported at episode end as the "bad-buy rate". Cleared here and the
+        # delivery model's pending/active state is wiped before reset_intelligence
+        # (which reads cti_delivery.pending_labels via update_cti_options).
+        self.total_cti_buys = 0
+        self.corrupt_cti_buys = 0
+        self.cti_delivery.reset(self.seed)
         self.restart_budget()
         self.reset_intelligence()
         # Fixed-key per-G2 stats, pre-populated every episode so wandb sees
@@ -289,7 +309,8 @@ class NewTigerEnvironment:
         self.current_cti_price_factor *= max(0.01, min(0.99, random.gauss(0.7,0.4)))
 
 
-    def perform_epistemic_action(self, target_label=None):
+    def perform_epistemic_action(self, target_label=None, current_step=0,
+                                 purity=None, confidence=None):
         """
         Buys CTI for `target_label` -- the majority true label among the
         observed cluster's members, computed by the caller -- turning it
@@ -318,6 +339,15 @@ class NewTigerEnvironment:
         Exception (two_level_epistemic on): if `target_label` is a G2 already
         bought at level 1 but not yet AD-oracle'd, the buy is a level-2 action
         instead of wasted -- it acquires the AD oracle for that class.
+
+        `current_step`, `purity` and `confidence` parameterise imperfect CTI
+        delivery (RC 3.4). `current_step` (the DM step of this buy) times any
+        delivery delay; `purity` (the fraction of the cluster's members that are
+        the majority class) and `confidence` (the cluster's anomaly-confidence)
+        are the quality signals the delivery model couples corruption severity
+        to. They only take effect for a real (non-wasted, non-level-2)
+        acquisition, and only when the CTI-delivery knobs are set; otherwise the
+        purchase is delivered clean and instantly, as before.
         """
         g2s = self.current_knowledge['G2s']
 
@@ -354,24 +384,73 @@ class NewTigerEnvironment:
 
         acquired_cti = target_label
 
+        # Payment is immediate. Record the price and count the acquisition now,
+        # at the moment of purchase, regardless of any delivery delay.
         self.epistemic_actions += 1
-        self.current_knowledge['G2s'].remove(acquired_cti)
-        self.current_knowledge['Knowns'].append(acquired_cti)
-        self.current_knowledge['updated_labels'].append(acquired_cti)
         price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
-
-        # Mark bought before update_cti_options so it can see this class as a
-        # fresh level-2 candidate (relevant once this is the last unbought G2).
         stats = self.acquired_g2_stats[acquired_cti]
-        stats['bought'] = True
         stats['price_paid'] = price_payed
+        self.total_cti_buys += 1
 
-        self.update_cti_options()
+        # Route the purchase through the CTI delivery model (RC 3.4). It computes
+        # this buy's effective corruption (label-noise / partial-capture, both
+        # optionally coupled to the cluster's purity/confidence) and its delivery
+        # delay. All no-ops in the clean regime, giving the legacy instant path.
+        delay, noise, capture = self.cti_delivery.on_purchase(
+            acquired_cti, current_step, purity=purity, confidence=confidence)
+        if noise > 0.0 or capture < 1.0 or delay > 0:
+            self.corrupt_cti_buys += 1
 
+        if delay > 0:
+            # Deferred delivery: the class stays a G2 -- still an unlearnable,
+            # still-costly zero-day (its buffer stays training-skipped and its
+            # samples keep counting as ground-truth anomalies) -- until
+            # deliver_pending_cti() promotes it `delay` steps from now. It is
+            # removed from the buyable set via cti_delivery.pending_labels() in
+            # update_cti_options so it cannot be paid for twice.
+            self.update_cti_options()
+            return {'updated_label': None,
+                    'current_knowledge': self.current_knowledge,
+                    'price_payed': price_payed,
+                    'wasted': False,
+                    'scheduled': True}
+
+        # Instant delivery (legacy behaviour): promote the class in this tick.
+        self._deliver_label(acquired_cti)
         return {'updated_label': acquired_cti,
                 'current_knowledge': self.current_knowledge,
                 'price_payed': price_payed,
                 'wasted': False}
+
+    def _deliver_label(self, label):
+        """
+        Promote a purchased G2 to a Known class -- the moment its CTI is actually
+        delivered (instantly, or after a delay via deliver_pending_cti). From
+        here its replay buffer becomes training-eligible (no longer skipped as a
+        G2 in sample_from_replay_buffers) and its samples stop counting as
+        ground-truth zero-days. Any label-noise / partial-capture registered for
+        this label at purchase time (in cti_delivery) now begins to bite on its
+        training data. Marks `bought` (which gates all post-buyin ROI tracking)
+        before update_cti_options so it is seen as a fresh level-2 candidate.
+        """
+        self.current_knowledge['G2s'].remove(label)
+        self.current_knowledge['Knowns'].append(label)
+        self.current_knowledge['updated_labels'].append(label)
+        self.acquired_g2_stats[label]['bought'] = True
+        self.update_cti_options()
+
+    def deliver_pending_cti(self, current_step):
+        """
+        Promote every purchased G2 whose (delayed) CTI is due by `current_step`
+        to a Known class, and return the list of newly-delivered labels so the
+        brain can register them with the label encoder and open their replay
+        buffers. Called once per tick from online_inference; a no-op returning []
+        in the instant-delivery regime.
+        """
+        ready = self.cti_delivery.pop_ready(current_step)
+        for label in ready:
+            self._deliver_label(label)
+        return ready
 
 
     def restart_budget(self):
