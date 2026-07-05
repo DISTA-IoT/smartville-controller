@@ -891,6 +891,24 @@ class TigerBrain:
             zda_predictions = batch.zda_labels[query_mask]
             predicted_zda_mask = zda_predictions.to(torch.bool).squeeze(-1)
 
+        # Two-level epistemic action: for any class whose AD oracle was bought
+        # (level 2), stop using the IM's verdict and take the ground-truth zda
+        # label (Known, since the class moved to Knowns at level 1). Composes
+        # with use_neural_AD -- a no-op when it is off (that branch already uses
+        # ground truth). Overriding the whole query subset is safe: only the
+        # online tail feeds downstream decisions/metrics.
+        if self.env.ad_oracle_labels:
+            codes = self.encoder.get_codes_for_labels(self.env.ad_oracle_labels)
+            if codes:
+                codes_t = torch.tensor(codes, device=self.device, dtype=batch.class_labels.dtype)
+                oracle_mask = torch.isin(batch.class_labels[query_mask].squeeze(-1), codes_t)
+                if oracle_mask.any():
+                    gt = batch.zda_labels[query_mask]
+                    zda_predictions = zda_predictions.clone()
+                    zda_predictions[oracle_mask] = gt[oracle_mask].to(zda_predictions.dtype)
+                    predicted_zda_mask = predicted_zda_mask.clone()
+                    predicted_zda_mask[oracle_mask] = gt[oracle_mask].squeeze(-1).to(torch.bool)
+
         return zda_predictions, predicted_zda_mask
     
     def prepare_online_batch(self, online_batch):
