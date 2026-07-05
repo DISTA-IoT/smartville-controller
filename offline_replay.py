@@ -325,7 +325,7 @@ def main():
              "words like DuelingDDQN become strings).")
     parser.add_argument("--no-save", action="store_true", help="Disable model checkpoint saving for this replay run.")
     parser.add_argument(
-        "--repetitions", type=int, default=20,
+        "--repetitions", type=int, default=8,
         help="Number of full passes over the (possibly --max-shards-truncated) set of recorded shards "
              "(default: 20). Each pass replays the shards in the same order, feeding the IM/DM "
              "--repetitions times the gradient steps over this fixed recorded dataset -- the offline "
