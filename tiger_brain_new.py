@@ -184,6 +184,32 @@ class TigerBrain:
         self.unknown_accept_reward_scale = self.intrusion_detection_kwargs.get('unknown_accept_reward_scale', 1.0)
         self.unknown_malicious_accept_penalty_scale = self.intrusion_detection_kwargs.get('unknown_malicious_accept_penalty_scale', 1.0)
         self.useless_epistemic_penalty = float(self.intrusion_detection_kwargs.get('useless_epistemic_penalty', 0.0))
+        # --- Supervision-value reward components (hidden by default). Two
+        # optional, additive reward terms that credit a label-buying
+        # (supervised) policy for the downstream quality gains its CTI
+        # purchases produce -- so a supervised policy can out-earn an
+        # unsupervised one on the merits of better perception, instead of
+        # through hand-crafted penalties on the unsupervised baseline:
+        #   * cluster_impurity_penalty_weight: per unknown-traffic cluster,
+        #     subtracts weight * (1 - purity) from that cluster's reward, where
+        #     purity is the fraction of the cluster's members sharing its
+        #     majority true label (see brain_utils/get_clusters + the
+        #     majority-vote purity already computed for CTI targeting). A policy
+        #     that has bought more CTI leaves fewer distinct unknown classes
+        #     bleeding together, so its collective-anomaly clusters are purer
+        #     and it is penalised less.
+        #   * classification_accuracy_reward_weight: per known-traffic group,
+        #     adds weight * (that group's closed-set classification accuracy)
+        #     to its reward. A policy with more Known classes classifies its
+        #     known traffic more accurately and so earns more.
+        # Both default to 0.0, which fully HIDES them: no reward contribution
+        # and no wandb series emitted, reproducing existing runs exactly. The
+        # gating knobs live in tiger/config/default.yaml and the controller's
+        # pre_recorded_data/manifest.json (intrusion_detection block).
+        self.cluster_impurity_penalty_weight = float(
+            self.intrusion_detection_kwargs.get('cluster_impurity_penalty_weight', 0.0))
+        self.classification_accuracy_reward_weight = float(
+            self.intrusion_detection_kwargs.get('classification_accuracy_reward_weight', 0.0))
         # When True, the online anomaly detector scores each sample only
         # against the *true* Known-class prototypes, excluding G1 columns from
         # its known-set. By default G1 is folded into the inference known-set
@@ -241,10 +267,12 @@ class TigerBrain:
             self.intrusion_detection_kwargs.get('grad_clip_max_norm', 10.0))
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
-            " useless_epistemic_penalty=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
+            " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
+            "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
-            self.useless_epistemic_penalty, self.exclude_g1_from_ad_known_set, self.relational_state,
+            self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
+            self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.relational_state,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold)
 
         # Environment and Networking
@@ -1167,6 +1195,13 @@ class TigerBrain:
 
         classification_reward_total = 0.0
         last_action = None
+        # Supervised classification-accuracy reward bookkeeping this tick: the
+        # total accuracy reward added and the correct/total sample counts used
+        # to report the tick's overall closed-set accuracy. All stay 0 -- and
+        # no reward is added -- when the knob is off, keeping it hidden.
+        classification_accuracy_reward_total = 0.0
+        accuracy_correct_total = 0
+        accuracy_samples_total = 0
 
         for idx in range(num_groups):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
@@ -1196,6 +1231,24 @@ class TigerBrain:
             group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
             self.env.record_reappearances(group_true_labels, group_costs.tolist(), accepted=accepted_group)
 
+            # Supervised classification-accuracy reward (hidden by default):
+            # credit this known-traffic group weight * (fraction of its members
+            # the IM classified correctly). Every member of a group shares the
+            # same predicted class, so this fraction is that predicted class's
+            # accuracy on the group; summed over the tick it is the overall
+            # closed-set accuracy. A policy with more Known classes classifies
+            # more accurately and so earns more, again crediting supervision on
+            # its merits. No-op when the weight is 0 (default).
+            if self.classification_accuracy_reward_weight > 0.0 and group_true_labels:
+                group_pred_names = self.get_label_names_from_encoded_labels(class_preds[member_mask])
+                group_correct = sum(1 for t, p in zip(group_true_labels, group_pred_names) if t == p)
+                group_accuracy = group_correct / len(group_true_labels)
+                accuracy_reward = self.classification_accuracy_reward_weight * group_accuracy
+                classification_reward += accuracy_reward
+                classification_accuracy_reward_total += accuracy_reward
+                accuracy_correct_total += group_correct
+                accuracy_samples_total += len(group_true_labels)
+
             self.env.current_budget += classification_reward
 
             if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
@@ -1217,12 +1270,22 @@ class TigerBrain:
             classification_reward_total += classification_reward
 
         if self.wbt:
-            self.reporter.log_scalars({
+            known_scalars = {
                 AGENT+'/'+'generic_reward': classification_reward_total,
                 AGENT+'/'+'classification_reward': classification_reward_total,
                 AGENT+'/'+'budget': self.env.current_budget,
                 AGENT+'/'+'known_traffic_groups': num_groups,
-            }, step=self.wb_tracker.step_counter)
+            }
+            # Supervision-value component: total accuracy reward added this tick
+            # and the tick's overall closed-set accuracy behind it. Emitted only
+            # when the knob is on, so the series stay hidden by default.
+            if self.classification_accuracy_reward_weight > 0.0:
+                known_scalars[AGENT+'/'+'classification_accuracy_reward'] = \
+                    classification_accuracy_reward_total
+                known_scalars[AGENT+'/'+'classification_accuracy'] = \
+                    (accuracy_correct_total / accuracy_samples_total
+                     if accuracy_samples_total > 0 else 0.0)
+            self.reporter.log_scalars(known_scalars, step=self.wb_tracker.step_counter)
 
     def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens):
         """
@@ -1406,6 +1469,11 @@ class TigerBrain:
         epistemic_costs = 0
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
+        # Sum of per-cluster impurity (1 - purity) this tick, used both to
+        # charge the cluster-impurity penalty (when enabled) and to report the
+        # mean impurity. Stays 0.0 -- and no penalty is applied -- when the knob
+        # is off, so the component is fully hidden by default.
+        cluster_impurity_sum = 0.0
 
         for idx in range(num_identified):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
@@ -1443,6 +1511,19 @@ class TigerBrain:
             # centroid itself).
             member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
 
+            # Majority true label AND its purity (fraction of the cluster that
+            # is the majority class), computed once per cluster here so it can
+            # feed both the epistemic path (CTI targeting + RC 3.4 quality
+            # coupling) and the cluster-impurity penalty below. purity is the
+            # hidden cluster-quality signal: a messy, low-purity cluster both
+            # yields worse intelligence when bought and, when the penalty is
+            # enabled, costs the policy more for having left it unresolved.
+            if member_labels:
+                majority_label, majority_count = Counter(member_labels).most_common(1)[0]
+                cluster_purity = majority_count / len(member_labels)
+            else:
+                majority_label, cluster_purity = None, None
+
             if accepted_cluster:
                 member_rewards_tensor = anomalous_rewards[member_mask]
                 positive = torch.relu(member_rewards_tensor) * self.unknown_accept_reward_scale
@@ -1450,17 +1531,18 @@ class TigerBrain:
                 scaled_member_rewards = (positive + negative).tolist()
                 self.env.record_unsupervised_pass(member_labels, scaled_member_rewards)
 
+            # Cluster-impurity penalty (hidden by default): charge this
+            # cluster's decision weight * (1 - purity). A policy whose CTI
+            # purchases have thinned the unknown-class pool leaves purer
+            # collective-anomaly clusters and is penalised less, so the reward
+            # credits better perception rather than penalising the unsupervised
+            # baseline directly. No-op when the weight is 0 (default).
+            if self.cluster_impurity_penalty_weight > 0.0 and cluster_purity is not None:
+                cluster_impurity = 1.0 - cluster_purity
+                cluster_impurity_sum += cluster_impurity
+                current_reward -= self.cluster_impurity_penalty_weight * cluster_impurity
+
             if epistemic_action:
-                # Majority true label AND its purity (fraction of the cluster
-                # that is the majority class): purity is the hidden cluster-
-                # quality signal the CTI delivery model (RC 3.4) couples
-                # corruption severity to, alongside the observed anomaly-
-                # confidence. A messy, low-purity buy yields worse intelligence.
-                if member_labels:
-                    majority_label, majority_count = Counter(member_labels).most_common(1)[0]
-                    cluster_purity = majority_count / len(member_labels)
-                else:
-                    majority_label, cluster_purity = None, None
                 updates_dict = self.perform_epistemic_action(
                     majority_label, purity=cluster_purity,
                     confidence=cluster_zda_confidence.item())
@@ -1513,8 +1595,7 @@ class TigerBrain:
 
         if len(centroids[~missing]) > 0 and self.wbt:
 
-
-            self.reporter.log_scalars({
+            cluster_scalars = {
                 AGENT+'/'+'generic_reward': clustering_reward,
                 AGENT+'/'+'clustering_reward': clustering_reward,
                 AGENT+'/'+'budget': self.env.current_budget,
@@ -1523,7 +1604,16 @@ class TigerBrain:
                 AGENT+'/'+'epistemic_costs': epistemic_costs,
                 AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
-            }, step=self.wb_tracker.step_counter)
+            }
+            # Supervision-value component: total impurity penalty deducted this
+            # tick and the mean cluster impurity behind it. Emitted only when
+            # the knob is on, so the series stay hidden in the default regime.
+            if self.cluster_impurity_penalty_weight > 0.0:
+                cluster_scalars[AGENT+'/'+'cluster_impurity_penalty'] = \
+                    self.cluster_impurity_penalty_weight * cluster_impurity_sum
+                cluster_scalars[AGENT+'/'+'mean_cluster_impurity'] = \
+                    cluster_impurity_sum / num_identified
+            self.reporter.log_scalars(cluster_scalars, step=self.wb_tracker.step_counter)
 
     def _log_epistemic_delays(self, present_labels):
         """
