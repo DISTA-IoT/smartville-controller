@@ -66,6 +66,8 @@
     "automatic_cs_acceptance": false,
     "unknown_accept_reward_scale": 0.75,
     "unknown_malicious_accept_penalty_scale": 1.25,
+    "cluster_impurity_penalty_weight": 0.0,
+    "classification_accuracy_reward_weight": 0.0,
     "epistemic_is_blocking": false,
     "no_epistemic_actions": false,
     "two_level_epistemic_actions": true,
