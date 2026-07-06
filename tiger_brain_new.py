@@ -1133,10 +1133,9 @@ class TigerBrain:
         discounts the upside of a *correct* accept, while
         `malicious_accept_penalty_scale` upscales (or, left at its default,
         leaves untouched) the downside of a *wrong* one. Both default to
-        1.0 (no-op); unknown-cluster accepts use `unknown_accept_reward_scale`
-        to discount that upside relative to a known-class accept, and
-        `unknown_malicious_accept_penalty_scale` to upscale that downside,
-        relative to a known-class accept, which is always unscaled. Blocked:
+        1.0 (no-op).
+        
+        Blocked:
         the benign reward the group would have earned is forgone (the
         malicious-content cost is zero, since it's blocked); blocking is
         never scaled.
@@ -1148,7 +1147,7 @@ class TigerBrain:
             positive = torch.relu(group_rewards)
             negative = group_rewards - positive
             return (accept_reward_scale * positive.sum() + malicious_accept_penalty_scale * negative.sum()).item()
-        return -torch.relu(group_rewards).sum().item()
+        return 0
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
                               class_preds, interest_logits_slice, number_of_known_classes,
