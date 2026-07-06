@@ -26,8 +26,8 @@ class PolicyNet(nn.Module):
         self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
-        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), int(kwargs['hidden_size']) // 5)
         self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), int(kwargs['action_size']))
 
     def forward(self, x):
@@ -51,8 +51,8 @@ class ValueNet(nn.Module):
         self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
-        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), int(kwargs['hidden_size']) // 5)
         self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), 1)
 
     def forward(self, x):
@@ -78,8 +78,8 @@ class NEFENet(nn.Module):
         self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
-        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), 4 * (int(kwargs['hidden_size']) // 5))
+        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), int(kwargs['hidden_size']) // 5)
         self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), int(kwargs['action_size']))
 
     def forward(self, x):
@@ -102,8 +102,8 @@ class DQN(nn.Module):
         self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
-        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), 4 * (int(int(kwargs['hidden_size'])) // 5))
+        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), int(int(kwargs['hidden_size'])) // 5)
         self.fc3 = nn.Linear(5 * (int(int(kwargs['hidden_size'])) // 5), int(int(kwargs['action_size'])))
 
 
@@ -127,8 +127,8 @@ class DuelingDQN(nn.Module):
         self.proprio_norm = nn.LayerNorm(6)
         self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
         self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
-        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
+        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), 4 * (int(int(kwargs['hidden_size'])) // 5))
+        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), int(int(kwargs['hidden_size'])) // 5)
 
         hidden_dim = 5 * (int(int(kwargs['hidden_size'])) // 5)
 
