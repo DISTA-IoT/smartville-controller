@@ -38,7 +38,7 @@
     "ad_threshold": 0.75,
     "online_evaluation": false,
     "online_evaluation_rounds": "10",
-    "pretrained_inference": true,
+    "pretrained_inference": false,
     "greedy_cti": false,
     "cti_period": "-1",
     "confidence_strategy": "energy",
