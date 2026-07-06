@@ -863,7 +863,7 @@ class TigerBrain:
         """
         Fixed-size, permutation-invariant relational summary of a group's or
         cluster's prototypical similarity scores to the known-class prototypes
-        (`score_slice`: [n_members, K] inverse-distance similarities, i.e. the
+        (`score_slice`: [n_members, K] the
         `logits` the prototypical classifier produces). Returns a
         RELATIONAL_STATE_DIM-vector that depends ONLY on the relation to known
         classes -- never on absolute hidden coordinates -- so it stays
@@ -1407,7 +1407,8 @@ class TigerBrain:
         cti_period = int(self.intrusion_detection_kwargs.get('cti_period', -1))
         if cti_period != -1:
             if self.env.steps_done % cti_period == 0 \
-                    and self.env.epistemic_actions_available == 1:
+                    and self.env.epistemic_actions_available == 1 \
+                        and self._can_afford_cti():
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
 
