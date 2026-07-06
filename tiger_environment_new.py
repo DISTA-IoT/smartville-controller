@@ -44,21 +44,61 @@ class NewTigerEnvironment:
         # Stable, full set of class names across the episode: the initial
         # Knowns/G1s/G2s partition. Buying a G2 only moves it from G2s to
         # Knowns, so this union is invariant and gives every per-class wandb
-        # series a fixed key for the whole run.
+        # series a fixed key for the whole run. Also invariant under
+        # dynamic_knowledge, which only reshuffles the same pool of classes
+        # across Knowns/G1s/G2s -- it never adds or removes a class.
         self.all_class_labels = (
             list(self.init_knowledge.get('Knowns', []))
             + list(self.init_knowledge.get('G1s', []))
             + list(self.init_knowledge.get('G2s', []))
         )
+        # When True, every episode reset draws a fresh random Knowns/G1s/G2s
+        # partition of self.all_class_labels instead of replaying the fixed
+        # partition read from config/manifest, keeping the original group
+        # sizes (e.g. 3 Knowns / 3 G1s / 7 G2s) fixed. See
+        # _randomize_knowledge_partition. Default False reproduces the
+        # legacy fixed-curriculum behaviour.
+        self.dynamic_knowledge = bool(
+            kwargs.intrusion_detection.get('dynamic_knowledge', False))
+        # Dedicated RNG for the per-episode partition draw, seeded once from
+        # the run's seed and advanced every episode. Kept separate from the
+        # global `random` module -- which reset_intelligence reseeds to a
+        # fixed self.seed every episode for price_decay's reproducibility --
+        # so drawing a partition here neither depends on nor perturbs that
+        # determinism.
+        self._knowledge_rng = random.Random(self.seed)
         # Imperfect CTI delivery (RC 3.4): degrades/partially-captures/delays a
         # purchase's delivery. A strict no-op in the clean regime (all knobs at
         # default), so existing runs are unaffected. See cti_delivery.py.
         self.cti_delivery = CTIDeliveryModel(kwargs.intrusion_detection)
 
 
+    def _randomize_knowledge_partition(self):
+        """
+        Draws a fresh random Knowns/G1s/G2s split of self.all_class_labels,
+        keeping each group's size equal to the initial config's (e.g. 3
+        Knowns / 3 G1s / 7 G2s -- whatever init_knowledge specified). Only
+        called when dynamic_knowledge is enabled.
+        """
+        pool = list(self.all_class_labels)
+        self._knowledge_rng.shuffle(pool)
+        n_known = len(self.init_knowledge.get('Knowns', []))
+        n_g1 = len(self.init_knowledge.get('G1s', []))
+        return {
+            'bening_patterns': list(self.init_knowledge.get('bening_patterns', [])),
+            'attack_patterns': list(self.init_knowledge.get('attack_patterns', [])),
+            'Knowns': pool[:n_known],
+            'G1s': pool[n_known:n_known + n_g1],
+            'G2s': pool[n_known + n_g1:],
+        }
+
+
     def reset_intelligence(self):
-        
-        self.current_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in self.init_knowledge.items()}
+
+        if self.dynamic_knowledge:
+            self.current_knowledge = self._randomize_knowledge_partition()
+        else:
+            self.current_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in self.init_knowledge.items()}
         self.current_knowledge['updated_labels'] = []
         self.update_cti_options()
         self.current_cti_price_factor = self.init_cti_price_factor
@@ -148,7 +188,7 @@ class NewTigerEnvironment:
                     'cti_shots': 0, 'cti_misses': 0,
                     'oracle_ad': False, 'oracle_price_paid': 0.0,
                     'oracled_reappearances': 0}
-            for label in self.init_knowledge['G2s']
+            for label in self.current_knowledge['G2s']
         }
         # Labels whose AD oracle has been bought (level-2 epistemic action):
         # their online samples are forced Known without consulting the IM for
@@ -159,7 +199,7 @@ class NewTigerEnvironment:
         # in act_on_unknown_clusters, before that label has been bought.
         # Reset every episode so it only ever reflects the current episode's
         # unsupervised behaviour.
-        self.unsupervised_costs = {label: 0.0 for label in self.init_knowledge['G2s']}
+        self.unsupervised_costs = {label: 0.0 for label in self.current_knowledge['G2s']}
         # Per-class episode appearance tally: how many times each class is
         # seen on the wire this episode, counted from the true labels of the
         # online traffic regardless of the DM's knowledge state -- so a G2
@@ -172,7 +212,7 @@ class NewTigerEnvironment:
         # avoid double counting; together the two cover every class once.
         self.net_values = {
             label: 0.0 for label in self.all_class_labels
-            if label not in self.init_knowledge.get('G2s', [])
+            if label not in self.current_knowledge.get('G2s', [])
         }
         # Count of action-2 purchases whose targeted (majority-vote) label
         # wasn't actually a purchasable G2 -- e.g. the cluster was a mixed/
