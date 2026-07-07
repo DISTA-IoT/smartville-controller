@@ -98,12 +98,12 @@
     "greedy_update": true,
     "leaky_relu_alpha": "0.2",
     "custom_inference_model_path": false,
-    "cti_label_noise": 0.0, 
+    "cti_label_noise": 0.5, 
     "cti_label_noise_mode": "nearest",
-    "cti_capture_fraction": 1.0,
+    "cti_capture_fraction": 0.2,
     "cti_delivery_delay": 0,
     "cti_delivery_jitter": 0,
-    "cti_quality_coupling": "none"
+    "cti_quality_coupling": "purity"
   },
   "neural_modules": {
     "first_stream_input_size": "4",
