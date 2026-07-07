@@ -1,0 +1,236 @@
+# Relational State — Design Notes
+
+**Where:** `tiger_brain_new.py`, class `TigerBrain`.
+Config flag: `intrusion_detection.relational_state` (bool, default `False`).
+
+This document describes the relational exteroceptive state block **as it
+currently exists in code** — not a proposal, the shipped implementation.
+
+---
+
+## 1. What problem it solves
+
+The Decision Module's (DM's) state vector has two parts: a fixed-size
+**proprioceptive** block (budget, counts, confidences) and an
+**exteroceptive** block that describes the group of flows or the anomaly
+cluster the DM is currently deciding on.
+
+The legacy exteroceptive encoding was the group's/cluster's **raw
+hidden-space centroid** — a vector whose width scales with `hidden_size`
+(and with the number of active feature streams: flow [+ node] [+ packet]).
+That ties the DM's input size to representation/config choices, and gives it
+absolute coordinates that drift as the encoder keeps training online.
+
+`relational_state=True` replaces the centroid with a **fixed-size summary of
+the group's/cluster's similarity to the known-class prototypes** — i.e. a
+function of the prototypical classifier's logits, never of absolute hidden
+coordinates. This is invariant to how many known classes currently exist (K
+grows as CTI is bought) and stays consistent with the prototypical /
+relational-bottleneck inductive bias already used by the perception layer.
+
+`TigerBrain.RELATIONAL_STATE_DIM` fixes the width of this block; the DM's
+`exteroceptive_dim` (and therefore its net input size) is derived from it
+automatically in `init_agents` when the flag is on.
+
+---
+
+## 2. Current vector: 9 dimensions
+
+Built by `TigerBrain._relational_summary(score_slice)`, where `score_slice`
+is `[n_members, K]` — the group's or cluster's members' rows of prototypical
+similarity logits against the K known-class prototypes.
+
+```
+[ s_max, r_max, s_mean, s_min, s_std, margin, r_runnerup, entropy, energy ]
+```
+
+Let `s = score_slice.mean(dim=0)` — the `[K]` mean similarity to each known
+prototype. Then:
+
+| Stat | Definition | Meaning |
+|---|---|---|
+| `s_max` | `s.max()` | similarity to the **nearest** known prototype |
+| `s_mean` | `s.mean()` | average similarity across all known prototypes |
+| `s_min` | `s.min()` | similarity to the **farthest** known prototype |
+| `s_std` | `s.std(unbiased=False)` (`0` if `K == 1`) | spread of similarity across prototypes |
+| `margin` | `top2[0] - top2[1]` (`= s_max` if `K == 1`) | top-2 ambiguity: how much the nearest prototype beats the runner-up |
+| `entropy` | `-(softmax(s) * log(softmax(s))).sum()` | how spread-out the assignment distribution is |
+| `energy` | `logsumexp(s)` | overall magnitude of match to the known set |
+| `r_max` | running accept-reward of the class at `argmax(s)` | *"has the class this most resembles paid off?"* |
+| `r_runnerup` | running accept-reward of the class at the 2nd-highest `s` | *"has the runner-up class (the one the margin is against) paid off?"* |
+
+`r_max` and `r_runnerup` are **not** the maximum/minimum reward value —
+they are the reward *of the class that owns* `s_max` / the runner-up
+similarity respectively. They are deliberately interleaved next to the
+similarity stat they're tied to, rather than appended at the end, and are
+indexed by **relational rank** (nearest / runner-up), never by class
+identity — putting a specific class's reward at a fixed vector position
+would break the relational bottleneck (the state would stop being invariant
+to which classes are currently known).
+
+`s_min`'s counterpart reward was deliberately **not** added: the farthest
+prototype is an arbitrary, low-relevance class, so its reward carries
+essentially no decision-relevant signal.
+
+---
+
+## 3. The reward feature: what it is and how it's computed
+
+### 3.1 What "reward" means here
+
+This is **not** the platonic per-class value from `tiger/config`'s
+`rewards` block (`flow_rewards_dict` in `tiger_environment_new.py`). It is
+the **empirical, possibly-noisy group reward the DM actually received** when
+it chose to accept a group the IM had just classified as a given class —
+i.e. exactly the `classification_reward` computed by `_decision_reward` in
+`act_on_known_traffic`, before the (optional) classification-accuracy bonus
+is added. Because groups are built from the IM's *predicted* class, a
+reward sample can be "spurious" whenever the IM misclassifies — that noise
+is intentionally part of the signal the DM sees, not filtered out.
+
+Blocking a group always earns a reward of exactly `0` (see
+`_decision_reward`: block ⇒ `return 0`), so **only accepted groups are
+recorded**. If blocked-group zeros were folded in too, a class the policy
+has learned to block would have its estimate dragged toward zero regardless
+of how good or bad accepting it actually is — masking the exact information
+the DM needs when reconsidering that class.
+
+### 3.2 Bookkeeping (per predicted class, per episode)
+
+Three helper methods on `TigerBrain`:
+
+- **`_reset_relational_reward_tracker()`** — (re)initializes:
+  - `_class_reward_sum: dict[class_idx -> float]`
+  - `_class_reward_count: dict[class_idx -> int]`
+  - `_reward_abs_total`, `_reward_abs_n`, `_reward_abs_scale` (running mean
+    of `|reward|` across all recorded groups, any class)
+
+  Called once in `__init__` and again at the top of every
+  `reset_environment()` call (i.e. every episode). **The averages are not
+  persisted across episodes.** This mirrors the inference module's own
+  per-episode reset and the "no absolute prototypes" design stance: DM
+  network *weights* persist across episodes (that's how it learns), but the
+  *per-episode reward statistics* must not, or the agent would effectively
+  be memorizing a fixed curriculum instead of learning to size up
+  never-seen-before classes from scratch each episode.
+
+- **`_update_relational_reward(class_idx, group_reward)`** — called from
+  `act_on_known_traffic`, immediately after `_decision_reward` computes the
+  group's pragmatic reward, **only when `accepted_group` is `True`**:
+
+  ```python
+  if self.relational_state and accepted_group:
+      self._update_relational_reward(unique_classes[idx], classification_reward)
+  ```
+
+  It accumulates `sum`/`count` for that class index (running mean) and
+  folds `|group_reward|` into the global running `_reward_abs_scale`.
+
+  The key, `unique_classes[idx]`, is the IM's **predicted** class for that
+  group — the same index space as the columns of the prototypical logits
+  (`interest_logits_slice`) that `_relational_summary` reads `s` from, so
+  the value written here and the value read back by `argmax(s)` /
+  runner-up lookup always refer to the same class.
+
+- **`_class_reward_feature(class_idx, device, dtype)`** — the read side,
+  called from inside `_relational_summary`:
+
+  ```python
+  count = self._class_reward_count.get(idx, 0)
+  if count == 0:
+      return 0.0   # neutral: no evidence yet this episode
+  mean_r = self._class_reward_sum[idx] / count
+  scale = self._reward_abs_scale if self._reward_abs_scale > 1e-8 else 1.0
+  return tanh(mean_r / scale)
+  ```
+
+  - **Cold class** (not accepted yet this episode, `count == 0`): returns
+    `0.0`. This is a deliberate coincidence with the value of a block
+    (`_decision_reward` returns `0` on block) — "no evidence this is worth
+    accepting" reads the same as "blocking earns nothing", which is a
+    reasonable prior for an untested class.
+  - **Scale normalization**: the DM nets in `neural_modules.py`
+    (`PolicyNet`, `ValueNet`, `NEFENet`, `DQN`, `DuelingDQN`) apply
+    `nn.LayerNorm(6)` **only to the 6-dim proprioceptive tail** of the state
+    vector; the exteroceptive block (where this relational summary lives)
+    enters those nets **raw, unnormalized**. Left alone, a reward in
+    budget-units would sit next to O(1) similarity logits at wildly
+    different scale. To fix this at the source (not by touching every DM
+    net), the reward feature is divided by the running mean of `|reward|`
+    seen so far this episode, then squashed through `tanh` into `(-1, 1)` —
+    putting it on the same rough footing as the similarity stats without
+    a new config knob.
+
+### 3.3 Read side inside `_relational_summary`
+
+```python
+if k > 1:
+    top2 = torch.topk(s, 2)
+    margin = top2.values[0] - top2.values[1]
+    k_max, k_run = top2.indices[0], top2.indices[1]
+else:
+    margin = s_max
+    k_max = torch.argmax(s)
+    k_run = k_max   # single known class: nearest and runner-up collapse
+
+r_max = self._class_reward_feature(k_max, s.device, s.dtype)
+r_runnerup = self._class_reward_feature(k_run, s.device, s.dtype)
+```
+
+`k_max`/`k_run` come from the exact same `torch.topk(s, 2)` call that
+produces `margin`, so `r_max` is guaranteed to refer to the class `s_max`
+scores, and `r_runnerup` to the class `margin` is measured against — no
+separate re-derivation, no risk of the two going out of sync.
+
+---
+
+## 4. Call sites
+
+`_relational_summary` (and therefore this reward machinery) is used in two
+places, gated by the same `self.relational_state` flag:
+
+1. **`act_on_known_traffic`** (known-traffic regime) — builds
+   `group_exteroceptive` per predicted-class group from
+   `interest_logits_slice[mask]`, and (as described above) is also the
+   place that *writes* to the reward tracker after each group's DM action.
+2. **`act_on_unknown_clusters`** (unknown/zero-day regime) — builds
+   `cluster_exteroceptive` per identified anomaly cluster from
+   `anomalous_logits[...]`. This call site is **read-only**: an anomalous
+   cluster's relational summary can reflect the accept-reward history of
+   the known class it happens to resemble, but nothing here writes back to
+   the tracker (there is no "predicted known class" ground truth for a
+   genuinely unknown cluster to attribute a reward to).
+
+---
+
+## 5. Dimension bookkeeping
+
+`RELATIONAL_STATE_DIM = 9` must stay equal to the number of elements
+`_relational_summary` stacks. `init_agents` sets
+`self.exteroceptive_dim = self.RELATIONAL_STATE_DIM` when
+`relational_state` is on (bypassing the `hidden_size` [`+ node` ] [`+
+packet`] sizing used in the legacy centroid path), and `state_space_dim`
+follows from that — so every DM net's input width adapts automatically if
+this constant ever changes again.
+
+---
+
+## 6. Known limitations / things this design does *not* yet do
+
+- **No confidence weighting.** A reward sample is folded in with full
+  weight regardless of how confidently the IM classified that group as the
+  class in question. A low-confidence (likely-wrong) group can therefore
+  contaminate a class's running average as much as a high-confidence one.
+  A natural extension is a parallel running average of
+  `cs_classif_confidence` per class, to let the DM (or the feature itself)
+  discount reward estimates built on shaky classifications. Not
+  implemented yet.
+- **Reward magnitude vs. mean.** The recorded quantity is the *group's*
+  total reward (`classification_reward`, a sum over the group's members),
+  not a per-sample mean — so it scales with group size. The `tanh` +
+  running-`|reward|`-scale normalization absorbs most of this, but it has
+  not been empirically checked for bias from group-size variance.
+- **Cold-start ambiguity.** `0.0` for an unaccepted class is deliberately
+  neutral, but it is indistinguishable from "this class truly earns nothing
+  when accepted" until the confidence-weighting extension above lets the
+  DM tell the two apart.
