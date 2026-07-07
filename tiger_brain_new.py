@@ -89,8 +89,10 @@ class TigerBrain:
 
     # Width of the fixed-size relational exteroceptive state block produced by
     # _relational_summary when `relational_state` is enabled. Kept in sync with
-    # the number of summary statistics that method stacks.
-    RELATIONAL_STATE_DIM = 7
+    # the number of statistics that method stacks: the 7 similarity stats plus
+    # the running-average accept-reward of the nearest (r_max) and runner-up
+    # (r_runnerup) known class.
+    RELATIONAL_STATE_DIM = 9
 
     def __init__(self, kwargs, wb_tracker=None):
         """
@@ -235,6 +237,10 @@ class TigerBrain:
         # drift. Default False (legacy behaviour: raw centroid state).
         self.relational_state = bool(
             self.intrusion_detection_kwargs.get('relational_state', False))
+        # Per-episode running average of the empirical accept-reward earned per
+        # predicted known class, appended to each relational summary
+        # (see _relational_summary / _update_relational_reward).
+        self._reset_relational_reward_tracker()
         # Ren et al. (2021) define relative Mahalanobis distance as a
         # post-hoc, frozen-feature diagnostic: the encoder is trained first,
         # then RMD is computed against its (fixed) representation. Our
@@ -456,8 +462,14 @@ class TigerBrain:
         # the pending epistemic-delay markers rather than closing them against
         # the next episode's traffic.
         self._pending_epistemic_delays = {}
+        # New episode: forget the accumulated per-class accept-reward averages,
+        # so the DM must re-estimate them from this episode's own experience.
+        # This mirrors the IM reset above and the no-absolute-prototypes stance
+        # -- reward memory must not leak across episodes any more than the
+        # prototypes do.
+        self._reset_relational_reward_tracker()
         self.episode_count += 1
-        
+
     def init_agents(self, args):
         """
         Initializes the mitigation agent (e.g., DQN, DAI variants).
@@ -859,6 +871,62 @@ class TigerBrain:
             mask[torch.tensor(g1_codes, device=self.device)] = True
         return mask
 
+    def _reset_relational_reward_tracker(self):
+        """
+        (Re)initialise the per-episode running average of the empirical
+        accept-reward earned per predicted known class. Called at construction
+        and at the start of every episode (reset_environment): the averages are
+        deliberately NOT persisted across episodes, so the DM re-estimates them
+        from each episode's own experience rather than memorising a fixed
+        setting -- the same reason the state uses relational summaries instead
+        of absolute prototypes.
+
+        `_class_reward_sum` / `_class_reward_count` hold the sum and count of
+        accepted-group rewards keyed by predicted class index (the same index
+        space as the prototypical-logit columns). `_reward_abs_*` track the
+        running mean of |reward|, used only to rescale the reward channel onto
+        the similarity-logit scale before it enters the DM (whose LayerNorm
+        covers only the proprioceptive tail, not this exteroceptive block).
+        """
+        self._class_reward_sum = {}
+        self._class_reward_count = {}
+        self._reward_abs_total = 0.0
+        self._reward_abs_n = 0
+        self._reward_abs_scale = 0.0
+
+    def _update_relational_reward(self, class_idx, group_reward):
+        """
+        Fold one accepted known-traffic group's empirical reward into the
+        running average for its predicted class. Only accepted groups are
+        recorded -- a blocked group earns a structural zero (see
+        _decision_reward) that would otherwise drag every class's estimate
+        toward zero and mask the real accept-value of the ones the policy
+        happens to block.
+        """
+        idx = int(class_idx)
+        self._class_reward_sum[idx] = self._class_reward_sum.get(idx, 0.0) + group_reward
+        self._class_reward_count[idx] = self._class_reward_count.get(idx, 0) + 1
+        self._reward_abs_total += abs(group_reward)
+        self._reward_abs_n += 1
+        self._reward_abs_scale = self._reward_abs_total / self._reward_abs_n
+
+    def _class_reward_feature(self, class_idx, device, dtype):
+        """
+        The scale-normalised, bounded reward feature for one known class: the
+        running-average accept-reward of `class_idx`, divided by the running
+        |reward| scale and tanh-squashed onto (-1, 1) so it sits on the same
+        footing as the similarity stats. A class not yet accepted this episode
+        (count 0) returns a neutral 0.0 -- which coincides with the reward of a
+        block, i.e. "no evidence it is worth accepting yet".
+        """
+        idx = int(class_idx)
+        count = self._class_reward_count.get(idx, 0)
+        if count == 0:
+            return torch.zeros((), device=device, dtype=dtype)
+        mean_r = self._class_reward_sum[idx] / count
+        scale = self._reward_abs_scale if self._reward_abs_scale > 1e-8 else 1.0
+        return torch.tanh(torch.tensor(mean_r / scale, device=device, dtype=dtype))
+
     def _relational_summary(self, score_slice):
         """
         Fixed-size, permutation-invariant relational summary of a group's or
@@ -872,11 +940,18 @@ class TigerBrain:
         currently exist (K can grow as CTI is bought), and is far more stable
         than an absolute centroid under representation drift.
 
-        The stats (kept in sync with RELATIONAL_STATE_DIM): closeness to the
-        nearest / farthest / mean prototype, spread across prototypes, the
-        top-2 margin (ambiguity), the assignment entropy, and the energy
-        (logsumexp) -- the same relational quantities the confidence-strategy
-        helpers already use, exposed as a vector rather than a single scalar.
+        The similarity stats (as before): closeness to the nearest / farthest /
+        mean prototype, spread across prototypes, the top-2 margin (ambiguity),
+        the assignment entropy, and the energy (logsumexp).
+
+        Interleaved with those, two reward stats bind the *value* of a decision
+        to the relational structure without ever naming a class: r_max is the
+        running-average accept-reward of the nearest prototype (the one s_max
+        refers to) and r_runnerup is that of the runner-up prototype (the one
+        the margin is measured against). So the DM reads "the class this most
+        resembles has paid off well / badly" and "the ambiguity is between a
+        good class and a bad one" -- ordered by relation, not by class identity,
+        which would break the relational bottleneck.
         """
         s = score_slice.mean(dim=0)  # [K] mean similarity to each known prototype
         k = s.shape[0]
@@ -888,12 +963,20 @@ class TigerBrain:
         s_mean = s.mean()
         if k > 1:
             s_std = s.std(unbiased=False)
-            top2 = torch.topk(s, 2).values
-            margin = top2[0] - top2[1]
+            top2 = torch.topk(s, 2)
+            margin = top2.values[0] - top2.values[1]
+            k_max, k_run = top2.indices[0], top2.indices[1]
         else:
             s_std = torch.zeros((), device=s.device, dtype=s.dtype)
             margin = s_max
-        return torch.stack([s_max, s_mean, s_min, s_std, margin, entropy, energy]).to(dtype=score_slice.dtype)
+            # Single known class: nearest and runner-up collapse to the same one.
+            k_max = torch.argmax(s)
+            k_run = k_max
+        r_max = self._class_reward_feature(k_max, s.device, s.dtype)
+        r_runnerup = self._class_reward_feature(k_run, s.device, s.dtype)
+        return torch.stack(
+            [s_max, r_max, s_mean, s_min, s_std, margin, r_runnerup, entropy, energy]
+        ).to(dtype=score_slice.dtype)
 
     def _call_confidence_decoder(self, decoder, scores, hidden_vectors, labels, query_mask, known_class_mask):
         """
@@ -1226,6 +1309,14 @@ class TigerBrain:
             group_costs = known_samples_costs[member_mask]
             accepted_group = action_signal.item() == 0
             classification_reward = self._decision_reward(accepted_group, group_costs)
+
+            # Feed the empirical (pre-shaping) pragmatic reward of an accepted
+            # group into the per-class running average that the next tick's
+            # relational summaries read back as r_max / r_runnerup. Keyed by the
+            # IM-predicted class -- the same index space as the prototype-logit
+            # columns the summary indexes -- so lookup and update line up.
+            if self.relational_state and accepted_group:
+                self._update_relational_reward(unique_classes[idx], classification_reward)
 
             group_true_labels = [true_label_names_known[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
             self.env.record_reappearances(group_true_labels, group_costs.tolist(), accepted=accepted_group)
