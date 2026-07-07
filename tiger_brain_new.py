@@ -1515,7 +1515,7 @@ class TigerBrain:
         # below cti_confidence_threshold, else defer the pragmatic choice.
         if self.intrusion_detection_kwargs.get('fixed_threshold_cti'):
             thr = float(self.intrusion_detection_kwargs.get('cti_confidence_threshold', 0.5))
-            if cluster_confidence is not None and cluster_confidence < thr \
+            if cluster_confidence is not None and cluster_confidence > thr \
                     and self.env.epistemic_actions_available == 1 \
                     and self._can_afford_cti():
                 return torch.tensor([2], device=self.device).long()
