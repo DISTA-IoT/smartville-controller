@@ -1455,7 +1455,7 @@ class TigerBrain:
         worst_case_price = max(prices)
         return (self.env.current_budget - worst_case_price) >= self.env.min_budget
 
-    def _select_unknown_cluster_action(self, state_vec):
+    def _select_unknown_cluster_action(self, state_vec, cluster_confidence=None):
         """
         Chooses the action for one unknown-traffic cluster.
 
@@ -1481,6 +1481,9 @@ class TigerBrain:
           When a G2 is available but the buy is unaffordable, or no G2
           remains, it behaves like the periodic case (query + remap 2 -> 1),
           so a broke greedy agent blocks instead of buying itself to death.
+        - fixed_threshold_cti: buys (action 2) whenever the cluster's
+          confidence is below cti_confidence_threshold (and a G2 is available
+          and affordable); otherwise queries the agent with 2 remapped to 1.
         - no_epistemic_actions: queries the agent normally but remaps any 2
           it returns to 1, fully disabling epistemic actions as a no-CTI
           baseline.
@@ -1505,6 +1508,16 @@ class TigerBrain:
 
         if self.intrusion_detection_kwargs.get('greedy_cti'):
             if self.env.epistemic_actions_available == 1 and self._can_afford_cti():
+                return torch.tensor([2], device=self.device).long()
+            return self._remap_epistemic_to_block(self.act(state_vec))
+
+        # fixed_threshold_cti (RC 3.6(b)): buy when the cluster's confidence is
+        # below cti_confidence_threshold, else defer the pragmatic choice.
+        if self.intrusion_detection_kwargs.get('fixed_threshold_cti'):
+            thr = float(self.intrusion_detection_kwargs.get('cti_confidence_threshold', 0.5))
+            if cluster_confidence is not None and cluster_confidence < thr \
+                    and self.env.epistemic_actions_available == 1 \
+                    and self._can_afford_cti():
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
 
@@ -1579,7 +1592,7 @@ class TigerBrain:
                 cluster_exteroceptive[idx].unsqueeze(0), num_anom, num_known,
                 cluster_zda_confidence.item(), 0.0, self.env.current_budget)
 
-            action = self._select_unknown_cluster_action(state_vec)
+            action = self._select_unknown_cluster_action(state_vec, cluster_zda_confidence.item())
 
             if action == 0:
                 accepted_cluster = True
