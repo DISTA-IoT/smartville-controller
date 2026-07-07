@@ -1573,6 +1573,8 @@ class TigerBrain:
         epistemic_costs = 0
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
+        # Per-cluster zda_confidence values this tick, for threshold calibration.
+        cluster_confidences = []
         # Sum of per-cluster impurity (1 - purity) this tick, used both to
         # charge the cluster-impurity penalty (when enabled) and to report the
         # mean impurity. Stays 0.0 -- and no penalty is applied -- when the knob
@@ -1587,6 +1589,7 @@ class TigerBrain:
             column = non_missing_columns[idx]
             member_mask = clusters_oh[:, column].bool()
             cluster_zda_confidence = self._zda_confidence_for_subset(anomalous_probs[member_mask])
+            cluster_confidences.append(cluster_zda_confidence.item())
 
             state_vec = self.assembly_state_vector(
                 cluster_exteroceptive[idx].unsqueeze(0), num_anom, num_known,
@@ -1717,6 +1720,18 @@ class TigerBrain:
                     self.cluster_impurity_penalty_weight * cluster_impurity_sum
                 cluster_scalars[AGENT+'/'+'mean_cluster_impurity'] = \
                     cluster_impurity_sum / num_identified
+            # Per-cluster zda_confidence distribution this tick, for threshold
+            # calibration: summary scalars plus a histogram of the raw values.
+            if cluster_confidences:
+                import wandb
+                conf_t = torch.tensor(cluster_confidences)
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_mean'] = conf_t.mean().item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_min'] = conf_t.min().item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_max'] = conf_t.max().item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_std'] = \
+                    conf_t.std(unbiased=False).item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_hist'] = \
+                    wandb.Histogram(cluster_confidences)
             self.reporter.log_scalars(cluster_scalars, step=self.wb_tracker.step_counter)
 
     def _log_epistemic_delays(self, present_labels):
