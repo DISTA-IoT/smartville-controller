@@ -271,15 +271,17 @@ class TigerBrain:
         # the update norm breaks that runaway. Set <= 0 to disable.
         self.grad_clip_max_norm = float(
             self.intrusion_detection_kwargs.get('grad_clip_max_norm', 10.0))
+        # for the threshold_cti ablation:
+        self.cti_confidence_threshold = float(self.intrusion_detection_kwargs.get('cti_confidence_threshold', 0.5))
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
             "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
-            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s\033[0m",
+            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.relational_state,
-            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold)
+            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -1514,8 +1516,7 @@ class TigerBrain:
         # fixed_threshold_cti (RC 3.6(b)): buy when the cluster's confidence is
         # below cti_confidence_threshold, else defer the pragmatic choice.
         if self.intrusion_detection_kwargs.get('fixed_threshold_cti'):
-            thr = float(self.intrusion_detection_kwargs.get('cti_confidence_threshold', 0.5))
-            if cluster_confidence is not None and cluster_confidence > thr \
+            if cluster_confidence is not None and cluster_confidence > self.cti_confidence_threshold \
                     and self.env.epistemic_actions_available == 1 \
                     and self._can_afford_cti():
                 return torch.tensor([2], device=self.device).long()
