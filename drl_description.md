@@ -6,7 +6,7 @@ Grounded entirely in `smartville-controller` (branch `TIGER_PAPER_DO_NOT_DELETE`
 Two *coupled but asynchronously-updated* learning problems sharing one stream of network traffic:
 
 - **Upper level — the Inference Module (IM)**: a supervised/self-supervised learner trained every tick by `train_inf_module_single_batch` via ordinary backprop on three losses (closed-set CE/Huber, anomaly-detection BCE, kernel-regression). It does **not** observe reward or budget. Its "opponent" is the traffic distribution and curriculum, not the DM.
-- **Lower level — the Decision Module (DM)**: an RL agent that consumes the IM's *current* outputs (logits, hidden centroids, anomaly probability, confidence) as part of its state, and whose actions feed back into the IM's training distribution: action `2` (buy CTI) calls `perform_epistemic_action`, which moves a class from `G2s` to `Knowns`, mutates `DynamicLabelEncoder`, and allocates a brand-new replay buffer — i.e., the DM's epistemic action literally changes the IM's training-set curriculum and output dimensionality (`self.current_known_classes_count += 1`).
+- **Lower level — the Decision Module (DM)**: an RL agent that consumes the IM's *current* outputs (logits, hidden centroids, anomaly probability, confidence) as part of its state, and whose actions feed back into the IM's training distribution: action `2` (buy CTI) calls `perform_epistemic_action`, which moves a class from `G2s` to `Knowns`, mutates `DynamicLabelEncoder`, and allocates a brand-new replay buffer — i.e., the DM's epistemic action literally changes the IM's training-set curriculum and output dimensionality (`self.current_known_classes_count += 1`). Under the assumed `hard_epistemic_action` setting the same buy *also* immediately activates that class's **AD oracle** (its samples are thereafter flagged Known for free, bypassing the IM's neural anomaly verdict) — see §2.6.
 
 So the coupling is: **IM parameters → DM's state/reward each tick → DM's epistemic actions → IM's curriculum/training distribution for subsequent ticks**, with the IM frozen (`.eval()`) during the action-selection moment and only trained afterward, off a replay-buffer sample that is *decoupled* from the exact batch the DM just acted on (`train_inf_module_single_batch` samples fresh from buffers, not from `online_batch`). This is the literal mechanism of the "game": one player (IM) optimizes classification/clustering loss by gradient descent; the other (DM) optimizes long-run budget by RL, and the DM's exploration of action `2` is the only channel through which it can change the curriculum the IM is asked to learn.
 
@@ -102,7 +102,10 @@ accept_reward_scale=1.0)` in `tiger_brain_new.py`:
   agent when `epistemic_actions_available == 1` (a real G2 class exists to
   buy) — `_select_unknown_cluster_action` remaps any `2` it returns to `1`
   (block) otherwise, so there is no separate "useless epistemic action"
-  penalty: the choice simply isn't offered when it would be a no-op.
+  penalty: the choice simply isn't offered when it would be a no-op. Beyond
+  paying the price, a productive buy acquires the targeted class — and, under
+  the assumed `hard_epistemic_action` setting, its AD oracle in the same shot
+  for the same single price; see §2.6.
 - Per-sample rewards come from `self.env.flow_rewards_dict`, set straight
   from the `rewards:` YAML block — fixed scalars per traffic class (e.g.,
   `mirai: -0.20`, `hue: 0.05` in the smaller config, or larger magnitudes in
@@ -123,6 +126,39 @@ accept_reward_scale=1.0)` in `tiger_brain_new.py`:
 `has_episode_ended()`: episode ends when `current_budget < min_budget`, `current_budget > max_budget`, or `steps_done >= max_episode_steps`.
 Upon termination, `reset_environment` is called, which calls `self.env.reset()` (restores `current_budget = init_budget`, restarts the curriculum back to `init_knowledge` — i.e. any purchased CTI knowledge from the previous episode is *forgotten*, `Knowns`/`G2s` reset to the YAML-configured lists) **and** `init_inference_neural_modules()`, which **re-instantiates the classifier/confidence-decoder/optimizer from scratch and reloads pretrained weights from disk**. This matches the system-description doc's claim that the IM is "reset to its pre-trained state at the start of every episode" — confirmed at code level, and it means the IM's within-episode learning (closed-set/AD/KR finetuning, and any new replay buffers from CTI purchases) is entirely discarded between episodes; only the DM's RL weights persist across episodes (the `mitigation_agent` is constructed once in `TigerBrain.__init__`, never reconstructed by `reset_environment`).
 
+### 2.6 The epistemic action in full (`hard_epistemic_action`)
+
+Action `2` is a single **hard epistemic action** that, in one shot, does what
+was formerly split across two separate purchases:
+
+1. **Buys the label.** `perform_epistemic_action` (→ `NewTigerEnvironment.
+   perform_epistemic_action` → `_deliver_label`) moves the targeted G2 class
+   from `G2s` to `Knowns`, registers it with `DynamicLabelEncoder`, opens a
+   fresh per-class replay buffer, and bumps `current_known_classes_count` — so
+   the class's samples become trainable and the IM's output dimensionality
+   grows. Delivery is instant in the clean regime, or delayed under the
+   CTI-delivery model; the promotion happens whenever the CTI actually arrives.
+2. **Buys the AD oracle.** At that same delivery moment, `_deliver_label` adds
+   the class to `env.ad_oracle_labels`. From then on, for the rest of the
+   episode, `online_anomaly_detection` (`tiger_brain_new.py`) overrides the IM's
+   neural anomaly-detection verdict for that class with ground truth: its
+   samples are always deemed Known and routed to the known-traffic
+   (`act_on_known_traffic`) path, instead of possibly being flagged
+   still-anomalous and sent to the unknown-cluster path.
+
+Both effects are charged the **single** CTI price `|class_reward *
+current_cti_price_factor|` — the oracle rides on the label buy at no extra cost.
+A repeat action `2` on an already-bought class is therefore just a **wasted**
+buy (full price, nothing acquired), exactly like targeting a G1 or an
+already-Known class; there is no second-level purchase, and
+`epistemic_actions_available` tracks only whether an unbought G2 still remains.
+
+This is gated by `intrusion_detection.hard_epistemic_action`. It is `false` in
+`tiger/config/default.yaml` but `true` in the paper-relevant
+`config/overrides/dista_tiger.yaml`, and this document assumes it enabled. With
+the flag off, action `2` buys only the label (step 1); that class can still be
+flagged anomalous by the IM afterwards, and no oracle is granted.
+
 ## 3. Per-tick orchestration (how the "game" actually unfolds in real time)
 
 `online_inference` is the single tick-level entry point, run once per `process_input` call which is inside an unthrottled loop in `smart_check`.
@@ -141,6 +177,7 @@ The DM step counter (`wb_tracker.step_counter`) increments once per individual a
 1. **Confidence is per-group/per-cluster in the slot that matters, zero in the other slot**: `cs_classif_confidence` is recomputed per predicted-class group in known-traffic decisions and `zda_confidence` is recomputed per cluster in unknown-cluster decisions (each via its own `_cs_confidence_for_slice`/`_zda_confidence_for_subset` call, scoped to that group's/cluster's members); the *other* confidence slot (the one not pertinent to that decision's regime — `zda_confidence` for known-traffic states, `cs_classif_confidence` for unknown-cluster states) is always `0.0`, which also tells the agent which regime the state belongs to.
 2. **State staleness across group/cluster decisions**: only the centroid, budget, and (for unknown clusters) the epistemic-flag scalar update between sequential decisions in the same tick; `num_anom`/`num_known` are frozen tick-level snapshots throughout the tick's whole decision sequence.
 3. **Known-traffic decisions are per predicted-class group, not per-flow**: one accept/reject action governs each group of known-predicted samples that share the same IM-predicted class within the tick, with reward summed over that group's members; a tick with several distinct predicted classes credits several known-traffic decisions.
+4. **The epistemic action buys a label and its AD oracle in one shot** (`hard_epistemic_action`, off in `default.yaml` but on in the `dista_tiger` paper override and assumed here): a productive action `2` promotes a G2 to Known *and* forces that class's later samples to be treated as Known (bypassing the IM's neural anomaly verdict) for the rest of the episode — all for one single CTI price. There is no second-level buy; a repeat purchase on an already-acquired class is wasted.
 5. **IM is fully reset every episode** (weights reloaded from disk, replay buffers and curriculum reset); only the DM's network/memory persists across episodes.
 6. **CTI price only decays, never rises**, and decays multiplicatively and stochastically every single decision step (not per-episode or per-purchase) when enabled.
 7. **Greedy-CTI / periodic-CTI / no-epistemic-actions are exclusive override modes** that replace the learned policy's action for the epistemic dimension — useful as ablations, but mean "agent always decides" is only true in the default/else branch.
@@ -156,7 +193,7 @@ reconstructs a real `TigerBrain` instance and feeds it samples that were
 previously captured by `FlowDataRecorder` (`data_recorder.py`) during a live
 run with `intrusion_detection.data_collection_mode: true`, replaying them
 through the *same* `TigerBrain._process_batch` path that `process_input` uses
-online. Concretely, `process_input_from_record` (`tiger_brain_new.py:1328`)
+online. Concretely, `process_input_from_record` (`tiger_brain_new.py:2117`)
 wraps one recorded tick's tensors into a `Batch`, restores the ground-truth
 `class_labels` from the recorded label strings, and calls `_process_batch` —
 none of the DM/IM coupling, MDP, reward, or episode-termination logic
@@ -170,7 +207,7 @@ A collection run is a directory `run_<timestamp>/` (under
 `/pox/pox/smartController/tiger_data_collection/`) containing:
 
 - **`manifest.json`** — written once, at `FlowDataRecorder.__init__` time, via
-  `TigerBrain._build_data_collection_manifest()` (`tiger_brain_new.py:212`).
+  `TigerBrain._build_data_collection_manifest()` (`tiger_brain_new.py:348`).
   This is a full snapshot of the exact config the live run used to construct
   `TigerBrain`/`NewTigerEnvironment`: the `intrusion_detection`,
   `neural_modules`, `knowledge`, `rewards`, `health`, and `wandb` config
@@ -247,7 +284,7 @@ reason:
   explicit `--set` overrides, every DM/IM hyperparameter is exactly what the
   manifest says.
 
-Before any of this, `check_feature_coverage()` (`offline_replay.py:234`)
+Before any of this, `check_feature_coverage()` (`offline_replay.py:227`)
 cross-checks `manifest['use_packet_feats']`/`use_node_feats` (what the model
 config wanted at capture time) against
 `intrusion_detection.data_collection_use_packet_feats`/`_use_node_feats`
@@ -260,7 +297,7 @@ replaying `None` tensors into a model that expects real ones.
 (it covers an initial packet-repetition warm-up artifact from the collection
 process itself, not real traffic), and each shard's `.pt` file is loaded and
 split into contiguous same-`tick` groups by `iter_tick_groups()`
-(`offline_replay.py:275`) — a FlowDataRecorder flush never splits a single
+(`offline_replay.py:268`) — a FlowDataRecorder flush never splits a single
 recorded tick across two shards, so per-shard grouping alone is enough to
 reconstruct the original tick boundaries. Each tick group is handed to
 `brain.process_input_from_record(...)` one at a time, in recorded order,
