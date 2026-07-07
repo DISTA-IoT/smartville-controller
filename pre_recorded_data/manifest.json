@@ -73,7 +73,7 @@
     "epistemic_is_blocking": false,
     "no_epistemic_actions": false,
     "two_level_epistemic_actions": false,
-    "dynamic_knowledge": true,
+    "dynamic_knowledge": false,
     "disable_budget_bankrupt_termination": false,
     "disable_budget_win_termination": true,
     "boltzmann_sampling": false,
