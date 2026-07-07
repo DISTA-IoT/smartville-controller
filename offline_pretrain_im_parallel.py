@@ -80,7 +80,7 @@ other checkpointed training script.
 Run this directly inside a checkout of this repo, pointed at a recorded run
 directory:
 
-    python3 offline_pretrain_im_parallel.py /data/tiger_data_collection/run_20250101_120000 \\
+    python3 offline_pretrain_im_parallel.py pre_recorded_data \\
         --variants default mahalanobis optim --seeds 1 2 3
 
 GPU autodetection, per-job log files, Ctrl-C behaviour, and the summary table
