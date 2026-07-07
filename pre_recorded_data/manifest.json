@@ -72,7 +72,7 @@
     "classification_accuracy_reward_weight": 0.0,
     "epistemic_is_blocking": false,
     "no_epistemic_actions": false,
-    "two_level_epistemic_actions": false,
+    "hard_epistemic_action": false,
     "dynamic_knowledge": false,
     "disable_budget_bankrupt_termination": false,
     "disable_budget_win_termination": true,

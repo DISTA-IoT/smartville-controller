@@ -1039,9 +1039,9 @@ class TigerBrain:
             zda_predictions = batch.zda_labels[query_mask]
             predicted_zda_mask = zda_predictions.to(torch.bool).squeeze(-1)
 
-        # Two-level epistemic action: for any class whose AD oracle was bought
-        # (level 2), stop using the IM's verdict and take the ground-truth zda
-        # label (Known, since the class moved to Knowns at level 1). Composes
+        # Hard epistemic action: for any class whose AD oracle is active (granted
+        # together with its label buy), stop using the IM's verdict and take the
+        # ground-truth zda label (Known, since the class is already bought). Composes
         # with use_neural_AD -- a no-op when it is off (that branch already uses
         # ground truth). Overriding the whole query subset is safe: only the
         # online tail feeds downstream decisions/metrics.
@@ -1450,12 +1450,11 @@ class TigerBrain:
 
         This runs before the cluster's majority label -- and thus the exact
         label that will be charged -- is known, so it guards the worst case:
-        the most expensive CTI action currently on offer. A level-1 buy is
-        charged the price listed in env.current_cti_options; with
-        two_level_epistemic on, a level-2 (AD-oracle) buy is charged the same
-        `abs(reward * price_factor)` against an already-bought, not-yet-oracle'd
-        class, so those candidates are folded in too. If even the priciest of
-        these keeps budget >= min_budget, any actual buy this tick is safe.
+        the most expensive CTI action currently on offer (the priciest
+        purchasable G2 listed in env.current_cti_options). Under
+        hard_epistemic_action a buy still costs that single price -- the AD oracle
+        rides on it for free -- so no extra candidates need folding in. If even
+        the priciest keeps budget >= min_budget, any actual buy this tick is safe.
 
         When bankruptcy termination is disabled (disable_budget_bankrupt_
         termination), there is no "dying", so every buy is affordable.
@@ -1463,20 +1462,12 @@ class TigerBrain:
         if self.env.disable_budget_bankrupt_termination:
             return True
 
-        # Level-1 options: real purchasable G2s (skip the high-cost
-        # placeholders update_cti_options inserts when no G2 remains).
+        # Purchasable G2s (skip the high-cost placeholders update_cti_options
+        # inserts when no G2 remains).
         prices = [
             price for label, price in self.env.current_cti_options.items()
             if not str(label).startswith('placeholder_')
         ]
-
-        # Level-2 options: an AD-oracle buy on an already-acquired class.
-        if getattr(self.env, 'two_level_epistemic', False):
-            oracle_labels = getattr(self.env, 'ad_oracle_labels', set())
-            for label, stats in getattr(self.env, 'acquired_g2_stats', {}).items():
-                if stats.get('bought') and label not in oracle_labels:
-                    prices.append(
-                        abs(self.env.flow_rewards_dict[label] * self.env.current_cti_price_factor))
 
         if not prices:
             return False
@@ -1990,7 +1981,7 @@ class TigerBrain:
                     # cti_shots + cti_misses == reappearances.
                     episode_metrics[f'cti_shots/{label}'] = stats['cti_shots']
                     episode_metrics[f'cti_misses/{label}'] = stats['cti_misses']
-                    # Reencounters after the AD oracle (level 2) was bought.
+                    # Reencounters after the AD oracle became active (granted with the label buy).
                     episode_metrics[f'oracled_reappearances/{label}'] = stats['oracled_reappearances']
                 # Pre-purchase (unsupervised) per-G2 net cost/reward: what
                 # accepting that G2's traffic cost/earned this episode while
