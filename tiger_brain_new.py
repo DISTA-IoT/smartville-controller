@@ -1224,8 +1224,14 @@ class TigerBrain:
         vector, so a NaN/Inf here (e.g. the baseline strategy's log of a
         degenerate logit ratio) needs sanitising at the source rather than
         relying on that later, blanket pass.
+
+        Replacement values match assembly_state_vector's convention exactly
+        (nan/posinf/neginf all -> 0.0): a degenerate confidence maps to the
+        same neutral value the full-state pass would have produced anyway, so
+        this only moves the sanitisation earlier without changing what the
+        agent's LayerNorm'd proprioceptive block ends up seeing.
         """
-        return torch.nan_to_num(value, nan=0.0, posinf=1e4, neginf=-1e4)
+        return torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _decision_reward(self, accepted, group_rewards, accept_reward_scale=1.0, malicious_accept_penalty_scale=1.0):
         """
