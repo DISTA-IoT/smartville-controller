@@ -1129,21 +1129,28 @@ class TigerBrain:
 
         if strategy == 'entropy':
             probs = torch.softmax(logits_slice, dim=1)
-            return (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
+            result = (probs * torch.log(probs + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
         elif strategy == 'energy':
-            return torch.logsumexp(logits_slice, dim=1).mean().unsqueeze(-1)
+            result = torch.logsumexp(logits_slice, dim=1).mean().unsqueeze(-1)
         elif strategy == 'margin':
             probs = torch.softmax(logits_slice, dim=1)
             if probs.shape[1] > 1:
                 top2 = torch.topk(probs, 2, dim=1).values
-                return (top2[:, 0] - top2[:, 1]).mean().unsqueeze(-1)
-            return probs.mean().unsqueeze(-1)
+                result = (top2[:, 0] - top2[:, 1]).mean().unsqueeze(-1)
+            else:
+                result = probs.mean().unsqueeze(-1)
         else: # baseline
             non_choosed_mask = torch.ones(n, num_classes, device=logits_slice.device)
             non_choosed_mask[torch.arange(n, device=logits_slice.device), preds_slice] = 0
             mean_non_choosed_values = logits_slice[non_choosed_mask.to(torch.bool)].mean()
             mean_choosed_logits = logits_slice.max(1)[0].mean()
-            return torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
+            # mean_non_choosed_values can land at/near zero or go negative
+            # (these are raw logits, not probabilities), sending the ratio
+            # to +-inf/0 and the log to NaN/Inf -- _clamp_confidence below
+            # sanitises the result before it reaches callers.
+            result = torch.log(mean_choosed_logits / mean_non_choosed_values).unsqueeze(-1)
+
+        return self._clamp_confidence(result)
 
     def evaluate_closed_set(self, class_labels, class_predictions, mode, accuracy_mask=None):
         """
@@ -1195,16 +1202,36 @@ class TigerBrain:
 
         if strategy == 'entropy':
             p = torch.cat([1 - probs, probs], dim=1)
-            return (p * torch.log(p + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
+            result = (p * torch.log(p + 1e-10)).sum(dim=1).mean().unsqueeze(-1)
         elif strategy == 'energy':
             p = probs.clamp(1e-10, 1 - 1e-10)
             l = torch.log(p / (1 - p))
             logits = torch.cat([-l, l], dim=1)
-            return torch.logsumexp(logits, dim=1).mean().unsqueeze(-1)
+            result = torch.logsumexp(logits, dim=1).mean().unsqueeze(-1)
         elif strategy == 'margin':
-            return torch.abs(2 * probs - 1).mean().unsqueeze(-1)
+            result = torch.abs(2 * probs - 1).mean().unsqueeze(-1)
         else: # baseline
-            return probs.mean().unsqueeze(-1)
+            result = probs.mean().unsqueeze(-1)
+
+        return self._clamp_confidence(result)
+
+    def _clamp_confidence(self, value):
+        """
+        Single choke point for both confidence methods above. Confidence
+        values are read raw by callers -- W&B scalars, cti_confidence_threshold
+        comparisons in _select_unknown_cluster_action -- before they ever
+        reach assembly_state_vector's own nan_to_num pass over the full state
+        vector, so a NaN/Inf here (e.g. the baseline strategy's log of a
+        degenerate logit ratio) needs sanitising at the source rather than
+        relying on that later, blanket pass.
+
+        Replacement values match assembly_state_vector's convention exactly
+        (nan/posinf/neginf all -> 0.0): a degenerate confidence maps to the
+        same neutral value the full-state pass would have produced anyway, so
+        this only moves the sanitisation earlier without changing what the
+        agent's LayerNorm'd proprioceptive block ends up seeing.
+        """
+        return torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _decision_reward(self, accepted, group_rewards, accept_reward_scale=1.0, malicious_accept_penalty_scale=1.0):
         """
