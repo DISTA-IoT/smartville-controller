@@ -73,7 +73,7 @@
     "epistemic_is_blocking": false,
     "useless_epistemic_penalty": 0,
     "no_epistemic_actions": false,
-    "hard_epistemic_action": false,
+    "hard_epistemic_action": true,
     "dynamic_knowledge": false,
     "disable_budget_bankrupt_termination": false,
     "disable_budget_win_termination": true,
