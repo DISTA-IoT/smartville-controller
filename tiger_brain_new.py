@@ -914,12 +914,12 @@ class TigerBrain:
 
     def _class_reward_feature(self, class_idx, device, dtype):
         """
-        The scale-normalised, bounded reward feature for one known class: the
+        The scale-normalised reward feature for one known class: the
         running-average accept-reward of `class_idx`, divided by the running
-        |reward| scale and tanh-squashed onto (-1, 1) so it sits on the same
-        footing as the similarity stats. A class not yet accepted this episode
-        (count 0) returns a neutral 0.0 -- which coincides with the reward of a
-        block, i.e. "no evidence it is worth accepting yet".
+        |reward| scale so it sits on the same footing as the similarity stats.
+        A class not yet accepted this episode (count 0) returns a neutral 0.0
+        -- which coincides with the reward of a block, i.e. "no evidence it is
+        worth accepting yet".
         """
         idx = int(class_idx)
         count = self._class_reward_count.get(idx, 0)
@@ -927,7 +927,7 @@ class TigerBrain:
             return torch.zeros((), device=device, dtype=dtype)
         mean_r = self._class_reward_sum[idx] / count
         scale = self._reward_abs_scale if self._reward_abs_scale > 1e-8 else 1.0
-        return torch.tanh(torch.tensor(mean_r / scale, device=device, dtype=dtype))
+        return torch.tensor(mean_r / scale, device=device, dtype=dtype)
 
     def _relational_summary(self, score_slice):
         """
