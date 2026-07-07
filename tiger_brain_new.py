@@ -1455,7 +1455,7 @@ class TigerBrain:
         worst_case_price = max(prices)
         return (self.env.current_budget - worst_case_price) >= self.env.min_budget
 
-    def _select_unknown_cluster_action(self, state_vec):
+    def _select_unknown_cluster_action(self, state_vec, cluster_confidence=None):
         """
         Chooses the action for one unknown-traffic cluster.
 
@@ -1481,6 +1481,9 @@ class TigerBrain:
           When a G2 is available but the buy is unaffordable, or no G2
           remains, it behaves like the periodic case (query + remap 2 -> 1),
           so a broke greedy agent blocks instead of buying itself to death.
+        - fixed_threshold_cti: buys (action 2) whenever the cluster's
+          confidence is below cti_confidence_threshold (and a G2 is available
+          and affordable); otherwise queries the agent with 2 remapped to 1.
         - no_epistemic_actions: queries the agent normally but remaps any 2
           it returns to 1, fully disabling epistemic actions as a no-CTI
           baseline.
@@ -1505,6 +1508,16 @@ class TigerBrain:
 
         if self.intrusion_detection_kwargs.get('greedy_cti'):
             if self.env.epistemic_actions_available == 1 and self._can_afford_cti():
+                return torch.tensor([2], device=self.device).long()
+            return self._remap_epistemic_to_block(self.act(state_vec))
+
+        # fixed_threshold_cti (RC 3.6(b)): buy when the cluster's confidence is
+        # below cti_confidence_threshold, else defer the pragmatic choice.
+        if self.intrusion_detection_kwargs.get('fixed_threshold_cti'):
+            thr = float(self.intrusion_detection_kwargs.get('cti_confidence_threshold', 0.5))
+            if cluster_confidence is not None and cluster_confidence < thr \
+                    and self.env.epistemic_actions_available == 1 \
+                    and self._can_afford_cti():
                 return torch.tensor([2], device=self.device).long()
             return self._remap_epistemic_to_block(self.act(state_vec))
 
@@ -1560,6 +1573,8 @@ class TigerBrain:
         epistemic_costs = 0
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
+        # Per-cluster zda_confidence values this tick, for threshold calibration.
+        cluster_confidences = []
         # Sum of per-cluster impurity (1 - purity) this tick, used both to
         # charge the cluster-impurity penalty (when enabled) and to report the
         # mean impurity. Stays 0.0 -- and no penalty is applied -- when the knob
@@ -1574,12 +1589,13 @@ class TigerBrain:
             column = non_missing_columns[idx]
             member_mask = clusters_oh[:, column].bool()
             cluster_zda_confidence = self._zda_confidence_for_subset(anomalous_probs[member_mask])
+            cluster_confidences.append(cluster_zda_confidence.item())
 
             state_vec = self.assembly_state_vector(
                 cluster_exteroceptive[idx].unsqueeze(0), num_anom, num_known,
                 cluster_zda_confidence.item(), 0.0, self.env.current_budget)
 
-            action = self._select_unknown_cluster_action(state_vec)
+            action = self._select_unknown_cluster_action(state_vec, cluster_zda_confidence.item())
 
             if action == 0:
                 accepted_cluster = True
@@ -1704,6 +1720,18 @@ class TigerBrain:
                     self.cluster_impurity_penalty_weight * cluster_impurity_sum
                 cluster_scalars[AGENT+'/'+'mean_cluster_impurity'] = \
                     cluster_impurity_sum / num_identified
+            # Per-cluster zda_confidence distribution this tick, for threshold
+            # calibration: summary scalars plus a histogram of the raw values.
+            if cluster_confidences:
+                import wandb
+                conf_t = torch.tensor(cluster_confidences)
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_mean'] = conf_t.mean().item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_min'] = conf_t.min().item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_max'] = conf_t.max().item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_std'] = \
+                    conf_t.std(unbiased=False).item()
+                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_hist'] = \
+                    wandb.Histogram(cluster_confidences)
             self.reporter.log_scalars(cluster_scalars, step=self.wb_tracker.step_counter)
 
     def _log_epistemic_delays(self, present_labels):

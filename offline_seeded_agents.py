@@ -29,6 +29,10 @@ tiger_brain_new.py's `_select_unknown_cluster_action`:
 - "greedy_cti":   intrusion_detection.greedy_cti=true -- action is forced to 2
                    whenever an unbought G2 class is available, otherwise the
                    agent is queried but its own 2's are remapped to 1.
+- "fixed_threshold": intrusion_detection.fixed_threshold_cti=true -- action is
+                   forced to 2 whenever the cluster confidence is below
+                   cti_confidence_threshold, otherwise the agent is queried but
+                   its own 2's are remapped to 1.
 
 Each (seed, agent, mode) combination is one offline_replay.py invocation:
 the manifest's recorded config is taken as the base, and only
@@ -91,9 +95,10 @@ from pathlib import Path
 DEFAULT_AGENTS = ["DQN", "DDQN", "DuelingDQN", "DuelingDDQN"]
 DEFAULT_SEEDS = [1, 2, 3]
 DEFAULT_CTI_PERIOD = 10
+DEFAULT_CTI_CONFIDENCE_THRESHOLD = 0.5
 DEFAULT_WANDB_GROUP_NAME = "offline-agents-seeded"
 
-ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti"]
+ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti", "fixed_threshold"]
 
 # Agents the epistemic-action ablations are actually swept against (see
 # module docstring: ablations only override one decision slot and still
@@ -110,6 +115,7 @@ ABLATION_RUN_NAME = {
     "no_epistemic": "no_epis",
     "periodic_cti": "periodic",
     "greedy_cti": "greedy",
+    "fixed_threshold": "fixed_thr",
 }
 
 
@@ -132,7 +138,7 @@ def modes_for_agent(agent: str, ablation_modes: list[str], ablated_agents: list[
     return ["baseline"]
 
 
-def ablation_set_overrides(mode: str, cti_period: int) -> list[str]:
+def ablation_set_overrides(mode: str, cti_period: int, cti_confidence_threshold: float) -> list[str]:
     """
     Returns the --set PATH=VALUE strings for offline_replay.py that realize
     one ablation mode, mirroring tiger/tests/seeded_agents.py's
@@ -148,6 +154,9 @@ def ablation_set_overrides(mode: str, cti_period: int) -> list[str]:
         return [f"intrusion_detection.cti_period={cti_period}"]
     if mode == "greedy_cti":
         return ["intrusion_detection.greedy_cti=true"]
+    if mode == "fixed_threshold":
+        return ["intrusion_detection.fixed_threshold_cti=true",
+                f"intrusion_detection.cti_confidence_threshold={cti_confidence_threshold}"]
     raise ValueError(f"Unknown ablation mode: {mode!r}")
 
 
@@ -169,6 +178,7 @@ def run_one(
     mode: str,
     seed: int,
     cti_period: int,
+    cti_confidence_threshold: float,
     group_name: str,
     wandb_enabled: bool,
     passthrough_args: list[str],
@@ -184,7 +194,7 @@ def run_one(
     overrides = [
         f"intrusion_detection.agent={agent}",
         f"intrusion_detection.seed={seed}",
-        *ablation_set_overrides(mode, cti_period),
+        *ablation_set_overrides(mode, cti_period, cti_confidence_threshold),
         f"wandb.wb_group_name={group_name}",
     ]
 
@@ -248,6 +258,11 @@ def main() -> int:
         "--cti-period", type=int, default=DEFAULT_CTI_PERIOD,
         help=f"Value of intrusion_detection.cti_period used by the 'periodic_cti' ablation mode "
              f"(default: {DEFAULT_CTI_PERIOD}).",
+    )
+    parser.add_argument(
+        "--cti-confidence-threshold", type=float, default=DEFAULT_CTI_CONFIDENCE_THRESHOLD,
+        help=f"Value of intrusion_detection.cti_confidence_threshold used by the 'fixed_threshold' "
+             f"ablation mode (default: {DEFAULT_CTI_CONFIDENCE_THRESHOLD}).",
     )
     parser.add_argument(
         "--wandb-group-name", default=DEFAULT_WANDB_GROUP_NAME,
@@ -340,6 +355,7 @@ def main() -> int:
                     mode=mode,
                     seed=seed,
                     cti_period=args.cti_period,
+                    cti_confidence_threshold=args.cti_confidence_threshold,
                     group_name=args.wandb_group_name,
                     wandb_enabled=not args.no_wandb,
                     passthrough_args=passthrough_args,
