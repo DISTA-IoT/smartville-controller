@@ -1730,8 +1730,6 @@ class TigerBrain:
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_max'] = conf_t.max().item()
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_std'] = \
                     conf_t.std(unbiased=False).item()
-                cluster_scalars[AGENT+'/'+'cluster_zda_confidence_hist'] = \
-                    wandb.Histogram(cluster_confidences)
             self.reporter.log_scalars(cluster_scalars, step=self.wb_tracker.step_counter)
 
     def _log_epistemic_delays(self, present_labels):
