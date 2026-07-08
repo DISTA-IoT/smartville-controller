@@ -72,7 +72,7 @@
     "unknown_malicious_accept_penalty_scale": 1.25,
     "cluster_impurity_penalty_weight": 30.0,
     "classification_accuracy_reward_weight": 3.0,
-    "epistemic_is_blocking": false,
+    "epistemic_is_blocking": true,
     "useless_epistemic_penalty": 0,
     "no_epistemic_actions": false,
     "hard_epistemic_action": true,
