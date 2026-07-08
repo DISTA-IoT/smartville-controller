@@ -1883,10 +1883,12 @@ class TigerBrain:
             # collective-anomaly clusters and is penalised less, so the reward
             # credits better perception rather than penalising the unsupervised
             # baseline directly. No-op when the weight is 0 (default).
-            if self.cluster_impurity_penalty_weight > 0.0 and cluster_purity is not None:
+            if cluster_purity is not None:
                 cluster_impurity = 1.0 - cluster_purity
                 cluster_impurity_sum += cluster_impurity
-                current_reward -= self.cluster_impurity_penalty_weight * cluster_impurity
+
+                if self.cluster_impurity_penalty_weight > 0.0:
+                    current_reward -= self.cluster_impurity_penalty_weight * cluster_impurity
 
             if epistemic_action:
                 updates_dict = self.perform_epistemic_action(
@@ -1956,6 +1958,7 @@ class TigerBrain:
                 AGENT+'/'+'epistemic_costs': epistemic_costs,
                 AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
+                AGENT+'/'+'mean_cluster_impurity': cluster_impurity_sum / num_identified
             }
             # Supervision-value component: total impurity penalty deducted this
             # tick and the mean cluster impurity behind it. Emitted only when
@@ -1963,8 +1966,7 @@ class TigerBrain:
             if self.cluster_impurity_penalty_weight > 0.0:
                 cluster_scalars[AGENT+'/'+'cluster_impurity_penalty'] = \
                     self.cluster_impurity_penalty_weight * cluster_impurity_sum
-                cluster_scalars[AGENT+'/'+'mean_cluster_impurity'] = \
-                    cluster_impurity_sum / num_identified
+                
             # Per-cluster zda_confidence distribution this tick, for threshold
             # calibration: summary scalars plus a histogram of the raw values.
             if cluster_confidences:
