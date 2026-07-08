@@ -95,7 +95,7 @@ from pathlib import Path
 DEFAULT_AGENTS = ["DQN", "DDQN", "DuelingDQN", "DuelingDDQN"]
 DEFAULT_SEEDS = [1, 2, 3]
 DEFAULT_CTI_PERIOD = 10
-DEFAULT_CTI_CONFIDENCE_THRESHOLD = 3.25
+DEFAULT_CTI_CONFIDENCE_THRESHOLD = 4.0
 DEFAULT_WANDB_GROUP_NAME = "offline-agents-seeded"
 
 ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti", "fixed_threshold"]
