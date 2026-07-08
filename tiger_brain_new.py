@@ -1494,7 +1494,15 @@ class TigerBrain:
             if self.intrusion_detection_kwargs['automatic_cs_acceptance']:
                 action_signal = torch.tensor([0], device=self.device).long()
             else:
-                action_signal = self.act(state_vec)
+                # Known-traffic has no epistemic (CTI) semantics: the reward
+                # logic only distinguishes accept (0) from not-accept (block).
+                # Remap a self-chosen epistemic action (2) to block (1) BEFORE
+                # it is scored, tallied, and stored, so the replay-buffer tuple
+                # (state, action, reward, next_state) is consistent -- the
+                # stored action is the block that actually happened, not a 2
+                # that was silently treated as a block.
+                action_signal = self._remap_epistemic_to_block(self.act(state_vec))
+
             last_action = action_signal
 
             self.env.steps_done += 1
