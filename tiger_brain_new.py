@@ -926,10 +926,15 @@ class TigerBrain:
         """
         (Re)initialise the per-episode running |budget| scale used to
         normalise the budget channel of the proprioceptive tail when
-        proprio_feature_scaling is on. `_budget_abs_total` / `_budget_abs_n`
-        accumulate the sum and count of |budget| observed at each state
-        assembly this episode; `_budget_abs_scale` is their ratio (the running
-        mean magnitude), the divisor the budget is squashed against.
+        proprio_feature_scaling is on AND there is no bankruptcy floor to
+        anchor to (env.disable_budget_bankrupt_termination is True). In the
+        default regime the budget channel anchors to min_budget/init_budget
+        instead (see _proprio_budget_feature), but the running scale is kept
+        warm on every call so it is always available as the no-floor fallback.
+        `_budget_abs_total` / `_budget_abs_n` accumulate the sum and count of
+        |budget| observed at each state assembly this episode; `_budget_abs_
+        scale` is their ratio (the running mean magnitude), the divisor the
+        budget is squashed against in that fallback.
 
         Note this is a *dedicated* budget scale, not the reward |scale|:
           * the reward |scale| is a per-decision magnitude and is only ever
@@ -947,21 +952,48 @@ class TigerBrain:
 
     def _proprio_budget_feature(self, budget, device, dtype):
         """
-        The scale-normalised, bounded budget feature for the proprioceptive
-        tail: fold |budget| into the running episode scale, then return
-        tanh(budget / scale) on (-1, 1). Mirrors _class_reward_feature -- the
-        same trick the user asked for -- so the budget sits on a comparable
-        footing to the confidences ([0, 1]) and the log1p'd counts, and a
-        runaway budget saturates instead of exploding into fc1. Before any
-        budget has been seen (or a degenerate ~0 scale) the divisor falls back
-        to 1.0.
+        The bounded budget feature for the proprioceptive tail, on (-1, 1).
+        Two regimes, forked on whether the bankruptcy floor is live:
+
+          * Bankruptcy termination ENABLED (env.disable_budget_bankrupt_
+            termination is False, the default): the budget has a meaningful
+            absolute anchor -- min_budget is the death floor and init_budget
+            the starting bankroll -- so encode absolute *runway* rather than a
+            self-relative magnitude. z = (budget - init_budget) / (init_budget
+            - min_budget) is centred on the starting bankroll: z = 0 at the
+            start, z = -1 (tanh -> ~-0.76) at the min_budget floor, positive
+            when ahead. tanh's resolution is best near the floor -- exactly
+            where the buy/afford/bankruptcy decisions need it -- and saturates
+            harmlessly when very solvent. This is independent of the raw
+            budget magnitude, so budget being one or two orders larger than a
+            single reward is irrelevant.
+
+          * Bankruptcy termination DISABLED: min_budget is no longer a boundary
+            the episode respects, so there is no floor to anchor to. Fall back
+            to self-normalising by the running |budget| magnitude,
+            tanh(budget / running_scale) -- the reward-style squash -- which
+            still bounds a runaway budget without assuming an absolute anchor.
+
+        The running |budget| scale is maintained on every call regardless of
+        regime, so it is always warm as the fallback divisor. Degenerate
+        denominators (~0 start-to-death runway, or ~0 running scale before any
+        budget is seen) fall back to 1.0.
         """
         b = float(budget)
+        # Always maintained: the fallback divisor for the no-floor regime.
         self._budget_abs_total += abs(b)
         self._budget_abs_n += 1
         self._budget_abs_scale = self._budget_abs_total / self._budget_abs_n
-        scale = self._budget_abs_scale if self._budget_abs_scale > 1e-8 else 1.0
-        return torch.tanh(torch.tensor(b / scale, device=device, dtype=dtype))
+        if not self.env.disable_budget_bankrupt_termination:
+            # Floor is live: anchor to it (absolute runway, centred on start).
+            runway = self.env.init_budget - self.env.min_budget
+            denom = runway if abs(runway) > 1e-8 else 1.0
+            z = (b - self.env.init_budget) / denom
+        else:
+            # No floor: self-normalise by the running |budget| magnitude.
+            scale = self._budget_abs_scale if self._budget_abs_scale > 1e-8 else 1.0
+            z = b / scale
+        return torch.tanh(torch.tensor(z, device=device, dtype=dtype))
 
     def _update_relational_reward(self, class_idx, group_reward):
         """
@@ -2095,8 +2127,9 @@ class TigerBrain:
         confidence, known count, classification confidence, CTI-available flag,
         budget. With proprio_feature_scaling on, each is normalised per-feature
         here rather than by the net's pooled LayerNorm(6): the two unbounded
-        channels are squashed (counts via log1p, budget via the running-|budget|
-        tanh in _proprio_budget_feature), while the two already-bounded
+        channels are squashed (counts via log1p, budget via the floor-anchored
+        or running-|budget| tanh in _proprio_budget_feature), while the two
+        already-bounded
         confidences and the boolean flag are left exactly as-is -- crucially
         preserving the structural zero in whichever confidence slot marks the
         off-regime. The net's proprio_norm becomes an Identity in this mode
