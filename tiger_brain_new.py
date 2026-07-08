@@ -1625,8 +1625,17 @@ class TigerBrain:
           it returns to 1, fully disabling epistemic actions as a no-CTI
           baseline.
 
-        Only when none of these is active does the agent's own action 2
-        survive unmodified.
+        Distinct from those ablations, guard_learned_cti_affordability is an
+        opt-in guard on the LEARNED path itself (default off): when on, a CTI
+        buy the agent chooses for itself but cannot afford is remapped to a
+        block, so the learned policy is held to the same affordability
+        constraint the scripted baselines are (`_can_afford_cti`). Off by
+        default -- and a no-op whenever bankruptcy termination is disabled --
+        so the baseline lets the agent's own action 2 through and learn the
+        budget constraint from the bankruptcy consequence itself.
+
+        Only when none of the ablations is active does the agent's own action
+        2 survive -- and then only subject to the optional affordability guard.
         """
         # Coerce to int before the -1 guard: config numbers travel as JSON/
         # form strings (see int(...) at every other use site, e.g.
@@ -1663,6 +1672,18 @@ class TigerBrain:
         if self.env.epistemic_actions_available == 0:
             # No G2 class left to buy: a CTI purchase here would be a no-op,
             # so it's not offered as a real choice -- treat it as a block.
+            return self._remap_epistemic_to_block(action)
+        # Optional affordability guard for the LEARNED policy (default OFF).
+        # When on, a self-chosen CTI buy the agent can't cover is remapped to a
+        # block, exactly as the scripted greedy/periodic/threshold baselines
+        # are guarded. The remap only touches action 2, and the returned action
+        # is what gets executed and stored in replay (see mitigation_agent.
+        # remember below), so the agent learns from the block it actually took.
+        # When off (and always a no-op while bankruptcy termination is
+        # disabled), action 2 survives and the agent must learn the budget
+        # constraint from the bankruptcy consequence itself.
+        if self.intrusion_detection_kwargs.get('guard_learned_cti_affordability') \
+                and not self._can_afford_cti():
             return self._remap_epistemic_to_block(action)
         return action
 
