@@ -143,6 +143,36 @@ class NewTigerEnvironment:
         self.epistemic_actions_available = 1 if num_g2s > 0 else 0
 
 
+    def acquired_cti_fraction(self):
+        """
+        Fraction of this episode's zero-day (G2) pool whose CTI has been bought
+        AND delivered so far, in [0, 1]. 0 at episode start, rising toward 1 as
+        G2s are purchased and promoted to Knowns. Counts delivered acquisitions
+        only (acquired_g2_stats[...]['bought'], set in _deliver_label): a paid-
+        but-not-yet-delivered G2 (delivery delay) is still a G2 and is not yet
+        counted, matching the moment its intelligence actually becomes usable.
+
+        This is the DM state's explicit, monotone memory of how much CTI it has
+        acquired this episode. Without it the value function cannot represent
+        "I bought class X, so my future return went up" -- the purchase's payoff
+        is earned later, on the known-traffic path, by transitions whose state
+        carries no trace of the buy -- so the delayed return is not Markov-
+        attributable to the epistemic action that caused it. The denominator is
+        the fixed per-episode G2 count (acquired_g2_stats is populated with the
+        full initial G2 set in reset() and its entries persist after delivery),
+        so the fraction is stable and comparable across ticks and episodes.
+
+        Guarded with getattr so a call before the first reset() (which creates
+        acquired_g2_stats) reads as 0.0 -- nothing acquired yet -- rather than
+        raising, mirroring the cti_delivery guard in update_cti_options.
+        """
+        stats_by_label = getattr(self, 'acquired_g2_stats', None)
+        if not stats_by_label:
+            return 0.0
+        delivered = sum(1 for stats in stats_by_label.values() if stats['bought'])
+        return delivered / len(stats_by_label)
+
+
     def has_episode_ended(self):
         if self.steps_done >= self.max_episode_steps:
             return True

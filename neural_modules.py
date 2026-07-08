@@ -28,14 +28,28 @@ def _as_bool(value):
     return bool(value)
 
 
+# Length of the proprioceptive tail of every DM state vector -- the fixed
+# block of scalars that follows the exteroceptive (centroid/relational) block.
+# Every state-consuming net splits the state at this boundary
+# (exteroceptive = x[:, :-PROPRIOCEPTIVE_STATE_SIZE],
+#  proprioceptive = x[:, -PROPRIOCEPTIVE_STATE_SIZE:]), so this is the single
+# source of truth for the split. Must stay in sync with the channels assembled
+# in TigerBrain.assembly_state_vector and with the `state_space_dim +=
+# PROPRIOCEPTIVE_STATE_SIZE` that sizes the state there. Channels, in order:
+# anomaly count, ZDA confidence, known count, classification confidence,
+# acquired-CTI fraction, CTI-available flag, budget.
+PROPRIOCEPTIVE_STATE_SIZE = 7
+
+
 def _make_proprio_norm(kwargs):
-    """Normaliser for the six-dim proprioceptive tail. Default is the pooled
-    LayerNorm(6). When proprio_feature_scaling is on, the tail is instead
-    normalised per-feature upstream (TigerBrain.assembly_state_vector), so the
-    net must NOT normalise it again -- return Identity to pass it through."""
+    """Normaliser for the proprioceptive tail. Default is the pooled
+    LayerNorm(PROPRIOCEPTIVE_STATE_SIZE). When proprio_feature_scaling is on,
+    the tail is instead normalised per-feature upstream
+    (TigerBrain.assembly_state_vector), so the net must NOT normalise it
+    again -- return Identity to pass it through."""
     if _as_bool(kwargs.get('proprio_feature_scaling', False)):
         return nn.Identity()
-    return nn.LayerNorm(6)
+    return nn.LayerNorm(PROPRIOCEPTIVE_STATE_SIZE)
 
 
 class PolicyNet(nn.Module):
@@ -50,8 +64,8 @@ class PolicyNet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = self.proprio_norm(x[:,-6:])
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -71,8 +85,8 @@ class ValueNet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = self.proprio_norm(x[:,-6:])
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -94,8 +108,8 @@ class NEFENet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = self.proprio_norm(x[:,-6:])
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -114,8 +128,8 @@ class DQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = self.proprio_norm(x[:,-6:])
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -147,8 +161,8 @@ class DuelingDQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = self.proprio_norm(x[:,-6:])
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))

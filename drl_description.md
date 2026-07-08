@@ -21,12 +21,13 @@ Always size 3:
 
 Action selection is delegated per-agent-type to `self.mitigation_agent.act(state)`, wrapped by `TigerBrain.act`. For `ValueLearningAgent` (DQN/DDQN/Dueling variants): epsilon-greedy (`init_epsilon_egreedy=1.0`, decays by `greedy_decay=0.999` to `greedy_min=0.01`) **or** Boltzmann sampling over Q-values if `boltzmann_sampling: true` (default config has it `true`) — `tiger_agents.py`. For the DAI_* agents: categorical sampling either from the policy net or from a softmax over negative-EFE values, depending on `use_critic_to_act` (default `true`). For PPO/A2C: categorical sampling from the actor's softmax output.
 
-There are three **forced-action overrides** that bypass the agent's own choice, applied per "unknown cluster" before `act()`'s output is used. 
-1. `cti_period != -1` → a *periodic* CTI policy: every `cti_period` steps, action is hard-forced to `2`; otherwise the agent is queried but its `2` is remapped to `1` (block).
-2. `greedy_cti=True` → forces `2` whenever `self.env.epistemic_actions_available == 1` (i.e., whenever an unbought G2 class still exists); otherwise queries the agent and remaps `2→1`.
-3. `no_epistemic_actions=True` (and neither of the above set) → queries the agent normally but remaps any `2` to `1`, effectively disabling epistemic actions entirely (ablation knob).
+There are four **forced-action overrides** that bypass the agent's own choice, applied per "unknown cluster" before `act()`'s output is used (checked in this order in `_select_unknown_cluster_action`, first match wins).
+1. `cti_period != -1` → a *periodic* CTI policy: every `cti_period` steps, action is hard-forced to `2` (provided a G2 is available and affordable); otherwise the agent is queried but its `2` is remapped to `1` (block).
+2. `greedy_cti=True` → forces `2` whenever `self.env.epistemic_actions_available == 1` (i.e., whenever an unbought G2 class still exists) *and* the buy is affordable (`_can_afford_cti()`); otherwise queries the agent and remaps `2→1`.
+3. `fixed_threshold_cti=True` → forces `2` whenever the cluster's own anomaly confidence exceeds `cti_confidence_threshold` (and a G2 is available and affordable); otherwise queries the agent and remaps `2→1`. (A confidence-gated scripted policy; note the code gates on `cluster_confidence > cti_confidence_threshold`.)
+4. `no_epistemic_actions=True` (and none of the above set) → queries the agent normally but remaps any `2` to `1`, effectively disabling epistemic actions entirely (ablation knob).
 
-These three are mutually exclusive ablation modes, not part of the "default" DM behavior — confirmed against `tiger/config/default.yaml`, where `greedy_cti: False`, `cti_period: -1`, and `no_epistemic_actions: false` are all off, so the actual learned-agent path is the final fallthrough in `_select_unknown_cluster_action`, which returns the agent's own action unmodified unless `epistemic_actions_available == 0`, in which case a `2` is remapped to `1` (block) since there is no G2 class left to buy.
+These four are mutually exclusive ablation modes, not part of the "default" DM behavior — confirmed against `tiger/config/default.yaml`, where `greedy_cti: False`, `cti_period: -1`, `fixed_threshold_cti` off, and `no_epistemic_actions: false` are all off, so the actual learned-agent path is the final fallthrough in `_select_unknown_cluster_action`, which returns the agent's own action unmodified unless `epistemic_actions_available == 0`, in which case a `2` is remapped to `1` (block) since there is no G2 class left to buy.
 
 There is additionally an *opt-in* `guard_learned_cti_affordability` knob (default `False`) that acts on this learned fallthrough itself — orthogonal to the three ablations above. When on, a self-chosen `2` the agent cannot afford (`_can_afford_cti()` false: paying the worst-case CTI price would drop budget below `min_budget`) is remapped to `1`, holding the learned policy to the same affordability guard the scripted greedy/periodic/threshold baselines already use. Because the *returned* action is what gets executed and stored in the replay buffer (`mitigation_agent.remember`), the value-based agents learn from the block they actually took (no behavior/target mismatch; PPO/A2C keep the same log-prob-of-sampled-action inconsistency the scripted branches already have). Default `False` keeps the paper baseline — the agent's own `2` survives and it must learn the budget constraint from the bankruptcy consequence — and the knob is in any case a no-op while `disable_budget_bankrupt_termination` is `True`, since with no bankruptcy every buy is affordable. On trades faster/lower-variance convergence (invalid-action masking of a dominated action) for the ability to *measure* whether the agent learned to budget on its own.
 
@@ -35,15 +36,18 @@ For known-class traffic, the action space is collapsed to a binary choice in eff
 
 ### 2.2 State space
 
-`self.state_space_dim = hidden_size [+ hidden_size if use_node_feats] [+ hidden_size if use_packet_feats] + 6`. The trailing 6-dim block (called "proprioceptive" in the comments) is, in order, assembled by `assembly_state_vector(centroid, num_anom, num_known, zda_confidence, cs_classif_confidence, curr_budget)`:
+`self.state_space_dim = hidden_size [+ hidden_size if use_node_feats] [+ hidden_size if use_packet_feats] + PROPRIOCEPTIVE_STATE_SIZE`, where `PROPRIOCEPTIVE_STATE_SIZE = 7` is a single named constant in `neural_modules.py` — the one source of truth for the exteroceptive/proprioceptive split, shared by `assembly_state_vector` and by every state-consuming net's `x[:, :-PROPRIOCEPTIVE_STATE_SIZE]` / `x[:, -PROPRIOCEPTIVE_STATE_SIZE:]` slice and its `LayerNorm(PROPRIOCEPTIVE_STATE_SIZE)`. The trailing 7-dim block (called "proprioceptive" in the comments) is, in order, assembled by `assembly_state_vector(centroid, num_anom, num_known, zda_confidence, cs_classif_confidence, curr_budget)`:
 
 ```
 [ centroid (hidden_size dims) ,
   num_anom, zda_confidence, num_known, cs_classif_confidence,
+  acquired_cti_fraction (0..1),
   epistemic_actions_available (0/1), current_budget ]
 ```
 
-`zda_confidence` and `cs_classif_confidence` are passed into `assembly_state_vector` explicitly by the caller, so each call site supplies the confidence of the specific group/cluster the decision is actually about.
+`zda_confidence` and `cs_classif_confidence` are passed into `assembly_state_vector` explicitly by the caller, so each call site supplies the confidence of the specific group/cluster the decision is actually about. `acquired_cti_fraction` and `epistemic_actions_available` are *not* passed as arguments; both are read live off `self.env` inside `assembly_state_vector` (hence the unchanged 6-argument signature).
+
+`acquired_cti_fraction` (`NewTigerEnvironment.acquired_cti_fraction()`) is the fraction of *this episode's* G2 (zero-day) pool that has been bought and delivered so far — `0.0` at episode reset, rising monotonically toward `1.0` as G2s are purchased and promoted to Knowns (delivered buys only; a paid-but-not-yet-delivered G2 under the delivery-delay model is not yet counted). It gives the value function an explicit, monotone memory of how much CTI the agent has acquired, so a purchase's delayed pay-off — earned later, on the known-traffic path, once the bought class reappears — becomes attributable to the epistemic action that caused it. **This channel is an addition on this working branch to address the CTI credit-assignment problem; it is not present in the `TIGER_PAPER_DO_NOT_DELETE` snapshot, whose proprioceptive block is 6-dim (no `acquired_cti_fraction`).**
 
 Both call sites take **one DM decision per identified group**, looped, with a real exteroceptive centroid every time:
 
@@ -56,8 +60,8 @@ So the "state" the agent sees is a same-shaped vector that is always "here's a s
 
 There is no explicit `P(s'|s,a)` model — transitions are produced by direct simulation inside the loops, not sampled from a stored distribution:
 
-- **Known-traffic transition**: `new_state[:-6] = ` the *next* predicted-class group's centroid if there's a next group in this tick's batch, else `-1*ones(...)`; `new_state[-1] = self.env.current_budget` (post-reward). So within one inference tick, the sequence of per-group decisions is chained as a genuine sequential MDP — group *i*'s "next state" is literally group *i+1*'s class-inference centroid — mirroring the unknown-cluster transition below. `num_anom`/`num_known` are **not** updated between groups in the same tick (frozen at the tick's batch-level values); `zda_confidence` stays `0.0` throughout (regime marker); `cs_classif_confidence` varies group-to-group, recomputed fresh for each group before `assembly_state_vector` is called.
-- **Unknown-cluster transition**: `next_state[:-6] = centroids[~missing][idx+1]` if there's a next cluster in this tick's batch, else `-1*ones(...)`; `next_state[-2] = epistemic_actions_available` (post-purchase, can flip 0→1... actually 1→0 if last G2 was just bought); `next_state[-1] = current_budget` (post-reward). So within one inference tick, the sequence of per-cluster decisions is chained as a genuine sequential MDP — cluster *i*'s "next state" is literally cluster *i+1*'s centroid. `num_anom`/`num_known` are **not** updated between clusters in the same tick (frozen at the tick's batch-level values); `cs_classif_confidence` stays `0.0` throughout (regime marker); `zda_confidence` varies cluster-to-cluster, each cluster's `state_vec` assembled with its own freshly-computed cluster confidence.
+- **Known-traffic transition**: `new_state[:-7] = ` the *next* predicted-class group's centroid if there's a next group in this tick's batch, else `-1*ones(...)`; `new_state[-1] = self.env.current_budget` (post-reward). So within one inference tick, the sequence of per-group decisions is chained as a genuine sequential MDP — group *i*'s "next state" is literally group *i+1*'s class-inference centroid — mirroring the unknown-cluster transition below. `num_anom`/`num_known` are **not** updated between groups in the same tick (frozen at the tick's batch-level values); `zda_confidence` stays `0.0` throughout (regime marker); `acquired_cti_fraction` is **not** updated here either (no buys happen on the known-traffic path, so it stays at the value carried over from `state_vec`); `cs_classif_confidence` varies group-to-group, recomputed fresh for each group before `assembly_state_vector` is called.
+- **Unknown-cluster transition**: `next_state[:-7] = centroids[~missing][idx+1]` if there's a next cluster in this tick's batch, else `-1*ones(...)`; `next_state[-3] = self.env.acquired_cti_fraction()` (post-purchase — re-read after any buy in this decision, so a productive action `2` shows the bumped ownership fraction in its own next-state, which is what makes the delayed pay-off attributable to the buy); `next_state[-2] = epistemic_actions_available` (post-purchase, can flip 1→0 if the last G2 was just bought); `next_state[-1] = current_budget` (post-reward). So within one inference tick, the sequence of per-cluster decisions is chained as a genuine sequential MDP — cluster *i*'s "next state" is literally cluster *i+1*'s centroid. `num_anom`/`num_known` are **not** updated between clusters in the same tick (frozen at the tick's batch-level values); `cs_classif_confidence` stays `0.0` throughout (regime marker); `zda_confidence` varies cluster-to-cluster, each cluster's `state_vec` assembled with its own freshly-computed cluster confidence.
 - **Budget update is the core state-transition dynamic**: `self.env.current_budget += current_reward` (or `+= classification_reward`), accumulated *within* a tick across all per-cluster/per-group decisions before the episode-end check is even made.
 
 The "transition" of the environment as a whole, across ticks, is driven by an exogenous, scripted process: real network traffic arriving from `process_input`/`process_input_from_record`, not by any agent-conditioned generative model of future flows. The DM's actions affect future *reward* (via budget and curriculum) but not which traffic arrives next — traffic arrival is action-independent. This is an important asymmetry vs. a textbook MDP: the "exogenous" part of the state (which classes/flows appear) is unaffected by the policy; only the "endogenous" part (budget, knowledge, replay buffers) is.
@@ -66,7 +70,8 @@ The "transition" of the environment as a whole, across ticks, is driven by an ex
 
 Reward is one rule, shared by every DM decision (known-traffic group or
 unknown-traffic cluster alike) — `_decision_reward(accepted, group_rewards,
-accept_reward_scale=1.0)` in `tiger_brain_new.py`:
+accept_reward_scale=1.0, malicious_accept_penalty_scale=1.0)` in
+`tiger_brain_new.py`:
 
 - **Accepted** (`action==0`, or `action==2` with `epistemic_is_blocking=False`):
   reward = `accept_reward_scale * relu(group_rewards).sum() + (group_rewards
@@ -99,22 +104,39 @@ accept_reward_scale=1.0)` in `tiger_brain_new.py`:
   have earned is forgone; there's no cost for the malicious content, since
   it's blocked.
 - **Epistemic** (`action==2`): the accept/block reward above, minus
-  `price_payed` (the actual CTI cost, `|class_reward * current_cti_price_factor|`,
-  from `perform_epistemic_action`). Action `2` is only ever offered to the
-  agent when `epistemic_actions_available == 1` (a real G2 class exists to
-  buy) — `_select_unknown_cluster_action` remaps any `2` it returns to `1`
-  (block) otherwise, so there is no separate "useless epistemic action"
-  penalty: the choice simply isn't offered when it would be a no-op. Beyond
-  paying the price, a productive buy acquires the targeted class — and, under
-  the assumed `hard_epistemic_action` setting, its AD oracle in the same shot
-  for the same single price; see §2.6.
+  `price_payed`, and — on a *wasted* buy — minus an additional
+  `useless_epistemic_penalty` (config knob, default `0.0`). Action `2` is only
+  ever *offered* when `epistemic_actions_available == 1` (some unbought G2
+  still exists) — `_select_unknown_cluster_action` remaps any `2` to `1`
+  (block) otherwise — but "some G2 exists" does **not** guarantee *this*
+  cluster is buyable: the buy targets the **cluster's majority true label**
+  (`Counter(member_labels).most_common(1)`), and if that majority label is not
+  a purchasable G2 (a mixed/spurious cluster whose majority is an already-Known
+  class, or a G1 for which no CTI is offered), the purchase is **wasted** —
+  `perform_epistemic_action` still charges full price (`|class_reward *
+  current_cti_price_factor|`, computed from the actual majority label),
+  acquires nothing, increments `wasted_epistemic_actions`, and the caller
+  subtracts `useless_epistemic_penalty` on top. This is deliberate: it is a
+  cost a state-conditioned policy can learn to avoid (by reading the cluster's
+  centroid/confidence before buying) and a blind scripted policy cannot.
+  Beyond paying the price, a *productive* buy acquires the targeted class —
+  and, under the assumed `hard_epistemic_action` setting, its AD oracle in the
+  same shot for the same single price; see §2.6.
 - Per-sample rewards come from `self.env.flow_rewards_dict`, set straight
-  from the `rewards:` YAML block — fixed scalars per traffic class (e.g.,
-  `mirai: -0.20`, `hue: 0.05` in the smaller config, or larger magnitudes in
-  the dista override) — reward shaping is entirely a human-authored lookup
-  table, not learned or derived from any cost model. This lookup table is
-  the *only* tunable for reward magnitude; there is no separate penalty
-  factor, "hard"/"easy" mode, or per-branch multiplier layered on top.
+  from the `rewards:` YAML block — fixed scalars per traffic class: small
+  negatives for malicious classes and larger positives for benign ones
+  (e.g. in `default.yaml`, `mirai: -0.040`, `hakai: -0.20` vs. `hue: 2`,
+  `echo: 8`, `doorlock: 10`), with different magnitudes in the dista
+  override — reward shaping is entirely a human-authored lookup table, not
+  learned or derived from any cost model. The lookup table is the base
+  reward magnitude; the only things layered on top are the per-branch knobs
+  documented above — `unknown_accept_reward_scale` /
+  `unknown_malicious_accept_penalty_scale` (unknown-cluster accepts) and the
+  wasted-buy `useless_epistemic_penalty` — plus two *default-off*
+  "supervision-value" shaping terms, `cluster_impurity_penalty_weight` and
+  `classification_accuracy_reward_weight` (both `0.0` in `default.yaml`, so
+  fully hidden unless enabled). There is no global "hard"/"easy" reward
+  multiplier.
 - For known-traffic groups, this is computed per predicted-class group
   (a single tick can credit several known-traffic rewards, one per distinct
   class the IM predicted that tick, W&B logs their per-group average). For
@@ -177,7 +199,7 @@ The DM step counter (`wb_tracker.step_counter`) increments once per individual a
 ## 4. Summary of simplifications/assumptions baked into the code (not paper claims, code facts)
 
 1. **Confidence is per-group/per-cluster in the slot that matters, zero in the other slot**: `cs_classif_confidence` is recomputed per predicted-class group in known-traffic decisions and `zda_confidence` is recomputed per cluster in unknown-cluster decisions (each via its own `_cs_confidence_for_slice`/`_zda_confidence_for_subset` call, scoped to that group's/cluster's members); the *other* confidence slot (the one not pertinent to that decision's regime — `zda_confidence` for known-traffic states, `cs_classif_confidence` for unknown-cluster states) is always `0.0`, which also tells the agent which regime the state belongs to.
-2. **State staleness across group/cluster decisions**: only the centroid, budget, and (for unknown clusters) the epistemic-flag scalar update between sequential decisions in the same tick; `num_anom`/`num_known` are frozen tick-level snapshots throughout the tick's whole decision sequence.
+2. **State staleness across group/cluster decisions**: only the centroid, budget, and (for unknown clusters) the epistemic-flag scalar and the `acquired_cti_fraction` scalar update between sequential decisions in the same tick; `num_anom`/`num_known` are frozen tick-level snapshots throughout the tick's whole decision sequence.
 3. **Known-traffic decisions are per predicted-class group, not per-flow**: one accept/reject action governs each group of known-predicted samples that share the same IM-predicted class within the tick, with reward summed over that group's members; a tick with several distinct predicted classes credits several known-traffic decisions.
 4. **The epistemic action buys a label and its AD oracle in one shot** (`hard_epistemic_action`, off in `default.yaml` but on in the `dista_tiger` paper override and assumed here): a productive action `2` promotes a G2 to Known *and* forces that class's later samples to be treated as Known (bypassing the IM's neural anomaly verdict) for the rest of the episode — all for one single CTI price. There is no second-level buy; a repeat purchase on an already-acquired class is wasted.
 5. **IM is fully reset every episode** (weights reloaded from disk, replay buffers and curriculum reset); only the DM's network/memory persists across episodes.

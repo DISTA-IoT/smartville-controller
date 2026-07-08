@@ -35,6 +35,7 @@ from contextlib import contextmanager
 from smartController.replay_buffer import RawReplayBuffer, Batch
 from smartController.wandb_tracker import WandBTracker
 from smartController.tiger_environment_new import NewTigerEnvironment
+from smartController.neural_modules import PROPRIOCEPTIVE_STATE_SIZE
 from smartController.tiger_agents import (
     ValueLearningAgent, DAIP_Agent, DAIA_Agent,
     DAIF_Agent, DAISA_Agent, PPO_Agent, A2C_Agent
@@ -246,11 +247,12 @@ class TigerBrain:
         # a small positive so it can never zero or flip the divisor.
         self.reward_temperature = max(
             float(self.intrusion_detection_kwargs.get('reward_temperature', 2.0)), 1e-8)
-        # When True, the six-dim proprioceptive tail of the state vector is
+        # When True, the proprioceptive tail of the state vector is
         # normalised per-feature at assembly time instead of by the net's
-        # pooled LayerNorm(6): the two unbounded channels (anomaly/known
-        # counts and the accumulated budget) are individually squashed, while
-        # the already-bounded confidences and the CTI flag pass through
+        # pooled LayerNorm(PROPRIOCEPTIVE_STATE_SIZE): the two unbounded
+        # channels (anomaly/known counts and the accumulated budget) are
+        # individually squashed, while the already-bounded confidences, the
+        # acquired-CTI fraction and the CTI flag pass through
         # untouched -- so their structural zeros (which double as the
         # known-vs-unknown regime indicator) stay clean, and a diverging
         # budget can no longer inflate the pooled variance and blank out the
@@ -544,9 +546,14 @@ class TigerBrain:
         # 4. confidence of the current predicted-class group's members (known
         #    traffic); zeroed for unknown-cluster states, doubling as the
         #    regime indicator alongside slot 2.
-        # 5. available CTI options (boolean flag)
-        # 6. current system budget
-        self.state_space_dim += 6
+        # 5. acquired-CTI fraction: fraction of this episode's G2 (zero-day)
+        #    pool already bought and delivered (env.acquired_cti_fraction()).
+        #    Gives the value function an explicit, monotone memory of how much
+        #    intelligence the agent has purchased, so the delayed known-traffic
+        #    payoff of a buy is attributable to the epistemic action.
+        # 6. available CTI options (boolean flag)
+        # 7. current system budget
+        self.state_space_dim += PROPRIOCEPTIVE_STATE_SIZE
 
         agent_mapping = {
             'DQN': ValueLearningAgent,
@@ -1546,9 +1553,9 @@ class TigerBrain:
             if not self.intrusion_detection_kwargs['automatic_cs_acceptance']:
                 new_state = state_vec.detach().clone()
                 if idx < num_groups - 1:
-                    new_state[:-6] = group_exteroceptive[idx + 1]
+                    new_state[:-PROPRIOCEPTIVE_STATE_SIZE] = group_exteroceptive[idx + 1]
                 else:
-                    new_state[:-6] = -1 * torch.ones_like(new_state[:-6])
+                    new_state[:-PROPRIOCEPTIVE_STATE_SIZE] = -1 * torch.ones_like(new_state[:-PROPRIOCEPTIVE_STATE_SIZE])
                 new_state[-1] = self.env.current_budget
                 end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
                 self.mitigation_agent.remember(
@@ -1908,10 +1915,16 @@ class TigerBrain:
             next_state = state_vec.detach().clone()
             
             if idx < num_identified - 1:
-                next_state[:-6] = cluster_exteroceptive[idx+1]
+                next_state[:-PROPRIOCEPTIVE_STATE_SIZE] = cluster_exteroceptive[idx+1]
             else:
-                next_state[:-6] = -1 * torch.ones_like(next_state[:-6])
-            
+                next_state[:-PROPRIOCEPTIVE_STATE_SIZE] = -1 * torch.ones_like(next_state[:-PROPRIOCEPTIVE_STATE_SIZE])
+
+            # env state already reflects any epistemic action taken above
+            # (perform_epistemic_action ran before this), so re-reading the
+            # acquired-CTI fraction here captures the post-buy bump: the buy's
+            # next_state shows the higher ownership its purchase just produced,
+            # which is what lets the bootstrap credit that value to action 2.
+            next_state[-3] = self.env.acquired_cti_fraction()
             next_state[-2] = self.env.epistemic_actions_available
             next_state[-1] = self.env.current_budget
 
@@ -2250,17 +2263,23 @@ class TigerBrain:
         the agent which regime (known vs. unknown traffic) this state
         belongs to.
 
-        The six proprioceptive channels are, in order: anomaly count, ZDA
-        confidence, known count, classification confidence, CTI-available flag,
-        budget. With proprio_feature_scaling on, each is normalised per-feature
-        here rather than by the net's pooled LayerNorm(6): the two unbounded
-        channels are squashed (counts via log1p, budget via the floor-anchored
-        or running-|budget| tanh in _proprio_budget_feature), while the two
-        already-bounded
-        confidences and the boolean flag are left exactly as-is -- crucially
+        The seven proprioceptive channels are, in order: anomaly count, ZDA
+        confidence, known count, classification confidence, acquired-CTI
+        fraction, CTI-available flag, budget. With proprio_feature_scaling on,
+        each is normalised per-feature here rather than by the net's pooled
+        LayerNorm(PROPRIOCEPTIVE_STATE_SIZE): the two unbounded channels are
+        squashed (counts via log1p, budget via the floor-anchored or
+        running-|budget| tanh in _proprio_budget_feature), while the two
+        already-bounded confidences, the already-bounded acquired-CTI fraction
+        (in [0, 1]) and the boolean flag are left exactly as-is -- crucially
         preserving the structural zero in whichever confidence slot marks the
         off-regime. The net's proprio_norm becomes an Identity in this mode
         (neural_modules), so the tail is normalised exactly once.
+
+        The acquired-CTI fraction (env.acquired_cti_fraction()) is the state's
+        memory of how much of this episode's zero-day pool the agent has bought
+        and delivered so far; it lets the value function attribute a purchase's
+        delayed known-traffic payoff back to the epistemic action.
         """
         if self.proprio_feature_scaling:
             device, dtype = centroid.device, centroid.dtype
@@ -2269,6 +2288,7 @@ class TigerBrain:
                 torch.tensor(float(zda_confidence), device=device, dtype=dtype),
                 torch.log1p(torch.tensor(float(num_known), device=device, dtype=dtype)),
                 torch.tensor(float(cs_classif_confidence), device=device, dtype=dtype),
+                torch.tensor(float(self.env.acquired_cti_fraction()), device=device, dtype=dtype),
                 torch.tensor(float(self.env.epistemic_actions_available), device=device, dtype=dtype),
                 self._proprio_budget_feature(curr_budget, device, dtype),
             ])
@@ -2276,6 +2296,7 @@ class TigerBrain:
             proprio = torch.tensor([
                 float(num_anom), float(zda_confidence),
                 float(num_known), float(cs_classif_confidence),
+                float(self.env.acquired_cti_fraction()),
                 float(self.env.epistemic_actions_available), float(curr_budget)
             ], device=centroid.device, dtype=centroid.dtype)
         state_vec = torch.cat([
