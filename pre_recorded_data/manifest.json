@@ -53,7 +53,7 @@
     "price_decay": false,
     "replay_batch_size": "32",
     "replay_buffer_max_capacity": "10000",
-    "agent_memory_size": "2000",
+    "agent_memory_size": "50000",
     "train_steps_per_tick": 1,
     "train_every_n_ticks": 1,
     "repulsive_weight": "1",
