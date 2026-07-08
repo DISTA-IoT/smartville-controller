@@ -105,7 +105,8 @@
     "cti_capture_fraction": 0.05,
     "cti_delivery_delay": 0,
     "cti_delivery_jitter": 0,
-    "cti_quality_coupling": "purity"
+    "cti_quality_coupling": "purity",
+    "guard_learned_cti_affordability": true
   },
   "neural_modules": {
     "first_stream_input_size": "4",
