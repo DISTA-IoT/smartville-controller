@@ -204,6 +204,19 @@ class NewTigerEnvironment:
         # online traffic regardless of the DM's knowledge state -- so a G2
         # keeps accruing appearances both before and after it is bought.
         self.appearances = {label: 0 for label in self.all_class_labels}
+        # Per-class, per-episode pragmatic-decision tallies, counted in
+        # *samples* (group/cluster members) rather than in group/cluster
+        # decisions, so their grand total is on the same footing as appearances
+        # (both count wire samples, not DM decisions). Known-regime tallies are
+        # keyed by the group's most-similar predicted class; unknown-regime
+        # tallies by the cluster's majority true label. Epistemic buys (action
+        # 2) are not pragmatic and are never recorded here, so the four tallies
+        # sum to slightly under total appearances by exactly the bought-cluster
+        # samples. Reported at episode end alongside appearances.
+        self.known_acceptances = {label: 0 for label in self.all_class_labels}
+        self.known_blocks = {label: 0 for label in self.all_class_labels}
+        self.unknown_acceptances = {label: 0 for label in self.all_class_labels}
+        self.unknown_blocks = {label: 0 for label in self.all_class_labels}
         # Per-class net value for the non-G2 classes (Knowns and G1s),
         # accumulated from episode init: the raw per-sample reward of their
         # accepted known-traffic samples. G2 net_values are tracked separately
@@ -323,6 +336,26 @@ class NewTigerEnvironment:
         for name in true_label_names:
             if name in self.appearances:
                 self.appearances[name] += 1
+
+    def record_pragmatic_decision(self, regime, label, accepted, count):
+        """
+        Accumulate a single pragmatic (accept/block) DM decision into the
+        per-episode, per-class sample tallies. `count` is the number of
+        samples the decision covered (group/cluster members), so the tallies
+        aggregate wire samples exactly like appearances -- one group-level
+        decision over N members adds N, not 1. `regime` is 'known' (keyed by
+        the group's most-similar predicted class) or 'unknown' (keyed by the
+        cluster's majority true label); `accepted` selects the accept vs block
+        tally. Epistemic buys are not pragmatic and must not be passed here.
+        """
+        target = {
+            ('known', True): self.known_acceptances,
+            ('known', False): self.known_blocks,
+            ('unknown', True): self.unknown_acceptances,
+            ('unknown', False): self.unknown_blocks,
+        }.get((regime, bool(accepted)))
+        if target is not None and label in target:
+            target[label] += count
 
     def record_unsupervised_pass(self, true_label_names, per_sample_rewards):
         """

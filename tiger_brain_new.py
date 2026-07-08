@@ -1464,13 +1464,6 @@ class TigerBrain:
 
         classification_reward_total = 0.0
         last_action = None
-        # Per-tick pragmatic-decision counts in the known regime, keyed by the
-        # group's most-similar (IM-predicted, argmax-of-similarity) class name.
-        # Accepts (action 0) and blocks (action 1) are counted separately;
-        # epistemic actions (2) are not pragmatic and are excluded. Emitted as
-        # known_acceptances/<class> and known_blocks/<class> below.
-        known_acceptances = {}
-        known_blocks = {}
         # Supervised classification-accuracy reward bookkeeping this tick: the
         # total accuracy reward added and the correct/total sample counts used
         # to report the tick's overall closed-set accuracy. All stay 0 -- and
@@ -1507,13 +1500,17 @@ class TigerBrain:
             # Pragmatic-decision tally for this group, keyed by its most-similar
             # (IM-predicted) class -- the finer-grained known-regime analogue of
             # the unknown-regime majority-label tally in act_on_unknown_clusters.
+            # Counted in *samples* (group members), accumulated per-episode on
+            # the env so its grand total is comparable to appearances; epistemic
+            # actions (2) are not pragmatic and are skipped.
             most_similar_name = self._class_index_to_name(unique_classes[idx])
             if most_similar_name is not None:
                 action_val = action_signal.item()
+                member_count = int(member_mask.sum().item())
                 if action_val == 0:
-                    known_acceptances[most_similar_name] = known_acceptances.get(most_similar_name, 0) + 1
+                    self.env.record_pragmatic_decision('known', most_similar_name, True, member_count)
                 elif action_val == 1:
-                    known_blocks[most_similar_name] = known_blocks.get(most_similar_name, 0) + 1
+                    self.env.record_pragmatic_decision('known', most_similar_name, False, member_count)
 
             # Feed the empirical (pre-shaping) pragmatic reward of an accepted
             # group into the per-class running average that the next tick's
@@ -1580,11 +1577,6 @@ class TigerBrain:
                 known_scalars[AGENT+'/'+'classification_accuracy'] = \
                     (accuracy_correct_total / accuracy_samples_total
                      if accuracy_samples_total > 0 else 0.0)
-            # Per-most-similar-class pragmatic-decision counts this tick.
-            for name, cnt in known_acceptances.items():
-                known_scalars[f'known_acceptances/{name}'] = cnt
-            for name, cnt in known_blocks.items():
-                known_scalars[f'known_blocks/{name}'] = cnt
             self.reporter.log_scalars(known_scalars, step=self.wb_tracker.step_counter)
 
         # Reward beliefs (the per-class spurious accept-rewards feeding the
@@ -1801,13 +1793,6 @@ class TigerBrain:
         rewards_per_blocked_clusters = 0
         # Per-cluster zda_confidence values this tick, for threshold calibration.
         cluster_confidences = []
-        # Per-tick pragmatic-decision counts in the unknown regime, keyed by
-        # each cluster's majority true label. Accepts (action 0) and blocks
-        # (action 1) are counted separately; epistemic actions (2) are not
-        # pragmatic and are excluded. Emitted as unknown_acceptances/<label>
-        # and unknown_blocks/<label> below.
-        unknown_acceptances = {}
-        unknown_blocks = {}
         # Sum of per-cluster impurity (1 - purity) this tick, used both to
         # charge the cluster-impurity penalty (when enabled) and to report the
         # mean impurity. Stays 0.0 -- and no penalty is applied -- when the knob
@@ -1865,14 +1850,18 @@ class TigerBrain:
                 majority_label, cluster_purity = None, None
 
             # Pragmatic-decision tally for this cluster, keyed by its majority
-            # true label. Epistemic buys (action 2) are excluded -- they are the
-            # epistemic channel, tracked separately as "Epistemic Actions taken".
+            # true label. Counted in *samples* (cluster members), accumulated
+            # per-episode on the env so its grand total is comparable to
+            # appearances; epistemic buys (action 2) are excluded -- they are
+            # the epistemic channel, tracked separately as "Epistemic Actions
+            # taken".
             if majority_label is not None:
                 action_val = action.item()
+                member_count = int(member_mask.sum().item())
                 if action_val == 0:
-                    unknown_acceptances[majority_label] = unknown_acceptances.get(majority_label, 0) + 1
+                    self.env.record_pragmatic_decision('unknown', majority_label, True, member_count)
                 elif action_val == 1:
-                    unknown_blocks[majority_label] = unknown_blocks.get(majority_label, 0) + 1
+                    self.env.record_pragmatic_decision('unknown', majority_label, False, member_count)
 
             if accepted_cluster:
                 member_rewards_tensor = anomalous_rewards[member_mask]
@@ -1973,11 +1962,6 @@ class TigerBrain:
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_max'] = conf_t.max().item()
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_std'] = \
                     conf_t.std(unbiased=False).item()
-            # Per-majority-label pragmatic-decision counts this tick.
-            for lbl, cnt in unknown_acceptances.items():
-                cluster_scalars[f'unknown_acceptances/{lbl}'] = cnt
-            for lbl, cnt in unknown_blocks.items():
-                cluster_scalars[f'unknown_blocks/{lbl}'] = cnt
             self.reporter.log_scalars(cluster_scalars, step=self.wb_tracker.step_counter)
 
     def _log_epistemic_delays(self, present_labels):
@@ -2230,6 +2214,19 @@ class TigerBrain:
                 # being bought).
                 for label, count in self.env.appearances.items():
                     episode_metrics[f'appearances/{label}'] = count
+                # Per-class pragmatic-decision sample counts this episode, keyed
+                # like the per-tick decisions that fed them (known by predicted
+                # class, unknown by cluster majority label). Counted in wire
+                # samples, so summing all four over every class recovers total
+                # appearances minus the epistemically-bought cluster samples.
+                for label, count in self.env.known_acceptances.items():
+                    episode_metrics[f'known_acceptances/{label}'] = count
+                for label, count in self.env.known_blocks.items():
+                    episode_metrics[f'known_blocks/{label}'] = count
+                for label, count in self.env.unknown_acceptances.items():
+                    episode_metrics[f'unknown_acceptances/{label}'] = count
+                for label, count in self.env.unknown_blocks.items():
+                    episode_metrics[f'unknown_blocks/{label}'] = count
                 self.reporter.log_scalars(episode_metrics, step=self.wb_tracker.step_counter)
             self.reset_environment()
 
