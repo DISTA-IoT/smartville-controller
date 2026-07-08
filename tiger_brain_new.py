@@ -895,6 +895,47 @@ class TigerBrain:
             }
         return [self._label_names_lookup[label.item()] for label in encoded_labels]
 
+    def _class_index_to_name(self, class_idx):
+        """
+        Resolve a single encoded class index (int or 0-dim tensor) to its
+        string label name, reusing the same cached inverse mapping as
+        get_label_names_from_encoded_labels. Returns None for an index not in
+        the current encoder mapping. Used by the per-class decision/belief
+        wandb series (reward_beliefs, known_acceptances/known_blocks), whose
+        keys are indexed by predicted class rather than by true label.
+        """
+        if self._label_names_lookup is None or len(self._label_names_lookup) != len(self.encoder.get_mapping()):
+            self._label_names_lookup = {
+                class_idx2: class_name
+                for class_name, class_idx2 in self.encoder.get_mapping().items()
+            }
+        return self._label_names_lookup.get(int(class_idx))
+
+    def _log_reward_beliefs(self):
+        """
+        Emit the current per-known-class running-average accept-reward -- the
+        "spurious" reward beliefs the DM has attached to each predicted known
+        class this episode, which feed the relational summary's r_max /
+        r_runnerup channels (see _class_reward_feature / _update_relational_
+        reward). They are spurious in that a group's membership is decided by
+        prototypical *similarity*, so the reward credited to a class can be
+        earned by traffic that merely resembles it. One series per class ->
+        reward_beliefs/<class_name>. Only populated (and only meaningful) when
+        relational_state is on, so the series stay hidden otherwise.
+        """
+        if not (self.wbt and self.relational_state):
+            return
+        beliefs = {}
+        for idx, count in self._class_reward_count.items():
+            if count == 0:
+                continue
+            name = self._class_index_to_name(idx)
+            if name is None:
+                continue
+            beliefs[f'reward_beliefs/{name}'] = self._class_reward_sum[idx] / count
+        if beliefs:
+            self.reporter.log_scalars(beliefs, step=self.wb_tracker.step_counter)
+
     def _g1_column_mask(self, num_cols):
         """
         Boolean mask over the classifier's `num_cols` logit columns marking
@@ -1423,6 +1464,13 @@ class TigerBrain:
 
         classification_reward_total = 0.0
         last_action = None
+        # Per-tick pragmatic-decision counts in the known regime, keyed by the
+        # group's most-similar (IM-predicted, argmax-of-similarity) class name.
+        # Accepts (action 0) and blocks (action 1) are counted separately;
+        # epistemic actions (2) are not pragmatic and are excluded. Emitted as
+        # known_acceptances/<class> and known_blocks/<class> below.
+        known_acceptances = {}
+        known_blocks = {}
         # Supervised classification-accuracy reward bookkeeping this tick: the
         # total accuracy reward added and the correct/total sample counts used
         # to report the tick's overall closed-set accuracy. All stay 0 -- and
@@ -1455,6 +1503,17 @@ class TigerBrain:
             group_costs = known_samples_costs[member_mask]
             accepted_group = action_signal.item() == 0
             classification_reward = self._decision_reward(accepted_group, group_costs)
+
+            # Pragmatic-decision tally for this group, keyed by its most-similar
+            # (IM-predicted) class -- the finer-grained known-regime analogue of
+            # the unknown-regime majority-label tally in act_on_unknown_clusters.
+            most_similar_name = self._class_index_to_name(unique_classes[idx])
+            if most_similar_name is not None:
+                action_val = action_signal.item()
+                if action_val == 0:
+                    known_acceptances[most_similar_name] = known_acceptances.get(most_similar_name, 0) + 1
+                elif action_val == 1:
+                    known_blocks[most_similar_name] = known_blocks.get(most_similar_name, 0) + 1
 
             # Feed the empirical (pre-shaping) pragmatic reward of an accepted
             # group into the per-class running average that the next tick's
@@ -1521,7 +1580,17 @@ class TigerBrain:
                 known_scalars[AGENT+'/'+'classification_accuracy'] = \
                     (accuracy_correct_total / accuracy_samples_total
                      if accuracy_samples_total > 0 else 0.0)
+            # Per-most-similar-class pragmatic-decision counts this tick.
+            for name, cnt in known_acceptances.items():
+                known_scalars[f'known_acceptances/{name}'] = cnt
+            for name, cnt in known_blocks.items():
+                known_scalars[f'known_blocks/{name}'] = cnt
             self.reporter.log_scalars(known_scalars, step=self.wb_tracker.step_counter)
+
+        # Reward beliefs (the per-class spurious accept-rewards feeding the
+        # relational exteroceptive summary) are updated by the accepted groups
+        # above, so emit their current state once the tick's decisions are in.
+        self._log_reward_beliefs()
 
     def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens):
         """
@@ -1732,6 +1801,13 @@ class TigerBrain:
         rewards_per_blocked_clusters = 0
         # Per-cluster zda_confidence values this tick, for threshold calibration.
         cluster_confidences = []
+        # Per-tick pragmatic-decision counts in the unknown regime, keyed by
+        # each cluster's majority true label. Accepts (action 0) and blocks
+        # (action 1) are counted separately; epistemic actions (2) are not
+        # pragmatic and are excluded. Emitted as unknown_acceptances/<label>
+        # and unknown_blocks/<label> below.
+        unknown_acceptances = {}
+        unknown_blocks = {}
         # Sum of per-cluster impurity (1 - purity) this tick, used both to
         # charge the cluster-impurity penalty (when enabled) and to report the
         # mean impurity. Stays 0.0 -- and no penalty is applied -- when the knob
@@ -1787,6 +1863,16 @@ class TigerBrain:
                 cluster_purity = majority_count / len(member_labels)
             else:
                 majority_label, cluster_purity = None, None
+
+            # Pragmatic-decision tally for this cluster, keyed by its majority
+            # true label. Epistemic buys (action 2) are excluded -- they are the
+            # epistemic channel, tracked separately as "Epistemic Actions taken".
+            if majority_label is not None:
+                action_val = action.item()
+                if action_val == 0:
+                    unknown_acceptances[majority_label] = unknown_acceptances.get(majority_label, 0) + 1
+                elif action_val == 1:
+                    unknown_blocks[majority_label] = unknown_blocks.get(majority_label, 0) + 1
 
             if accepted_cluster:
                 member_rewards_tensor = anomalous_rewards[member_mask]
@@ -1887,6 +1973,11 @@ class TigerBrain:
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_max'] = conf_t.max().item()
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_std'] = \
                     conf_t.std(unbiased=False).item()
+            # Per-majority-label pragmatic-decision counts this tick.
+            for lbl, cnt in unknown_acceptances.items():
+                cluster_scalars[f'unknown_acceptances/{lbl}'] = cnt
+            for lbl, cnt in unknown_blocks.items():
+                cluster_scalars[f'unknown_blocks/{lbl}'] = cnt
             self.reporter.log_scalars(cluster_scalars, step=self.wb_tracker.step_counter)
 
     def _log_epistemic_delays(self, present_labels):
