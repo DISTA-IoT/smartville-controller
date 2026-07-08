@@ -237,6 +237,15 @@ class TigerBrain:
         # drift. Default False (legacy behaviour: raw centroid state).
         self.relational_state = bool(
             self.intrusion_detection_kwargs.get('relational_state', False))
+        # Temperature (alpha) on the reward channels of the relational
+        # (exteroceptive) summary: r_max / r_runnerup are tanh(mean_r /
+        # (alpha * |reward| scale)) (see _class_reward_feature). alpha > 1
+        # widens the tanh's near-linear region so the extreme (very good /
+        # very costly) classes keep more dynamic range instead of saturating;
+        # alpha = 1.0 recovers the un-tempered squash. Default 2.0. Guarded to
+        # a small positive so it can never zero or flip the divisor.
+        self.reward_temperature = max(
+            float(self.intrusion_detection_kwargs.get('reward_temperature', 2.0)), 1e-8)
         # When True, the six-dim proprioceptive tail of the state vector is
         # normalised per-feature at assembly time instead of by the net's
         # pooled LayerNorm(6): the two unbounded channels (anomaly/known
@@ -297,12 +306,12 @@ class TigerBrain:
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
             "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
-            "proprio_feature_scaling=%s, "
+            "reward_temperature=%s, proprio_feature_scaling=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.relational_state,
-            self.proprio_feature_scaling,
+            self.reward_temperature, self.proprio_feature_scaling,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
 
         # Environment and Networking
@@ -1015,10 +1024,18 @@ class TigerBrain:
         """
         The scale-normalised, bounded reward feature for one known class: the
         running-average accept-reward of `class_idx`, divided by the running
-        |reward| scale and tanh-squashed onto (-1, 1) so it sits on the same
-        footing as the similarity stats. A class not yet accepted this episode
-        (count 0) returns a neutral 0.0 -- which coincides with the reward of a
-        block, i.e. "no evidence it is worth accepting yet".
+        |reward| scale (times the reward_temperature) and tanh-squashed onto
+        (-1, 1) so it sits on the same footing as the similarity stats. A class
+        not yet accepted this episode (count 0) returns a neutral 0.0 -- which
+        coincides with the reward of a block, i.e. "no evidence it is worth
+        accepting yet".
+
+        reward_temperature (alpha) widens the near-linear region of the tanh:
+        the input is mean_r / (alpha * scale), so a larger alpha pushes typical
+        ratios further from saturation and preserves more dynamic range among
+        the extreme (very good / very costly) classes, at the cost of a gentler
+        response overall. Default 2.0; alpha=1.0 recovers the un-tempered
+        squash.
         """
         idx = int(class_idx)
         count = self._class_reward_count.get(idx, 0)
@@ -1026,6 +1043,7 @@ class TigerBrain:
             return torch.zeros((), device=device, dtype=dtype)
         mean_r = self._class_reward_sum[idx] / count
         scale = self._reward_abs_scale if self._reward_abs_scale > 1e-8 else 1.0
+        scale = scale * self.reward_temperature
         return torch.tanh(torch.tensor(mean_r / scale, device=device, dtype=dtype))
 
     def _relational_summary(self, score_slice):
