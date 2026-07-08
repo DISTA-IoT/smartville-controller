@@ -237,10 +237,39 @@ class TigerBrain:
         # drift. Default False (legacy behaviour: raw centroid state).
         self.relational_state = bool(
             self.intrusion_detection_kwargs.get('relational_state', False))
+        # Temperature (alpha) on the reward channels of the relational
+        # (exteroceptive) summary: r_max / r_runnerup are tanh(mean_r /
+        # (alpha * |reward| scale)) (see _class_reward_feature). alpha > 1
+        # widens the tanh's near-linear region so the extreme (very good /
+        # very costly) classes keep more dynamic range instead of saturating;
+        # alpha = 1.0 recovers the un-tempered squash. Default 2.0. Guarded to
+        # a small positive so it can never zero or flip the divisor.
+        self.reward_temperature = max(
+            float(self.intrusion_detection_kwargs.get('reward_temperature', 2.0)), 1e-8)
+        # When True, the six-dim proprioceptive tail of the state vector is
+        # normalised per-feature at assembly time instead of by the net's
+        # pooled LayerNorm(6): the two unbounded channels (anomaly/known
+        # counts and the accumulated budget) are individually squashed, while
+        # the already-bounded confidences and the CTI flag pass through
+        # untouched -- so their structural zeros (which double as the
+        # known-vs-unknown regime indicator) stay clean, and a diverging
+        # budget can no longer inflate the pooled variance and blank out the
+        # other five channels for that sample (see assembly_state_vector /
+        # _proprio_budget_feature). The net drops its LayerNorm when this is
+        # on (neural_modules: proprio_norm -> Identity), reading the same flag
+        # from its kwargs. Default False (legacy behaviour: pooled LayerNorm).
+        self.proprio_feature_scaling = bool(
+            self.intrusion_detection_kwargs.get('proprio_feature_scaling', False))
         # Per-episode running average of the empirical accept-reward earned per
         # predicted known class, appended to each relational summary
         # (see _relational_summary / _update_relational_reward).
         self._reset_relational_reward_tracker()
+        # Per-episode running |budget| scale used to normalise the budget
+        # channel of the proprioceptive tail when proprio_feature_scaling is
+        # on. Reset alongside the reward tracker so, like the reward memory,
+        # the budget scale is re-estimated from each episode's own experience
+        # rather than carried across episodes.
+        self._reset_proprio_scale_tracker()
         # Ren et al. (2021) define relative Mahalanobis distance as a
         # post-hoc, frozen-feature diagnostic: the encoder is trained first,
         # then RMD is computed against its (fixed) representation. Our
@@ -277,10 +306,12 @@ class TigerBrain:
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
             "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
+            "reward_temperature=%s, proprio_feature_scaling=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.relational_state,
+            self.reward_temperature, self.proprio_feature_scaling,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
 
         # Environment and Networking
@@ -470,6 +501,10 @@ class TigerBrain:
         # -- reward memory must not leak across episodes any more than the
         # prototypes do.
         self._reset_relational_reward_tracker()
+        # Same rationale for the proprioceptive budget scale: re-estimate it
+        # from this episode's own budget trajectory rather than leaking the
+        # previous episode's magnitude across the reset.
+        self._reset_proprio_scale_tracker()
         self.episode_count += 1
 
     def init_agents(self, args):
@@ -896,6 +931,79 @@ class TigerBrain:
         self._reward_abs_n = 0
         self._reward_abs_scale = 0.0
 
+    def _reset_proprio_scale_tracker(self):
+        """
+        (Re)initialise the per-episode running |budget| scale used to
+        normalise the budget channel of the proprioceptive tail when
+        proprio_feature_scaling is on AND there is no bankruptcy floor to
+        anchor to (env.disable_budget_bankrupt_termination is True). In the
+        default regime the budget channel anchors to min_budget/init_budget
+        instead (see _proprio_budget_feature), but the running scale is kept
+        warm on every call so it is always available as the no-floor fallback.
+        `_budget_abs_total` / `_budget_abs_n` accumulate the sum and count of
+        |budget| observed at each state assembly this episode; `_budget_abs_
+        scale` is their ratio (the running mean magnitude), the divisor the
+        budget is squashed against in that fallback.
+
+        Note this is a *dedicated* budget scale, not the reward |scale|:
+          * the reward |scale| is a per-decision magnitude and is only ever
+            populated when relational_state is on (see _update_relational_
+            reward), whereas proprio scaling must work regardless of that flag;
+          * budget is the running *accumulation* of per-decision rewards, so
+            its magnitude is on a different (and larger) scale than a single
+            decision's reward.
+        Dividing budget by its own running magnitude keeps the channel ~O(1)
+        in normal operation and lets tanh bound it under divergence.
+        """
+        self._budget_abs_total = 0.0
+        self._budget_abs_n = 0
+        self._budget_abs_scale = 0.0
+
+    def _proprio_budget_feature(self, budget, device, dtype):
+        """
+        The bounded budget feature for the proprioceptive tail, on (-1, 1).
+        Two regimes, forked on whether the bankruptcy floor is live:
+
+          * Bankruptcy termination ENABLED (env.disable_budget_bankrupt_
+            termination is False, the default): the budget has a meaningful
+            absolute anchor -- min_budget is the death floor and init_budget
+            the starting bankroll -- so encode absolute *runway* rather than a
+            self-relative magnitude. z = (budget - init_budget) / (init_budget
+            - min_budget) is centred on the starting bankroll: z = 0 at the
+            start, z = -1 (tanh -> ~-0.76) at the min_budget floor, positive
+            when ahead. tanh's resolution is best near the floor -- exactly
+            where the buy/afford/bankruptcy decisions need it -- and saturates
+            harmlessly when very solvent. This is independent of the raw
+            budget magnitude, so budget being one or two orders larger than a
+            single reward is irrelevant.
+
+          * Bankruptcy termination DISABLED: min_budget is no longer a boundary
+            the episode respects, so there is no floor to anchor to. Fall back
+            to self-normalising by the running |budget| magnitude,
+            tanh(budget / running_scale) -- the reward-style squash -- which
+            still bounds a runaway budget without assuming an absolute anchor.
+
+        The running |budget| scale is maintained on every call regardless of
+        regime, so it is always warm as the fallback divisor. Degenerate
+        denominators (~0 start-to-death runway, or ~0 running scale before any
+        budget is seen) fall back to 1.0.
+        """
+        b = float(budget)
+        # Always maintained: the fallback divisor for the no-floor regime.
+        self._budget_abs_total += abs(b)
+        self._budget_abs_n += 1
+        self._budget_abs_scale = self._budget_abs_total / self._budget_abs_n
+        if not self.env.disable_budget_bankrupt_termination:
+            # Floor is live: anchor to it (absolute runway, centred on start).
+            runway = self.env.init_budget - self.env.min_budget
+            denom = runway if abs(runway) > 1e-8 else 1.0
+            z = (b - self.env.init_budget) / denom
+        else:
+            # No floor: self-normalise by the running |budget| magnitude.
+            scale = self._budget_abs_scale if self._budget_abs_scale > 1e-8 else 1.0
+            z = b / scale
+        return torch.tanh(torch.tensor(z, device=device, dtype=dtype))
+
     def _update_relational_reward(self, class_idx, group_reward):
         """
         Fold one accepted known-traffic group's empirical reward into the
@@ -916,10 +1024,18 @@ class TigerBrain:
         """
         The scale-normalised, bounded reward feature for one known class: the
         running-average accept-reward of `class_idx`, divided by the running
-        |reward| scale and tanh-squashed onto (-1, 1) so it sits on the same
-        footing as the similarity stats. A class not yet accepted this episode
-        (count 0) returns a neutral 0.0 -- which coincides with the reward of a
-        block, i.e. "no evidence it is worth accepting yet".
+        |reward| scale (times the reward_temperature) and tanh-squashed onto
+        (-1, 1) so it sits on the same footing as the similarity stats. A class
+        not yet accepted this episode (count 0) returns a neutral 0.0 -- which
+        coincides with the reward of a block, i.e. "no evidence it is worth
+        accepting yet".
+
+        reward_temperature (alpha) widens the near-linear region of the tanh:
+        the input is mean_r / (alpha * scale), so a larger alpha pushes typical
+        ratios further from saturation and preserves more dynamic range among
+        the extreme (very good / very costly) classes, at the cost of a gentler
+        response overall. Default 2.0; alpha=1.0 recovers the un-tempered
+        squash.
         """
         idx = int(class_idx)
         count = self._class_reward_count.get(idx, 0)
@@ -927,6 +1043,7 @@ class TigerBrain:
             return torch.zeros((), device=device, dtype=dtype)
         mean_r = self._class_reward_sum[idx] / count
         scale = self._reward_abs_scale if self._reward_abs_scale > 1e-8 else 1.0
+        scale = scale * self.reward_temperature
         return torch.tanh(torch.tensor(mean_r / scale, device=device, dtype=dtype))
 
     def _relational_summary(self, score_slice):
@@ -2023,14 +2140,38 @@ class TigerBrain:
         regime, and zero in the other slot, so the zero/non-zero pair tells
         the agent which regime (known vs. unknown traffic) this state
         belongs to.
+
+        The six proprioceptive channels are, in order: anomaly count, ZDA
+        confidence, known count, classification confidence, CTI-available flag,
+        budget. With proprio_feature_scaling on, each is normalised per-feature
+        here rather than by the net's pooled LayerNorm(6): the two unbounded
+        channels are squashed (counts via log1p, budget via the floor-anchored
+        or running-|budget| tanh in _proprio_budget_feature), while the two
+        already-bounded
+        confidences and the boolean flag are left exactly as-is -- crucially
+        preserving the structural zero in whichever confidence slot marks the
+        off-regime. The net's proprio_norm becomes an Identity in this mode
+        (neural_modules), so the tail is normalised exactly once.
         """
-        state_vec = torch.cat([
-            centroid.squeeze(0),
-            torch.tensor([
+        if self.proprio_feature_scaling:
+            device, dtype = centroid.device, centroid.dtype
+            proprio = torch.stack([
+                torch.log1p(torch.tensor(float(num_anom), device=device, dtype=dtype)),
+                torch.tensor(float(zda_confidence), device=device, dtype=dtype),
+                torch.log1p(torch.tensor(float(num_known), device=device, dtype=dtype)),
+                torch.tensor(float(cs_classif_confidence), device=device, dtype=dtype),
+                torch.tensor(float(self.env.epistemic_actions_available), device=device, dtype=dtype),
+                self._proprio_budget_feature(curr_budget, device, dtype),
+            ])
+        else:
+            proprio = torch.tensor([
                 float(num_anom), float(zda_confidence),
                 float(num_known), float(cs_classif_confidence),
                 float(self.env.epistemic_actions_available), float(curr_budget)
             ], device=centroid.device, dtype=centroid.dtype)
+        state_vec = torch.cat([
+            centroid.squeeze(0),
+            proprio
         ])
         # The exteroceptive block is a summary of the IM's hidden vectors; if a
         # loaded encoder is corrupt (non-finite weights from a diverged

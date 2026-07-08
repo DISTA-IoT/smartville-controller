@@ -20,10 +20,28 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _as_bool(value):
+    """Coerce a kwargs value (which may arrive as a real bool or as a config
+    string like "True"/"1") into a Python bool."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
+def _make_proprio_norm(kwargs):
+    """Normaliser for the six-dim proprioceptive tail. Default is the pooled
+    LayerNorm(6). When proprio_feature_scaling is on, the tail is instead
+    normalised per-feature upstream (TigerBrain.assembly_state_vector), so the
+    net must NOT normalise it again -- return Identity to pass it through."""
+    if _as_bool(kwargs.get('proprio_feature_scaling', False)):
+        return nn.Identity()
+    return nn.LayerNorm(6)
+
+
 class PolicyNet(nn.Module):
     def __init__(self, kwargs):
         super(PolicyNet, self).__init__()
-        self.proprio_norm = nn.LayerNorm(6)
+        self.proprio_norm = _make_proprio_norm(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -44,7 +62,7 @@ class PolicyNet(nn.Module):
 class ValueNet(nn.Module):
     def __init__(self, kwargs):
         super(ValueNet, self).__init__()
-        self.proprio_norm = nn.LayerNorm(6)
+        self.proprio_norm = _make_proprio_norm(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -67,7 +85,7 @@ class NEFENet(nn.Module):
         Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
         """
         super(NEFENet, self).__init__()
-        self.proprio_norm = nn.LayerNorm(6)
+        self.proprio_norm = _make_proprio_norm(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -87,7 +105,7 @@ class NEFENet(nn.Module):
 class DQN(nn.Module):
     def __init__(self, kwargs):
         super(DQN, self).__init__()
-        self.proprio_norm = nn.LayerNorm(6)
+        self.proprio_norm = _make_proprio_norm(kwargs)
         hidden_size = int(int(kwargs['hidden_size']))
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -107,7 +125,7 @@ class DQN(nn.Module):
 class DuelingDQN(nn.Module):
     def __init__(self, kwargs):
         super(DuelingDQN, self).__init__()
-        self.proprio_norm = nn.LayerNorm(6)
+        self.proprio_norm = _make_proprio_norm(kwargs)
         hidden_dim = int(int(kwargs['hidden_size']))
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
