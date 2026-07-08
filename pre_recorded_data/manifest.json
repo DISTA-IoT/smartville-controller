@@ -64,7 +64,7 @@
     "greedy_decay": "0.999",
     "agent_discount_rate": "0.99",
     "agency": true,
-    "relational_state": true,
+    "relational_state": false,
     "proprio_feature_scaling": false,
     "reward_temperature": 2.0,
     "automatic_cs_acceptance": false,
