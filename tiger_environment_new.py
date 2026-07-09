@@ -9,7 +9,17 @@ class NewTigerEnvironment:
     def __init__(self, kwargs):
         """Initialize the attributes of the Car class."""
         self.init_budget = float(kwargs.intrusion_detection.tiger_init_budget)
+        # Per-flow reward: the budget delta an accepted/blocked *flow* earns or
+        # costs (benign accepted / malicious blocked add, the opposite subtract).
         self.flow_rewards_dict = {key: float(value) for key, value in kwargs.rewards.items()}
+        # Per-class price of an epistemic action (buying that class's CTI/label),
+        # read directly from the config `prices` dict. DECOUPLED from
+        # flow_rewards_dict: the CTI price used to be |reward| * cti_price_factor,
+        # which tied the label-buying cost to the flow economics; it is now an
+        # independent, flat price (see _cti_price / perform_epistemic_action).
+        # One entry per class -- a wasted buy or a dynamic_knowledge reshuffle can
+        # target any class -- so .get() below falls back to 0 for anything absent.
+        self.cti_prices_dict = {key: float(value) for key, value in kwargs.get('prices', {}).items()}
         self.min_budget = float(kwargs.intrusion_detection.min_budget)
         self.max_budget = float(kwargs.intrusion_detection.max_budget)
         self.current_budget = self.init_budget
@@ -17,8 +27,13 @@ class NewTigerEnvironment:
         self.init_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in kwargs.knowledge.items()}
         self.logger = kwargs.logger
         self.max_episode_steps = int(kwargs.intrusion_detection.max_episode_steps)
-        self.init_cti_price_factor = float(kwargs.intrusion_detection.cti_price_factor)
-        self.current_cti_price_factor = self.init_cti_price_factor
+        # Per-episode CTI-price decay MULTIPLIER, starting at 1.0 (full price).
+        # The legacy intrusion_detection.cti_price_factor no longer sizes the
+        # epistemic price -- that now comes straight from cti_prices_dict -- so
+        # this is purely the factor the optional price_decay feature shrinks over
+        # an episode. It stays 1.0 the whole episode unless price_decay is on,
+        # in which case the flat price is scaled down stochastically (price_decay).
+        self.current_cti_price_factor = 1.0
         self.seed = int(kwargs.intrusion_detection.seed)
         # When True, episodes no longer terminate on hitting max_budget, so an
         # episode's cumulative reward (sum_episode_rewards) is no longer pinned
@@ -103,7 +118,7 @@ class NewTigerEnvironment:
             self.current_knowledge = {k: list(v) if isinstance(v, list) else v for k, v in self.init_knowledge.items()}
         self.current_knowledge['updated_labels'] = []
         self.update_cti_options()
-        self.current_cti_price_factor = self.init_cti_price_factor
+        self.current_cti_price_factor = 1.0
         random.seed(self.seed)
         return {'current_knowledge': self.current_knowledge,
                 'updated_label': None,
@@ -132,7 +147,7 @@ class NewTigerEnvironment:
             # do we still have so many unknowns?
             if idx < num_g2s:
                 label = g2s[idx]
-                self.current_cti_options[label] = abs(self.flow_rewards_dict[label] * self.current_cti_price_factor)
+                self.current_cti_options[label] = self._cti_price(label)
             else:
                 # if we do not have unknowns anymore, then lets put a placeholder in the state space (with high cost).
                 self.current_cti_options[f'placeholder_{idx}'] = 100
@@ -407,6 +422,19 @@ class NewTigerEnvironment:
                 continue
             self.unsupervised_costs[name] += reward
 
+    def _cti_price(self, label):
+        """
+        Flat price of an epistemic action buying CTI for `label`, read from the
+        config `prices` dict (self.cti_prices_dict) -- DECOUPLED from the flow
+        rewards (self.flow_rewards_dict), which now only price accepted/blocked
+        flows. Scaled by current_cti_price_factor, the per-episode decay
+        multiplier (1.0 unless price_decay is enabled), so the optional
+        stochastic price-decay feature still applies on top of the flat price.
+        A label with no configured price (a state-space option placeholder, or a
+        wasted buy whose target class is absent from `prices`) costs 0.
+        """
+        return self.cti_prices_dict.get(label, 0.0) * self.current_cti_price_factor
+
     def price_decay(self):
         self.current_cti_price_factor *= max(0.01, min(0.99, random.gauss(0.7,0.4)))
 
@@ -464,7 +492,7 @@ class NewTigerEnvironment:
             # (level-1) label buy in _deliver_label, so a repeat buy on it is
             # wasted like any other -- there is no separate second-level action.
             self.wasted_epistemic_actions += 1
-            price_payed = abs(self.flow_rewards_dict.get(target_label, 0.0) * self.current_cti_price_factor)
+            price_payed = self._cti_price(target_label)
             return {'updated_label': None,
                     'current_knowledge': self.current_knowledge,
                     'price_payed': price_payed,
@@ -475,7 +503,7 @@ class NewTigerEnvironment:
         # Payment is immediate. Record the price and count the acquisition now,
         # at the moment of purchase, regardless of any delivery delay.
         self.epistemic_actions += 1
-        price_payed = abs(self.flow_rewards_dict[acquired_cti] * self.current_cti_price_factor)
+        price_payed = self._cti_price(acquired_cti)
         stats = self.acquired_g2_stats[acquired_cti]
         stats['price_paid'] = price_payed
         self.total_cti_buys += 1

@@ -159,6 +159,7 @@ def build_kwargs(manifest, logger, args):
         "neural_modules": dict(manifest.get("neural_modules", {})),
         "knowledge": dict(manifest.get("knowledge", {})),
         "rewards": dict(manifest.get("rewards", {})),
+        "prices": dict(manifest.get("prices", {})),
         "health": dict(manifest.get("health", {})),
         "wandb": dict(manifest.get("wandb", {})),
         "traffic_dict": manifest.get("traffic_dict", {}),
