@@ -1132,7 +1132,20 @@ class TigerBrain:
         good class and a bad one" -- ordered by relation, not by class identity,
         which would break the relational bottleneck.
         """
-        s = score_slice.mean(dim=0)  # [K] mean similarity to each known prototype
+        # The prototypical CS logits fed here are inverse distances
+        # (1/cdist, MulticlassPrototypicalClassifier) -- unbounded above and,
+        # worse, they blow up hyperbolically exactly as the encoder tightens its
+        # clusters (cdist -> 0 => score -> 1e10). Fed raw into the value net's
+        # exteroceptive block (which is NOT normalised) that drove the DM's Q and
+        # value_loss into the millions. Work in log-score space instead:
+        # log(1/cdist) = -log(cdist) is bounded (~[-tens, +23]) and stays a
+        # *monotone* function of similarity, so every stat below sits at
+        # O(1..tens) as the design (SS 3.2) intended, while the decision-relevant
+        # structure is preserved: nearest/runner-up ranking (hence
+        # r_max/r_runnerup) is invariant under the monotone log, margin becomes a
+        # scale-invariant log-ratio, and softmax/entropy stop saturating to
+        # one-hot. clamp_min guards log(0) from a non-finite/zero upstream logit.
+        s = torch.log(score_slice.clamp_min(1e-30)).mean(dim=0)  # [K] mean log-similarity
         k = s.shape[0]
         p = torch.softmax(s, dim=0)
         entropy = -(p * torch.log(p + 1e-10)).sum()
@@ -1496,6 +1509,15 @@ class TigerBrain:
         # the encoder's embedding norm -- and therefore the DQN's input scale --
         # is inflating over training, independently of any relational transform.
         centroid_norms = []
+        # Value-net input scale actually fed to the DM, and the raw prototypical
+        # logit (1/cdist) behind it. In relational_state mode the exteroceptive
+        # block IS the relational summary (not the centroid above), so these are
+        # the series that reveal a relational blow-up: exteroceptive_abs_max is
+        # what the value net sees (should stay O(tens) after the log-score fix),
+        # while proto_logit_raw_max is the underlying inverse-distance spike
+        # (stays large regardless) -- the gap between them is the fix working.
+        extero_abs_maxes = []
+        proto_logit_raw_maxes = []
 
         for idx in range(num_groups):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
@@ -1506,6 +1528,8 @@ class TigerBrain:
 
             centroid = group_exteroceptive[idx].unsqueeze(0)
             centroid_norms.append(group_centroids[idx].norm().item())
+            extero_abs_maxes.append(group_exteroceptive[idx].abs().max().item())
+            proto_logit_raw_maxes.append(interest_logits_slice[member_mask].max().item())
             state_vec = self.assembly_state_vector(
                 centroid, num_of_anomalies, num_known,
                 0.0, group_confidence.item(), self.env.current_budget)
@@ -1607,6 +1631,10 @@ class TigerBrain:
                 known_scalars['diagnostics/centroid_norm_known_mean'] = \
                     sum(centroid_norms) / len(centroid_norms)
                 known_scalars['diagnostics/centroid_norm_known_max'] = max(centroid_norms)
+            if extero_abs_maxes:
+                known_scalars['diagnostics/exteroceptive_abs_max_known'] = max(extero_abs_maxes)
+            if proto_logit_raw_maxes:
+                known_scalars['diagnostics/proto_logit_raw_max_known'] = max(proto_logit_raw_maxes)
             # Supervision-value component: total accuracy reward added this tick
             # and the tick's overall closed-set accuracy behind it. Emitted only
             # when the knob is on, so the series stay hidden by default.
@@ -1844,6 +1872,11 @@ class TigerBrain:
         # echo/doorlock live until bought, so this is the scale most relevant to
         # the over-blocking of those classes.
         centroid_norms = []
+        # See act_on_known_traffic: value-net input scale actually fed to the DM
+        # (the relational summary when relational_state is on) and the raw
+        # prototypical logit (1/cdist) behind it, for the unknown/zero-day regime.
+        extero_abs_maxes = []
+        proto_logit_raw_maxes = []
 
         for idx in range(num_identified):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
@@ -1856,6 +1889,9 @@ class TigerBrain:
             cluster_confidences.append(cluster_zda_confidence.item())
 
             centroid_norms.append(cluster_centroids[idx].norm().item())
+            extero_abs_maxes.append(cluster_exteroceptive[idx].abs().max().item())
+            if anomalous_logits is not None:
+                proto_logit_raw_maxes.append(anomalous_logits[member_mask].max().item())
             state_vec = self.assembly_state_vector(
                 cluster_exteroceptive[idx].unsqueeze(0), num_anom, num_known,
                 cluster_zda_confidence.item(), 0.0, self.env.current_budget)
@@ -2019,6 +2055,10 @@ class TigerBrain:
                 cluster_scalars['diagnostics/centroid_norm_unknown_mean'] = \
                     sum(centroid_norms) / len(centroid_norms)
                 cluster_scalars['diagnostics/centroid_norm_unknown_max'] = max(centroid_norms)
+            if extero_abs_maxes:
+                cluster_scalars['diagnostics/exteroceptive_abs_max_unknown'] = max(extero_abs_maxes)
+            if proto_logit_raw_maxes:
+                cluster_scalars['diagnostics/proto_logit_raw_max_unknown'] = max(proto_logit_raw_maxes)
             # Supervision-value component: total impurity penalty deducted this
             # tick and the mean cluster impurity behind it. Emitted only when
             # the knob is on, so the series stay hidden in the default regime.
