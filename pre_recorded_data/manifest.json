@@ -179,8 +179,8 @@
   "prices": {
     "echo": "0",
     "hakai": "0",
-    "mirai": "0",
-    "hajime": "400",
+    "mirai": "400",
+    "hajime": "0",
     "doorlock": "0",
     "gafgyt": "0",
     "muhstik": "0",
