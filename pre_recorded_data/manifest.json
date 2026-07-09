@@ -70,7 +70,7 @@
     "automatic_cs_acceptance": false,
     "unknown_accept_reward_scale": 1.0,
     "unknown_malicious_accept_penalty_scale": 1.0,
-    "cluster_impurity_penalty_weight": 0.0,
+    "cluster_impurity_penalty_weight": 100.0,
     "classification_accuracy_reward_weight": 0.0,
     "epistemic_is_blocking": true,
     "useless_epistemic_penalty": 0,
