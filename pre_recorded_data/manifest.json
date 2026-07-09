@@ -177,6 +177,21 @@
     "cc_heartbeat": "-1.0",
     "hue": "1.0"
   },
+  "prices": {
+    "echo": "100",
+    "hakai": "100",
+    "mirai": "100",
+    "hajime": "100",
+    "doorlock": "100",
+    "gafgyt": "100",
+    "muhstik": "100",
+    "h_scan": "100",
+    "okiru": "100",
+    "generic_ddos": "100",
+    "torii": "100",
+    "cc_heartbeat": "100",
+    "hue": "100"
+  },
   "health": {
     "max_conn_retries": 5,
     "poll_timeout_seconds": 3,
