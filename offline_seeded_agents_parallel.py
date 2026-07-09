@@ -138,6 +138,7 @@ def run_job(
     run_dir: Path,
     cti_period: int,
     cti_confidence_threshold: float,
+    hard_g2s: list[str],
     group_name: str,
     wandb_enabled: bool,
     passthrough_args: list[str],
@@ -150,7 +151,7 @@ def run_job(
         overrides = [
             f"intrusion_detection.agent={job.agent}",
             f"intrusion_detection.seed={job.seed}",
-            *seq.ablation_set_overrides(job.mode, cti_period, cti_confidence_threshold),
+            *seq.ablation_set_overrides(job.mode, cti_period, cti_confidence_threshold, hard_g2s),
             f"wandb.wb_group_name={group_name}",
         ]
         cmd = [
@@ -203,6 +204,7 @@ def main() -> int:
     parser.add_argument("--ablated-agents", nargs="+", default=seq.DEFAULT_ABLATED_AGENTS, help=f"Which agents (from --agents) to sweep across --ablation-modes (default: {seq.DEFAULT_ABLATED_AGENTS}); every other agent in --agents only runs 'baseline'.")
     parser.add_argument("--cti-period", type=int, default=seq.DEFAULT_CTI_PERIOD, help=f"intrusion_detection.cti_period for the 'periodic_cti' mode (default: {seq.DEFAULT_CTI_PERIOD}).")
     parser.add_argument("--cti-confidence-threshold", type=float, default=seq.DEFAULT_CTI_CONFIDENCE_THRESHOLD, help=f"intrusion_detection.cti_confidence_threshold for the 'fixed_threshold' mode (default: {seq.DEFAULT_CTI_CONFIDENCE_THRESHOLD}).")
+    parser.add_argument("--hard-g2s", nargs="*", default=seq.DEFAULT_HARD_G2S, help=f"intrusion_detection.hard_g2s blocklist for the 'hard_g2s' mode: greedy CTI buys targeting these classes are remapped to a block, so only the off-list G2s are actually purchased (default: {seq.DEFAULT_HARD_G2S} -- the malicious G2s, leaving benign doorlock/echo purchasable). Pass --hard-g2s with no values to make 'hard_g2s' identical to plain 'greedy_cti'.")
     parser.add_argument("--wandb-group-name", default=seq.DEFAULT_WANDB_GROUP_NAME, help=f"wandb.wb_group_name shared by every run (default: {seq.DEFAULT_WANDB_GROUP_NAME!r}).")
     parser.add_argument("--no-wandb", action="store_true", help="Disable real wandb tracking for this sweep (default: enabled, --wandb-run-name set to the agent string).")
     parser.add_argument(
@@ -297,7 +299,7 @@ def main() -> int:
             overrides = [
                 f"intrusion_detection.agent={job.agent}",
                 f"intrusion_detection.seed={job.seed}",
-                *seq.ablation_set_overrides(job.mode, args.cti_period, args.cti_confidence_threshold),
+                *seq.ablation_set_overrides(job.mode, args.cti_period, args.cti_confidence_threshold, args.hard_g2s),
                 f"wandb.wb_group_name={args.wandb_group_name}",
             ]
             run_name = seq.wb_run_name(job.agent, job.mode, args.postfix)
@@ -317,7 +319,7 @@ def main() -> int:
         futures = [
             executor.submit(
                 run_job, job, gpu_queue, offline_replay_path, run_dir, args.cti_period,
-                args.cti_confidence_threshold,
+                args.cti_confidence_threshold, args.hard_g2s,
                 args.wandb_group_name, not args.no_wandb, passthrough_args, logs_dir, print_lock,
                 postfix=args.postfix,
             )
