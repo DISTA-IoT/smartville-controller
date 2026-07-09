@@ -304,6 +304,18 @@ class TigerBrain:
             self.intrusion_detection_kwargs.get('grad_clip_max_norm', 10.0))
         # for the threshold_cti ablation:
         self.cti_confidence_threshold = float(self.intrusion_detection_kwargs.get('cti_confidence_threshold', 0.5))
+        # hard_g2s ablation: a blocklist of G2 class labels whose CTI purchase is
+        # forbidden. A would-be epistemic buy (action 2) whose targeted label
+        # (the cluster's majority true label -- the class that would actually be
+        # bought, see act_on_unknown_clusters) falls in this list is remapped to
+        # a block (1) instead. Empty by default (no class blocked from purchase),
+        # so it is a no-op unless explicitly set. Unlike greedy_cti/cti_period/
+        # fixed_threshold_cti/no_epistemic_actions -- which are mutually-exclusive
+        # policies over the epistemic slot -- this is an orthogonal FILTER meant
+        # to be LAYERED on top of one of them (typically greedy_cti): greedy would
+        # buy every available G2, and hard_g2s carves out the ones it must block
+        # instead, yielding a "buy only the G2s that matter" oracle policy.
+        self.hard_g2s = list(self.intrusion_detection_kwargs.get('hard_g2s', []) or [])
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
@@ -1850,17 +1862,6 @@ class TigerBrain:
 
             action = self._select_unknown_cluster_action(state_vec, cluster_zda_confidence.item())
 
-            if action == 0:
-                accepted_cluster = True
-            elif action == 2:
-                epistemic_action = True
-                accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
-
-            current_reward = self._decision_reward(
-                accepted_cluster, rewards_per_cluster[~missing][idx],
-                accept_reward_scale=self.unknown_accept_reward_scale,
-                malicious_accept_penalty_scale=self.unknown_malicious_accept_penalty_scale)
-
             # Ground-truth labels of this cluster's members -- needed both
             # for the accept-path bookkeeping below and, on the epistemic
             # path, to target the CTI purchase at this cluster's actual
@@ -1868,7 +1869,8 @@ class TigerBrain:
             # in the curriculum list (the centroid is exteroceptive and can
             # be spurious/mixed-class, so the *targeted* label is decided
             # by majority vote among the cluster's true labels, not by the
-            # centroid itself).
+            # centroid itself). Computed BEFORE the action is consumed because
+            # the hard_g2s remap below keys off the targeted (majority) label.
             member_labels = [true_label_names_zda[i] for i in member_mask.nonzero(as_tuple=False).squeeze(-1).tolist()]
 
             # Majority true label AND its purity (fraction of the cluster that
@@ -1883,6 +1885,30 @@ class TigerBrain:
                 cluster_purity = majority_count / len(member_labels)
             else:
                 majority_label, cluster_purity = None, None
+
+            # hard_g2s filter: a would-be CTI buy (action 2) whose targeted
+            # label -- the majority true label computed just above, i.e. the
+            # exact class perform_epistemic_action would purchase -- is on the
+            # hard_g2s blocklist is remapped to a block (1). This is what lets a
+            # greedy_cti run be turned into a "buy only the G2s that matter"
+            # oracle: greedy would buy every available G2, and this carves out
+            # the ones that must be blocked instead. A no-op when hard_g2s is
+            # empty (default) or the target is off-list; the remapped action is
+            # what feeds the accept/reward/tally logic and replay below, so the
+            # agent is credited with the block it actually took.
+            if action == 2 and majority_label is not None and majority_label in self.hard_g2s:
+                action = self._remap_epistemic_to_block(action)
+
+            if action == 0:
+                accepted_cluster = True
+            elif action == 2:
+                epistemic_action = True
+                accepted_cluster = not self.intrusion_detection_kwargs['epistemic_is_blocking']
+
+            current_reward = self._decision_reward(
+                accepted_cluster, rewards_per_cluster[~missing][idx],
+                accept_reward_scale=self.unknown_accept_reward_scale,
+                malicious_accept_penalty_scale=self.unknown_malicious_accept_penalty_scale)
 
             # Pragmatic-decision tally for this cluster, keyed by its majority
             # true label. Counted in *samples* (cluster members), accumulated

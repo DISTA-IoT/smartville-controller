@@ -29,6 +29,23 @@ tiger_brain_new.py's `_select_unknown_cluster_action`:
 - "greedy_cti":   intrusion_detection.greedy_cti=true -- action is forced to 2
                    whenever an unbought G2 class is available, otherwise the
                    agent is queried but its own 2's are remapped to 1.
+- "hard_g2s":     intrusion_detection.greedy_cti=true PLUS
+                   intrusion_detection.hard_g2s=<blocklist> -- greedy CTI, but
+                   with the blocklisted G2 classes carved out: a forced buy that
+                   would target one of those classes is remapped to a block (1)
+                   instead. Unlike the other modes this is greedy_cti with an
+                   extra FILTER layered on it, not a standalone policy -- it turns
+                   the buy-everything greedy baseline into a "buy only the G2s
+                   that matter" oracle. The blocklist (--hard-g2s) defaults to the
+                   malicious G2s (mirai/gafgyt/hajime/h_scan/muhstik): those are
+                   already handled correctly by being blocked as unknown zero-days,
+                   so buying their label is pure wasted spend, whereas the benign
+                   G2s (doorlock/echo) flip from a wrong block-as-unknown to a
+                   correct accept-as-known once bought and so are the ones left
+                   purchasable. Use this to probe whether greedy_cti's
+                   indiscriminate buying can be beaten (i.e. is worse than
+                   baseline) by an otherwise-identical policy that only pays for
+                   the CTI that changes a decision.
 - "fixed_threshold": intrusion_detection.fixed_threshold_cti=true -- action is
                    forced to 2 whenever the cluster confidence is below
                    cti_confidence_threshold, otherwise the agent is queried but
@@ -98,7 +115,16 @@ DEFAULT_CTI_PERIOD = 10
 DEFAULT_CTI_CONFIDENCE_THRESHOLD = 4.0
 DEFAULT_WANDB_GROUP_NAME = "offline-agents-seeded"
 
-ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti", "fixed_threshold"]
+# Default hard_g2s blocklist for the "hard_g2s" mode: the malicious G2 classes,
+# whose correct action as an unknown zero-day is already a block, so buying their
+# label buys nothing but cost. Left OFF this list (and thus still purchasable
+# under the layered greedy_cti policy) are the benign G2s doorlock/echo, the only
+# G2s whose correct action changes once their label is known (wrong block-as-
+# unknown -> correct accept-as-known). See module docstring / tiger config
+# default.yaml `intrusion_detection.hard_g2s`.
+DEFAULT_HARD_G2S = ["mirai", "gafgyt", "hajime", "h_scan", "muhstik"]
+
+ABLATION_MODES = ["baseline", "no_epistemic", "periodic_cti", "greedy_cti", "hard_g2s", "fixed_threshold"]
 
 # Agents the epistemic-action ablations are actually swept against (see
 # module docstring: ablations only override one decision slot and still
@@ -115,6 +141,7 @@ ABLATION_RUN_NAME = {
     "no_epistemic": "no_epis",
     "periodic_cti": "periodic",
     "greedy_cti": "greedy",
+    "hard_g2s": "hard_g2s",
     "fixed_threshold": "fixed_thr",
 }
 
@@ -138,7 +165,8 @@ def modes_for_agent(agent: str, ablation_modes: list[str], ablated_agents: list[
     return ["baseline"]
 
 
-def ablation_set_overrides(mode: str, cti_period: int, cti_confidence_threshold: float) -> list[str]:
+def ablation_set_overrides(mode: str, cti_period: int, cti_confidence_threshold: float,
+                           hard_g2s: list[str]) -> list[str]:
     """
     Returns the --set PATH=VALUE strings for offline_replay.py that realize
     one ablation mode, mirroring tiger/tests/seeded_agents.py's
@@ -154,6 +182,15 @@ def ablation_set_overrides(mode: str, cti_period: int, cti_confidence_threshold:
         return [f"intrusion_detection.cti_period={cti_period}"]
     if mode == "greedy_cti":
         return ["intrusion_detection.greedy_cti=true"]
+    if mode == "hard_g2s":
+        # greedy_cti with the blocklist layered on: greedy still forces a buy
+        # whenever a G2 is available, but a buy targeting a blocklisted class is
+        # remapped to a block inside act_on_unknown_clusters -- see hard_g2s in
+        # tiger_brain_new.py. offline_replay.py parses the value with yaml.safe_load,
+        # so a bare [a,b,c] list survives as a Python list of strings; it is one
+        # argv element (no shell), so the brackets/commas need no quoting.
+        return ["intrusion_detection.greedy_cti=true",
+                "intrusion_detection.hard_g2s=[" + ",".join(hard_g2s) + "]"]
     if mode == "fixed_threshold":
         return ["intrusion_detection.fixed_threshold_cti=true",
                 f"intrusion_detection.cti_confidence_threshold={cti_confidence_threshold}"]
@@ -179,6 +216,7 @@ def run_one(
     seed: int,
     cti_period: int,
     cti_confidence_threshold: float,
+    hard_g2s: list[str],
     group_name: str,
     wandb_enabled: bool,
     passthrough_args: list[str],
@@ -194,7 +232,7 @@ def run_one(
     overrides = [
         f"intrusion_detection.agent={agent}",
         f"intrusion_detection.seed={seed}",
-        *ablation_set_overrides(mode, cti_period, cti_confidence_threshold),
+        *ablation_set_overrides(mode, cti_period, cti_confidence_threshold, hard_g2s),
         f"wandb.wb_group_name={group_name}",
     ]
 
@@ -263,6 +301,15 @@ def main() -> int:
         "--cti-confidence-threshold", type=float, default=DEFAULT_CTI_CONFIDENCE_THRESHOLD,
         help=f"Value of intrusion_detection.cti_confidence_threshold used by the 'fixed_threshold' "
              f"ablation mode (default: {DEFAULT_CTI_CONFIDENCE_THRESHOLD}).",
+    )
+    parser.add_argument(
+        "--hard-g2s", nargs="*", default=DEFAULT_HARD_G2S,
+        help=f"G2 class labels set as intrusion_detection.hard_g2s in the 'hard_g2s' ablation mode: "
+             f"a greedy CTI buy targeting one of these is remapped to a block, so they are never "
+             f"actually purchased (default: {DEFAULT_HARD_G2S} -- the malicious G2s, whose correct "
+             f"action is already to block them as unknowns, leaving only the benign G2s doorlock/echo "
+             f"purchasable). Pass an empty list (--hard-g2s with no values) to make 'hard_g2s' mode "
+             f"identical to plain 'greedy_cti'.",
     )
     parser.add_argument(
         "--wandb-group-name", default=DEFAULT_WANDB_GROUP_NAME,
@@ -356,6 +403,7 @@ def main() -> int:
                     seed=seed,
                     cti_period=args.cti_period,
                     cti_confidence_threshold=args.cti_confidence_threshold,
+                    hard_g2s=args.hard_g2s,
                     group_name=args.wandb_group_name,
                     wandb_enabled=not args.no_wandb,
                     passthrough_args=passthrough_args,
