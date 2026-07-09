@@ -562,13 +562,22 @@ class TigerBrain:
         # 'mixed' concatenates both; the build order here must match how each
         # group's/cluster's exteroceptive vector is assembled in
         # act_on_known_traffic / act_on_unknown_clusters.
-        self.exteroceptive_dim = 0
+        # Width of the prototype (raw-centroid) sub-block of the exteroceptive
+        # block: the leading columns, before any relational summary. 0 in pure
+        # 'relational' mode. The DM nets LayerNorm exactly this leading slice
+        # (see neural_modules._make_extero_norm): the centroid enters as raw
+        # absolute coordinates whose scale drifts as the encoder trains, while
+        # the relational summary that may follow it is already bounded/scaled
+        # per-feature (log-score stats + tanh reward channels) and must be left
+        # untouched.
+        self.exteroceptive_proto_dim = 0
         if self.use_prototype_state:
-            self.exteroceptive_dim += self.hidden_size
+            self.exteroceptive_proto_dim += self.hidden_size
             if self.use_node_feats:
-                self.exteroceptive_dim += self.hidden_size
+                self.exteroceptive_proto_dim += self.hidden_size
             if self.use_packet_feats:
-                self.exteroceptive_dim += self.hidden_size
+                self.exteroceptive_proto_dim += self.hidden_size
+        self.exteroceptive_dim = self.exteroceptive_proto_dim
         if self.relational_state:
             self.exteroceptive_dim += self.RELATIONAL_STATE_DIM
         self.state_space_dim = self.exteroceptive_dim
@@ -616,6 +625,9 @@ class TigerBrain:
         agent_class = agent_mapping[agent_type]
         args.intrusion_detection.action_size = 3  # block, pass or TCI acquisition
         args.intrusion_detection.state_size = self.state_space_dim
+        # Width of the prototype sub-block the DM nets LayerNorm (0 in pure
+        # 'relational' mode); read by neural_modules._make_extero_norm.
+        args.intrusion_detection.exteroceptive_proto_dim = self.exteroceptive_proto_dim
         
         self.mitigation_agent = agent_class(args)
 
