@@ -1,10 +1,35 @@
 # Relational State — Design Notes
 
 **Where:** `tiger_brain_new.py`, class `TigerBrain`.
-Config flag: `intrusion_detection.relational_state` (bool, default `False`).
+Config knob: `intrusion_detection.state`, one of `'prototype'` (default),
+`'relational'`, `'mixed'`.
 
 This document describes the relational exteroceptive state block **as it
 currently exists in code** — not a proposal, the shipped implementation.
+
+## 0. The three state spaces
+
+The DM's exteroceptive block can be built in one of three ways, selected by
+the `state` knob:
+
+- **`prototype`** (default, legacy): the raw hidden-space centroid of the
+  group/cluster (§1).
+- **`relational`**: the fixed-size relational summary of the group's/
+  cluster's similarity to the known-class prototypes described in the rest
+  of this document (§2 onward).
+- **`mixed`**: the concatenation `[centroid | relational summary]`, in that
+  fixed order, so the DM sees the absolute embedding and the class-relative
+  summary at once. Its width is `prototype`'s width `+ RELATIONAL_STATE_DIM`.
+
+Both `relational` and `mixed` build (and, in the known-traffic regime,
+write to) the relational-summary machinery below; `prototype` uses none of
+it. `_exteroceptive_block(centroid, score_slice)` is the single place that
+assembles the correct block per mode, keeping the concatenation order in
+sync with `exteroceptive_dim` (§5).
+
+The legacy boolean `relational_state: true` is still accepted (mapped to
+`'relational'`) when `state` is absent; internally `self.relational_state`
+remains a derived boolean, `True` for both `'relational'` and `'mixed'`.
 
 ---
 
@@ -21,16 +46,19 @@ hidden-space centroid** — a vector whose width scales with `hidden_size`
 That ties the DM's input size to representation/config choices, and gives it
 absolute coordinates that drift as the encoder keeps training online.
 
-`relational_state=True` replaces the centroid with a **fixed-size summary of
+`state='relational'` replaces the centroid with a **fixed-size summary of
 the group's/cluster's similarity to the known-class prototypes** — i.e. a
 function of the prototypical classifier's logits, never of absolute hidden
 coordinates. This is invariant to how many known classes currently exist (K
 grows as CTI is bought) and stays consistent with the prototypical /
 relational-bottleneck inductive bias already used by the perception layer.
+`state='mixed'` keeps the centroid **and** appends this summary, trading the
+two invariances above for strictly more information.
 
 `TigerBrain.RELATIONAL_STATE_DIM` fixes the width of this block; the DM's
 `exteroceptive_dim` (and therefore its net input size) is derived from it
-automatically in `init_agents` when the flag is on.
+automatically in `init_agents` whenever the mode includes the summary
+(`relational` or `mixed`).
 
 ---
 
@@ -186,8 +214,9 @@ separate re-derivation, no risk of the two going out of sync.
 
 ## 4. Call sites
 
-`_relational_summary` (and therefore this reward machinery) is used in two
-places, gated by the same `self.relational_state` flag:
+`_relational_summary` (and therefore this reward machinery) is reached via
+`_exteroceptive_block` in two places, whenever `self.relational_state` is
+`True` (mode `relational` or `mixed`):
 
 1. **`act_on_known_traffic`** (known-traffic regime) — builds
    `group_exteroceptive` per predicted-class group from
@@ -206,12 +235,19 @@ places, gated by the same `self.relational_state` flag:
 ## 5. Dimension bookkeeping
 
 `RELATIONAL_STATE_DIM = 9` must stay equal to the number of elements
-`_relational_summary` stacks. `init_agents` sets
-`self.exteroceptive_dim = self.RELATIONAL_STATE_DIM` when
-`relational_state` is on (bypassing the `hidden_size` [`+ node` ] [`+
-packet`] sizing used in the legacy centroid path), and `state_space_dim`
-follows from that — so every DM net's input width adapts automatically if
-this constant ever changes again.
+`_relational_summary` stacks. `init_agents` builds `exteroceptive_dim`
+additively, in the fixed order `[prototype | relational]`:
+
+- the prototype part (`hidden_size` [`+ node`] [`+ packet`]) is added when
+  the mode includes the centroid (`prototype` or `mixed`);
+- `RELATIONAL_STATE_DIM` is added when the mode includes the summary
+  (`relational` or `mixed`).
+
+`state_space_dim` follows from that, so every DM net's input width adapts
+automatically — to any of the three modes, and to a change in either the
+stream count or `RELATIONAL_STATE_DIM`. `_exteroceptive_block` assembles
+each group's/cluster's vector in the **same** order, so the layout the nets
+are sized for always matches the vectors they are fed.
 
 ---
 
