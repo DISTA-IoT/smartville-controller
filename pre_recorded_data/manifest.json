@@ -177,11 +177,11 @@
     "hue": "1.0"
   },
   "prices": {
-    "echo": "10",
+    "echo": "1",
     "hakai": "10",
-    "mirai": "150",
+    "mirai": "10",
     "hajime": "10",
-    "doorlock": "10",
+    "doorlock": "1",
     "gafgyt": "10",
     "muhstik": "10",
     "h_scan": "10",
