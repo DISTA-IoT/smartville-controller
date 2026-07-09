@@ -228,16 +228,39 @@ class TigerBrain:
         # confusion-matrix/accuracy metrics.
         self.ad_threshold = float(
             self.intrusion_detection_kwargs.get('ad_threshold', 0.75))
-        # When True, the DM's exteroceptive state is a fixed-size, relational
-        # summary of the group's/cluster's similarity to the known-class
-        # prototypes (see _relational_summary), instead of the absolute
-        # hidden-space centroid. This keeps the decision layer consistent with
-        # the prototypical/relational-bottleneck inductive bias of the
-        # perception layers, is invariant to the number of known classes, and
-        # is far more stable than absolute coordinates under representation
-        # drift. Default False (legacy behaviour: raw centroid state).
-        self.relational_state = bool(
-            self.intrusion_detection_kwargs.get('relational_state', False))
+        # Exteroceptive-state encoding for the Decision Module, selected by the
+        # `state` config knob (one of 'prototype', 'relational', 'mixed'):
+        #  - 'prototype' (default, legacy raw-centroid state): the DM's
+        #    exteroceptive block is the absolute hidden-space centroid of the
+        #    group/cluster (width scales with the active feature streams).
+        #  - 'relational': a fixed-size relational summary of the group's/
+        #    cluster's similarity to the known-class prototypes (see
+        #    _relational_summary), instead of the absolute centroid. Keeps the
+        #    decision layer consistent with the prototypical/relational-
+        #    bottleneck inductive bias of the perception layers, is invariant
+        #    to the number of known classes, and is far more stable than
+        #    absolute coordinates under representation drift.
+        #  - 'mixed': the concatenation of both, [centroid | relational
+        #    summary], so the DM sees the absolute embedding and the class-
+        #    relative summary at once.
+        # Legacy configs that only set the old boolean `relational_state`
+        # (True -> 'relational') are still honoured when `state` is absent.
+        state_mode = self.intrusion_detection_kwargs.get(
+            'state',
+            'relational' if self.intrusion_detection_kwargs.get('relational_state', False) else 'prototype')
+        state_mode = str(state_mode).strip().lower()
+        if state_mode not in ('prototype', 'relational', 'mixed'):
+            raise ValueError(
+                "intrusion_detection.state must be one of 'prototype', "
+                f"'relational', 'mixed'; got {state_mode!r}")
+        self.state_mode = state_mode
+        # Derived flags naming which encodings contribute to the exteroceptive
+        # block. `relational_state` stays a boolean alias driving all the
+        # relational-summary machinery (reward tracker, summary construction,
+        # wandb series) -- the summary is built for both 'relational' and
+        # 'mixed'.
+        self.use_prototype_state = state_mode in ('prototype', 'mixed')
+        self.relational_state = state_mode in ('relational', 'mixed')
         # Temperature (alpha) on the reward channels of the relational
         # (exteroceptive) summary: r_max / r_runnerup are tanh(mean_r /
         # (alpha * |reward| scale)) (see _class_reward_feature). alpha > 1
@@ -319,12 +342,12 @@ class TigerBrain:
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
-            "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, relational_state=%s, "
+            "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, state=%s, "
             "reward_temperature=%s, proprio_feature_scaling=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
-            self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.relational_state,
+            self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.state_mode,
             self.reward_temperature, self.proprio_feature_scaling,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
 
@@ -525,23 +548,29 @@ class TigerBrain:
         """
         Initializes the mitigation agent (e.g., DQN, DAI variants).
         """
-        # Exteroceptive block of the state vector. Two mutually-exclusive
-        # encodings, selected by the `relational_state` config flag:
-        #  - relational_state=False (default): the raw hidden-space centroid
-        #    of the group/cluster, whose width scales with the number of
-        #    active feature streams (flow [+node] [+packet]).
-        #  - relational_state=True: a fixed-size relational summary of the
-        #    group's/cluster's similarity to the known-class prototypes
-        #    (RELATIONAL_STATE_DIM dims), independent of stream count and of
-        #    how many known classes exist. See _relational_summary.
-        if self.relational_state:
-            self.exteroceptive_dim = self.RELATIONAL_STATE_DIM
-        else:
-            self.exteroceptive_dim = self.hidden_size
+        # Exteroceptive block of the state vector, selected by the `state`
+        # config knob (see __init__). It is the concatenation of whichever
+        # encodings are active, in a fixed order [prototype | relational]:
+        #  - prototype part (state in {'prototype', 'mixed'}): the raw
+        #    hidden-space centroid of the group/cluster, whose width scales
+        #    with the number of active feature streams (flow [+node] [+packet]).
+        #  - relational part (state in {'relational', 'mixed'}): a fixed-size
+        #    relational summary of the group's/cluster's similarity to the
+        #    known-class prototypes (RELATIONAL_STATE_DIM dims), independent of
+        #    stream count and of how many known classes exist. See
+        #    _relational_summary.
+        # 'mixed' concatenates both; the build order here must match how each
+        # group's/cluster's exteroceptive vector is assembled in
+        # act_on_known_traffic / act_on_unknown_clusters.
+        self.exteroceptive_dim = 0
+        if self.use_prototype_state:
+            self.exteroceptive_dim += self.hidden_size
             if self.use_node_feats:
                 self.exteroceptive_dim += self.hidden_size
             if self.use_packet_feats:
                 self.exteroceptive_dim += self.hidden_size
+        if self.relational_state:
+            self.exteroceptive_dim += self.RELATIONAL_STATE_DIM
         self.state_space_dim = self.exteroceptive_dim
 
         # State space components:
@@ -1170,6 +1199,30 @@ class TigerBrain:
             [s_max, r_max, s_mean, s_min, s_std, margin, r_runnerup, entropy, energy]
         ).to(dtype=score_slice.dtype)
 
+    def _exteroceptive_block(self, centroid, score_slice):
+        """
+        Assemble one group's/cluster's exteroceptive state block according to
+        the `state` mode, in the fixed order [prototype centroid | relational
+        summary] -- the same order exteroceptive_dim is sized with in
+        init_agents:
+          - 'prototype': the raw hidden-space centroid alone.
+          - 'relational': the fixed-size relational summary alone.
+          - 'mixed': the concatenation of both.
+        `centroid` is the group's/cluster's hidden-space centroid; `score_slice`
+        is that group's/cluster's rows of prototypical similarity scores (fed to
+        _relational_summary). Only the encodings the mode needs are computed.
+        """
+        if self.state_mode == 'prototype':
+            return centroid
+        summary = self._relational_summary(score_slice)
+        if self.state_mode == 'relational':
+            return summary
+        # 'mixed': centroid first, then the relational summary, matching a
+        # relational summary cast onto the centroid's device/dtype so the
+        # concatenation is well-formed regardless of upstream dtype.
+        return torch.cat(
+            [centroid, summary.to(device=centroid.device, dtype=centroid.dtype)])
+
     def _call_confidence_decoder(self, decoder, scores, hidden_vectors, labels, query_mask, known_class_mask):
         """
         Invoke `decoder` with exactly the inputs its forward signature
@@ -1487,12 +1540,14 @@ class TigerBrain:
 
         group_member_masks = [class_preds == cls for cls in unique_classes]
         group_centroids = [known_hiddens[mask].mean(dim=0) for mask in group_member_masks]
-        # Exteroceptive state block per group: relational summary of the
-        # group's similarity to the known prototypes, or the raw centroid.
-        if self.relational_state:
-            group_exteroceptive = [self._relational_summary(interest_logits_slice[mask]) for mask in group_member_masks]
-        else:
-            group_exteroceptive = group_centroids
+        # Exteroceptive state block per group: the raw centroid, the relational
+        # summary of the group's similarity to the known prototypes, or (mixed)
+        # both concatenated -- selected by the `state` mode (see
+        # _exteroceptive_block).
+        group_exteroceptive = [
+            self._exteroceptive_block(centroid, interest_logits_slice[mask])
+            for centroid, mask in zip(group_centroids, group_member_masks)
+        ]
 
         classification_reward_total = 0.0
         last_action = None
@@ -1841,16 +1896,17 @@ class TigerBrain:
         anomalous_probs = online_anomaly_probs[zda_mask].view(-1, 1)
         non_missing_columns = (~missing).nonzero(as_tuple=False).squeeze(-1)
 
-        # Exteroceptive state block per cluster: relational summary of the
-        # cluster's similarity to the known prototypes, or the raw centroid.
+        # Exteroceptive state block per cluster: the raw centroid, the
+        # relational summary of the cluster's similarity to the known
+        # prototypes, or (mixed) both concatenated -- selected by the `state`
+        # mode (see _exteroceptive_block).
         cluster_centroids = centroids[~missing]
-        if self.relational_state:
-            cluster_exteroceptive = [
-                self._relational_summary(anomalous_logits[clusters_oh[:, non_missing_columns[i]].bool()])
-                for i in range(num_identified)
-            ]
-        else:
-            cluster_exteroceptive = [c for c in cluster_centroids]
+        cluster_exteroceptive = [
+            self._exteroceptive_block(
+                cluster_centroids[i],
+                anomalous_logits[clusters_oh[:, non_missing_columns[i]].bool()])
+            for i in range(num_identified)
+        ]
 
         clustering_reward = 0
         epistemic_actions_taken = 0
