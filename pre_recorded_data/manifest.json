@@ -177,19 +177,19 @@
     "hue": "1.0"
   },
   "prices": {
-    "echo": "0",
-    "hakai": "0",
-    "mirai": "300",
-    "hajime": "0",
-    "doorlock": "0",
-    "gafgyt": "0",
-    "muhstik": "0",
-    "h_scan": "300",
-    "okiru": "0",
-    "generic_ddos": "0",
-    "torii": "0",
-    "cc_heartbeat": "0",
-    "hue": "0"
+    "echo": "10",
+    "hakai": "10",
+    "mirai": "10",
+    "hajime": "150",
+    "doorlock": "10",
+    "gafgyt": "10",
+    "muhstik": "150",
+    "h_scan": "10",
+    "okiru": "10",
+    "generic_ddos": "10",
+    "torii": "10",
+    "cc_heartbeat": "50",
+    "hue": "10"
   },
   "health": {
     "max_conn_retries": 5,
