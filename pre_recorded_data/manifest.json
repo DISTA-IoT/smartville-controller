@@ -164,7 +164,7 @@
   "rewards": {
     "echo": "1.0",
     "hakai": "-1.0",
-    "mirai": "-1",
+    "mirai": "-0.01",
     "hajime": "-1.0",
     "doorlock": "1",
     "gafgyt": "-1",
@@ -177,19 +177,19 @@
     "hue": "1.0"
   },
   "prices": {
-    "echo": "0",
-    "hakai": "0",
-    "mirai": "400",
-    "hajime": "0",
-    "doorlock": "0",
-    "gafgyt": "0",
-    "muhstik": "0",
-    "h_scan": "0",
-    "okiru": "0",
-    "generic_ddos": "0",
-    "torii": "0",
-    "cc_heartbeat": "0",
-    "hue": "0"
+    "echo": "0.01",
+    "hakai": "0.01",
+    "mirai": "40",
+    "hajime": "0.01",
+    "doorlock": "0.01",
+    "gafgyt": "0.01",
+    "muhstik": "0.01",
+    "h_scan": "0.01",
+    "okiru": "0.01",
+    "generic_ddos": "0.01",
+    "torii": "0.01",
+    "cc_heartbeat": "0.01",
+    "hue": "0.01"
   },
   "health": {
     "max_conn_retries": 5,
