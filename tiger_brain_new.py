@@ -1478,6 +1478,12 @@ class TigerBrain:
         classification_accuracy_reward_total = 0.0
         accuracy_correct_total = 0
         accuracy_samples_total = 0
+        # Representation-scale diagnostic: L2 norm of each group's raw hidden
+        # centroid (group_centroids, the exteroceptive block that enters the DM
+        # value net unnormalised when relational_state is off). Tracks whether
+        # the encoder's embedding norm -- and therefore the DQN's input scale --
+        # is inflating over training, independently of any relational transform.
+        centroid_norms = []
 
         for idx in range(num_groups):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
@@ -1487,6 +1493,7 @@ class TigerBrain:
                 interest_logits_slice[member_mask], class_preds[member_mask], number_of_known_classes)
 
             centroid = group_exteroceptive[idx].unsqueeze(0)
+            centroid_norms.append(group_centroids[idx].norm().item())
             state_vec = self.assembly_state_vector(
                 centroid, num_of_anomalies, num_known,
                 0.0, group_confidence.item(), self.env.current_budget)
@@ -1583,6 +1590,11 @@ class TigerBrain:
                 AGENT+'/'+'budget': self.env.current_budget,
                 AGENT+'/'+'known_traffic_groups': num_groups,
             }
+            # Representation-scale diagnostic (known-traffic regime).
+            if centroid_norms:
+                known_scalars['diagnostics/centroid_norm_known_mean'] = \
+                    sum(centroid_norms) / len(centroid_norms)
+                known_scalars['diagnostics/centroid_norm_known_max'] = max(centroid_norms)
             # Supervision-value component: total accuracy reward added this tick
             # and the tick's overall closed-set accuracy behind it. Emitted only
             # when the knob is on, so the series stay hidden by default.
@@ -1813,6 +1825,13 @@ class TigerBrain:
         # mean impurity. Stays 0.0 -- and no penalty is applied -- when the knob
         # is off, so the component is fully hidden by default.
         cluster_impurity_sum = 0.0
+        # Representation-scale diagnostic: L2 norm of each cluster's raw hidden
+        # centroid (cluster_centroids, the exteroceptive block that enters the
+        # DM value net unnormalised when relational_state is off). Same purpose
+        # as in act_on_known_traffic, for the unknown/zero-day regime -- where
+        # echo/doorlock live until bought, so this is the scale most relevant to
+        # the over-blocking of those classes.
+        centroid_norms = []
 
         for idx in range(num_identified):
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
@@ -1824,6 +1843,7 @@ class TigerBrain:
             cluster_zda_confidence = self._zda_confidence_for_subset(anomalous_probs[member_mask])
             cluster_confidences.append(cluster_zda_confidence.item())
 
+            centroid_norms.append(cluster_centroids[idx].norm().item())
             state_vec = self.assembly_state_vector(
                 cluster_exteroceptive[idx].unsqueeze(0), num_anom, num_known,
                 cluster_zda_confidence.item(), 0.0, self.env.current_budget)
@@ -1968,6 +1988,11 @@ class TigerBrain:
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
                 AGENT+'/'+'mean_cluster_impurity': cluster_impurity_sum / num_identified
             }
+            # Representation-scale diagnostic (unknown/zero-day regime).
+            if centroid_norms:
+                cluster_scalars['diagnostics/centroid_norm_unknown_mean'] = \
+                    sum(centroid_norms) / len(centroid_norms)
+                cluster_scalars['diagnostics/centroid_norm_unknown_max'] = max(centroid_norms)
             # Supervision-value component: total impurity penalty deducted this
             # tick and the mean cluster impurity behind it. Emitted only when
             # the knob is on, so the series stay hidden in the default regime.

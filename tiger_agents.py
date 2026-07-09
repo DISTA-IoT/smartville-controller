@@ -1120,8 +1120,8 @@ class ValueLearningAgent:
         dones       = dones.to(self.device)               # shape: [B]
 
         # Compute Q-values for current states using online model
-        q_values = self.model(states)                                  # shape: [B, action_dim]
-        q_values = q_values.gather(1, actions.unsqueeze(1)).squeeze(1) # shape: [B]
+        all_q_values = self.model(states)                                  # shape: [B, action_dim]
+        q_values = all_q_values.gather(1, actions.unsqueeze(1)).squeeze(1)  # shape: [B]
 
         # Compute target Q-values
         with torch.no_grad():
@@ -1163,10 +1163,21 @@ class ValueLearningAgent:
             self.update_target_model(soft=True)
 
         # Log
-        if self.wbl: 
+        if self.wbl:
             self.wbl.log({
                 'active_inference/value_loss': loss.item(),
-                'active_inference/pragmatic_gain': rewards.mean().item()
+                'active_inference/pragmatic_gain': rewards.mean().item(),
+                # Value-divergence diagnostics. A healthy DQN keeps these
+                # bounded and roughly stationary; a deadly-triad runaway shows
+                # q_abs_max / target_q_abs_max ramping without bound -- which is
+                # what later surfaces as the exploding value_loss. Logged over
+                # ALL actions (all_q_values), not just the taken one, and the
+                # bootstrap target magnitude, so an inflation can be caught
+                # before it dominates the loss.
+                'diagnostics/q_abs_max': all_q_values.abs().max().item(),
+                'diagnostics/q_abs_mean': all_q_values.abs().mean().item(),
+                'diagnostics/target_q_abs_max': target_q_values.abs().max().item(),
+                'diagnostics/td_error_abs_max': td_errors.abs().max().item(),
             }, step=step)
             
         # Epsilon decay
