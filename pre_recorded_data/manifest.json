@@ -31,7 +31,7 @@
     "plot_step_freq": "150",
     "online_eval_step_freq": "100",
     "use_neural_AD": true,
-    "use_neural_KR": false,
+    "use_neural_KR": true,
     "use_neural_CS": false,
     "ad_loss_backprop_to_encoder": true,
     "exclude_g1_from_ad_known_set": false,
