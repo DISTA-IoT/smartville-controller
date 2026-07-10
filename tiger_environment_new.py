@@ -188,6 +188,41 @@ class NewTigerEnvironment:
         return delivered / len(stats_by_label)
 
 
+    def acquired_cti_vector(self):
+        """
+        Per-class binary acquisition map -- the vectorised form of
+        acquired_cti_fraction. One entry per class in the fixed
+        all_class_labels layout (the invariant Knowns+G1s+G2s union), 1.0 iff
+        that class's CTI has been bought AND delivered this episode, 0.0
+        otherwise. Its mean over this episode's G2 pool is exactly
+        acquired_cti_fraction; here the same information is broken out per
+        class so the state says *which* zero-days the agent already owns, not
+        just how many.
+
+        Positions are keyed by class NAME and follow all_class_labels, which is
+        built once in __init__ and never reordered, so slot j denotes the same
+        class across every tick and episode -- including under
+        dynamic_knowledge, where the Knowns/G1s/G2s partition is reshuffled but
+        this union (and hence the layout) is invariant. This is the same fixed,
+        name-keyed convention TigerBrain._build_class_scores_index uses for the
+        exteroceptive association vector.
+
+        A class that is Known from the start, a G1, or an as-yet-unbought G2 is
+        0.0: only genuine CTI acquisitions (acquired_g2_stats[...]['bought'],
+        set in _deliver_label) flip a slot to 1.0, matching acquired_cti_fraction
+        exactly and only counting intelligence once it has actually been
+        delivered and become usable. The getattr guard mirrors
+        acquired_cti_fraction: a call before the first reset() reads as all-zero
+        (nothing acquired yet) rather than raising.
+        """
+        stats_by_label = getattr(self, 'acquired_g2_stats', None)
+        acquired = set()
+        if stats_by_label:
+            acquired = {label for label, stats in stats_by_label.items()
+                        if stats['bought']}
+        return [1.0 if name in acquired else 0.0 for name in self.all_class_labels]
+
+
     def has_episode_ended(self):
         if self.steps_done >= self.max_episode_steps:
             return True

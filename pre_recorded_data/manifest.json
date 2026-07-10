@@ -1,5 +1,5 @@
 {
-  "_about_step8.94": "Pure epistemic rewards are now put in the experience tuples. see previous commit.(991265b0cdd0f8dca2b927739a2e4ca2af6c1821) ",
+  "_about_step8.96": "corrected the proprio explosion (see last commit) ",
   "intrusion_detection": {
     "eval": false,
     "learning_rate": 0.001,
