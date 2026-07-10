@@ -177,17 +177,17 @@ Three helper methods on `TigerBrain`:
     (`_decision_reward` returns `0` on block) — "no evidence this is worth
     accepting" reads the same as "blocking earns nothing", which is a
     reasonable prior for an untested class.
-  - **Scale normalization**: the DM nets in `neural_modules.py`
-    (`PolicyNet`, `ValueNet`, `NEFENet`, `DQN`, `DuelingDQN`) apply
-    `nn.LayerNorm(6)` **only to the 6-dim proprioceptive tail** of the state
-    vector; the exteroceptive block (where this relational summary lives)
-    enters those nets **raw, unnormalized**. Left alone, a reward in
-    budget-units would sit next to O(1) similarity logits at wildly
-    different scale. To fix this at the source (not by touching every DM
-    net), the reward feature is divided by the running mean of `|reward|`
-    seen so far this episode, then squashed through `tanh` into `(-1, 1)` —
-    putting it on the same rough footing as the similarity stats without
-    a new config knob.
+  - **Scale normalization**: the relational summary is deliberately built to
+    be self-scaled, because the DM nets do **not** LayerNorm it. Each channel
+    is bounded/scaled by construction — the similarity stats live in log-score
+    space at O(tens) (see §3.2 of the code comment / the log-score fix), the
+    entropy in `[0, log K]`, and the two reward channels are squashed through
+    `tanh` into `(-1, 1)`. The reward feature in particular is divided by the
+    running mean of `|reward|` seen so far this episode, then `tanh`'d, so a
+    reward in budget-units sits on the same rough footing as the similarity
+    logits without a config knob. See §7 for exactly which part of the
+    exteroceptive block **is** LayerNorm'd (the prototype centroid) and why the
+    relational summary is left alone.
 
 ### 3.3 Read side inside `_relational_summary`
 
@@ -270,3 +270,36 @@ are sized for always matches the vectors they are fed.
   neutral, but it is indistinguishable from "this class truly earns nothing
   when accepted" until the confidence-weighting extension above lets the
   DM tell the two apart.
+
+---
+
+## 7. Exteroceptive normalization (per `state` mode)
+
+The DM decision nets (`PolicyNet`, `ValueNet`, `NEFENet`, `DQN`,
+`DuelingDQN`) normalise the **prototype (raw-centroid) part** of the
+exteroceptive block and leave the relational summary alone. This is one
+module, `neural_modules.ExteroceptiveNorm` (built by `_make_extero_norm`),
+applied where `proprio_norm` is applied. Its width comes from
+`exteroceptive_proto_dim`, injected by `init_agents` (the leading-columns
+width of the centroid; `0` in pure `relational` mode). Behaviour per mode:
+
+| `state` | prototype part | relational part |
+|---|---|---|
+| `prototype` | `LayerNorm` the whole exteroceptive block | — (none) |
+| `relational` | — (none) | pass through, **no** LayerNorm |
+| `mixed` | `LayerNorm` the leading centroid slice | pass through, **no** LayerNorm |
+
+**Why.** The centroid is raw absolute hidden coordinates whose scale drifts
+as the encoder keeps training online — exactly what a per-sample
+`LayerNorm` (zero-mean/unit-variance + learnable affine) tames before it
+reaches the value net. The relational summary is already bounded/scaled
+per-feature by construction (log-score stats at O(tens), entropy in
+`[0, log K]`, `tanh` reward channels in `(-1, 1)`), **and** it carries
+meaningful structural zeros (a cold class's reward, low entropy) that a
+`LayerNorm` would smear away — so in `relational` and `mixed` the summary is
+fed to the net untouched. `ExteroceptiveNorm` reduces to a no-op when
+`proto_dim == 0` and normalises the whole block when the block is entirely
+prototype, so the same code path serves all three modes.
+
+This is orthogonal to `proprio_feature_scaling`, which governs the
+proprioceptive *tail* (`proprio_norm`) independently.

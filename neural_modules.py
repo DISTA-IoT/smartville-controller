@@ -52,10 +52,61 @@ def _make_proprio_norm(kwargs):
     return nn.LayerNorm(PROPRIOCEPTIVE_STATE_SIZE)
 
 
+class ExteroceptiveNorm(nn.Module):
+    """Normaliser for the exteroceptive block's PROTOTYPE (raw-centroid) part.
+
+    The exteroceptive block is laid out ``[prototype centroid | relational
+    summary]`` (TigerBrain._exteroceptive_block), and the two halves live on
+    very different footings:
+
+    - the prototype centroid enters the DM nets as RAW absolute hidden
+      coordinates, whose scale drifts as the encoder keeps training online --
+      so its leading ``proto_dim`` columns are LayerNorm'd here (zero-mean /
+      unit-variance per sample, with a learnable affine).
+    - the relational summary (when present) is ALREADY bounded/scaled
+      per-feature by construction -- log-score similarity stats at O(tens) and
+      tanh reward channels in (-1, 1), with meaningful structural zeros (a
+      cold class's reward, low entropy). LayerNorm would destroy those, so the
+      trailing columns are passed through untouched.
+
+    This realises the three `state` modes with one module:
+      - 'prototype': proto_dim == full exteroceptive width -> whole block normed.
+      - 'relational': proto_dim == 0 -> a no-op (nothing to norm).
+      - 'mixed': proto_dim == centroid width -> only the centroid is normed,
+        the relational summary is left in peace.
+    """
+
+    def __init__(self, proto_dim):
+        super().__init__()
+        self.proto_dim = int(proto_dim)
+        self.norm = nn.LayerNorm(self.proto_dim) if self.proto_dim > 0 else None
+
+    def forward(self, exteroceptive):
+        if self.norm is None:
+            return exteroceptive
+        if self.proto_dim >= exteroceptive.shape[-1]:
+            # Whole exteroceptive block is prototype ('prototype' mode).
+            return self.norm(exteroceptive)
+        # 'mixed': normalise the leading centroid, pass the relational tail through.
+        proto = self.norm(exteroceptive[:, :self.proto_dim])
+        relational = exteroceptive[:, self.proto_dim:]
+        return torch.cat((proto, relational), dim=1)
+
+
+def _make_extero_norm(kwargs):
+    """Normaliser for the exteroceptive block, selected implicitly by the
+    `state` mode via the injected `exteroceptive_proto_dim` (the width of the
+    raw-centroid part; TigerBrain.init_agents). See ExteroceptiveNorm. In pure
+    'relational' mode proto_dim is 0 and this is a no-op, so the already
+    feature-scaled relational summary is fed to the net unchanged."""
+    return ExteroceptiveNorm(int(kwargs.get('exteroceptive_proto_dim', 0)))
+
+
 class PolicyNet(nn.Module):
     def __init__(self, kwargs):
         super(PolicyNet, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
+        self.extero_norm = _make_extero_norm(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -64,7 +115,7 @@ class PolicyNet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
         proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
@@ -77,6 +128,7 @@ class ValueNet(nn.Module):
     def __init__(self, kwargs):
         super(ValueNet, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
+        self.extero_norm = _make_extero_norm(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -85,7 +137,7 @@ class ValueNet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
         proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
@@ -100,6 +152,7 @@ class NEFENet(nn.Module):
         """
         super(NEFENet, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
+        self.extero_norm = _make_extero_norm(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -108,7 +161,7 @@ class NEFENet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
         proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
@@ -120,6 +173,7 @@ class DQN(nn.Module):
     def __init__(self, kwargs):
         super(DQN, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
+        self.extero_norm = _make_extero_norm(kwargs)
         hidden_size = int(int(kwargs['hidden_size']))
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -128,7 +182,7 @@ class DQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
         proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
@@ -140,6 +194,7 @@ class DuelingDQN(nn.Module):
     def __init__(self, kwargs):
         super(DuelingDQN, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
+        self.extero_norm = _make_extero_norm(kwargs)
         hidden_dim = int(int(kwargs['hidden_size']))
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
@@ -161,7 +216,7 @@ class DuelingDQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
         proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
