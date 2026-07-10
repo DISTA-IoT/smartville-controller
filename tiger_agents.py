@@ -1022,6 +1022,14 @@ class ValueLearningAgent:
         self.use_soft_update = kwargs['use_soft_update']
         self.tau = float(kwargs['tau'])
 
+        # Value-divergence guardrails (see default.yaml). The DM previously had
+        # neither a gradient clip (unlike the IM) nor a bootstrap-target clamp,
+        # so a deadly-triad runaway could ramp Q/target_q to ~1e10. Both default
+        # to safe values that are inert on a healthy run and only bite a runaway;
+        # <= 0 disables either. .get() keeps configs predating these keys working.
+        self.dm_grad_clip_max_norm = float(kwargs.get('dm_grad_clip_max_norm', 10.0))
+        self.dm_q_abs_clamp = float(kwargs.get('dm_q_abs_clamp', 1.0e6))
+
 
     def update_target_model(self, soft=False):
         if soft and self.use_soft_update:
@@ -1143,6 +1151,16 @@ class ValueLearningAgent:
             # Bellman target (using n-step return)
             target_q_values = rewards + gamma_n * next_q_values  # shape: [B]
 
+            # Guardrail: hard-clamp the bootstrap target before it is regressed
+            # onto, breaking the self-reinforcing deadly-triad loop (an inflated
+            # next_q feeds a larger target, which the online net chases, which
+            # inflates the next target...). The clamp sits far above any
+            # legitimate |Q| (~r_max/(1-gamma)) and far below the observed
+            # runaway, so it is inert on a healthy run and only caps divergence.
+            if self.dm_q_abs_clamp > 0:
+                target_q_values = target_q_values.clamp(
+                    -self.dm_q_abs_clamp, self.dm_q_abs_clamp)
+
         # Compute loss with importance sampling weights
         td_errors = q_values - target_q_values
         loss = (self.value_loss_fn(q_values, target_q_values) * is_weights).mean()
@@ -1155,7 +1173,12 @@ class ValueLearningAgent:
         # Optimize model
         self.optimizer.zero_grad()
         loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)  # clip gradients
+        # Guardrail: clip the DM value net's gradient norm (the analogue of the
+        # IM's grad_clip_max_norm, which the DM previously lacked). Bounds the
+        # per-step parameter update so a large TD error cannot kick Q sky-high.
+        if self.dm_grad_clip_max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.dm_grad_clip_max_norm)
         self.optimizer.step()
 
         # Soft target update
