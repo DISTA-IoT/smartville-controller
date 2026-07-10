@@ -1,5 +1,4 @@
 {
-  "_about_step8.96": "corrected the proprio explosion (see last commit) ",
   "intrusion_detection": {
     "eval": false,
     "learning_rate": 0.001,
@@ -90,6 +89,8 @@
     "per_beta": "0.4",
     "use_soft_update": true,
     "tau": "0.005",
+    "dm_grad_clip_max_norm": "10.0",
+    "dm_q_abs_clamp": "1.0e6",
     "use_transition_model": true,
     "variational_tmodel": false,
     "epistemic_regularisation_factor": "0.1",
