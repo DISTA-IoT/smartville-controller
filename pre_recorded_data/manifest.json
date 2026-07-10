@@ -106,7 +106,7 @@
     "cti_delivery_delay": 0,
     "cti_delivery_jitter": 0,
     "cti_quality_coupling": "purity",
-    "guard_learned_cti_affordability": true
+    "guard_learned_cti_affordability": false
   },
   "neural_modules": {
     "first_stream_input_size": "4",
@@ -177,19 +177,19 @@
     "hue": "1.0"
   },
   "prices": {
-    "echo": "0.01",
-    "hakai": "0.10",
-    "mirai": "10",
-    "hajime": "10",
-    "doorlock": "0.01",
-    "gafgyt": "10",
-    "muhstik": "0.10",
-    "h_scan": "0.10",
-    "okiru": "0.10",
-    "generic_ddos": "0.1",
-    "torii": "0.1",
-    "cc_heartbeat": "0.10",
-    "hue": "0.10"
+    "echo": "20",
+    "hakai": "0",
+    "mirai": "200",
+    "hajime": "200",
+    "doorlock": "20",
+    "gafgyt": "200",
+    "muhstik": "20",
+    "h_scan": "20",
+    "okiru": "0",
+    "generic_ddos": "0",
+    "torii": "0",
+    "cc_heartbeat": "0",
+    "hue": "0"
   },
   "health": {
     "max_conn_retries": 5,
