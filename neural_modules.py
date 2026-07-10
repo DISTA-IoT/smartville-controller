@@ -56,24 +56,32 @@ class ExteroceptiveNorm(nn.Module):
     """Normaliser for the exteroceptive block's PROTOTYPE (raw-centroid) part.
 
     The exteroceptive block is laid out ``[prototype centroid | relational
-    summary]`` (TigerBrain._exteroceptive_block), and the two halves live on
-    very different footings:
+    summary | class-scores vector]`` (TigerBrain._exteroceptive_block), and the
+    leading part lives on a very different footing than everything after it:
 
     - the prototype centroid enters the DM nets as RAW absolute hidden
       coordinates, whose scale drifts as the encoder keeps training online --
       so its leading ``proto_dim`` columns are LayerNorm'd here (zero-mean /
       unit-variance per sample, with a learnable affine).
-    - the relational summary (when present) is ALREADY bounded/scaled
+    - the relational summary and the class-scores vector (each present only
+      when their respective mode/flag is on) are ALREADY bounded/scaled
       per-feature by construction -- log-score similarity stats at O(tens) and
-      tanh reward channels in (-1, 1), with meaningful structural zeros (a
-      cold class's reward, low entropy). LayerNorm would destroy those, so the
-      trailing columns are passed through untouched.
+      tanh reward channels in (-1, 1) for the former, a softmax distribution or
+      raw log-similarities for the latter -- with meaningful structural zeros
+      (a cold class's reward, an as-yet-unbought class's sentinel score).
+      LayerNorm would destroy those, so every trailing column is passed
+      through untouched regardless of which of the two features produced it.
 
-    This realises the three `state` modes with one module:
-      - 'prototype': proto_dim == full exteroceptive width -> whole block normed.
-      - 'relational': proto_dim == 0 -> a no-op (nothing to norm).
-      - 'mixed': proto_dim == centroid width -> only the centroid is normed,
-        the relational summary is left in peace.
+    ``proto_dim`` is always just the raw-centroid width (TigerBrain sets
+    ``exteroceptive_proto_dim`` independently of whether relational_state /
+    include_class_scores are on), so this realises every `state` mode /
+    include_class_scores combination with one module:
+      - 'prototype', class scores off: proto_dim == full exteroceptive width
+        -> whole block normed.
+      - 'relational', class scores off: proto_dim == 0 -> a no-op.
+      - any mode with a nonzero trailing part (relational summary and/or
+        class-scores vector): only the leading centroid is normed, everything
+        after it is left in peace.
     """
 
     def __init__(self, proto_dim):
@@ -85,12 +93,14 @@ class ExteroceptiveNorm(nn.Module):
         if self.norm is None:
             return exteroceptive
         if self.proto_dim >= exteroceptive.shape[-1]:
-            # Whole exteroceptive block is prototype ('prototype' mode).
+            # Whole exteroceptive block is the raw centroid (no relational
+            # summary or class-scores vector active this run).
             return self.norm(exteroceptive)
-        # 'mixed': normalise the leading centroid, pass the relational tail through.
+        # Normalise the leading centroid, pass everything after it through
+        # (relational summary and/or class-scores vector, whichever is active).
         proto = self.norm(exteroceptive[:, :self.proto_dim])
-        relational = exteroceptive[:, self.proto_dim:]
-        return torch.cat((proto, relational), dim=1)
+        trailing = exteroceptive[:, self.proto_dim:]
+        return torch.cat((proto, trailing), dim=1)
 
 
 def _make_extero_norm(kwargs):
