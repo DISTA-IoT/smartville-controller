@@ -28,28 +28,42 @@ def _as_bool(value):
     return bool(value)
 
 
-# Length of the proprioceptive tail of every DM state vector -- the fixed
-# block of scalars that follows the exteroceptive (centroid/relational) block.
-# Every state-consuming net splits the state at this boundary
-# (exteroceptive = x[:, :-PROPRIOCEPTIVE_STATE_SIZE],
-#  proprioceptive = x[:, -PROPRIOCEPTIVE_STATE_SIZE:]), so this is the single
-# source of truth for the split. Must stay in sync with the channels assembled
-# in TigerBrain.assembly_state_vector and with the `state_space_dim +=
-# PROPRIOCEPTIVE_STATE_SIZE` that sizes the state there. Channels, in order:
-# anomaly count, ZDA confidence, known count, classification confidence,
-# acquired-CTI fraction, CTI-available flag, budget.
+# Length of the FIXED SCALAR part of the proprioceptive tail -- the block of
+# per-tick scalars that always follows the exteroceptive (centroid/relational)
+# block, in order: anomaly count, ZDA confidence, known count, classification
+# confidence, acquired-CTI fraction, CTI-available flag, budget.
+#
+# The full proprioceptive tail is this scalar block PLUS the per-class acquired-
+# CTI map (one 0/1 slot per class in env.all_class_labels; see
+# TigerBrain.assembly_state_vector / NewTigerEnvironment.acquired_cti_vector),
+# so its width depends on the run's class count and is NOT a compile-time
+# constant. That true width is computed once in TigerBrain.init_agents and
+# threaded to every net through kwargs['proprio_state_size']; the nets split the
+# state at THAT boundary (exteroceptive = x[:, :-proprio_state_size],
+# proprioceptive = x[:, -proprio_state_size:]). Use proprio_tail_size(kwargs)
+# below to read it, falling back to this base when a net is built without the
+# key (e.g. a legacy checkpoint with no acquired map). Keep the scalar layout
+# here in sync with the channels assembled in assembly_state_vector.
 PROPRIOCEPTIVE_STATE_SIZE = 7
+
+
+def proprio_tail_size(kwargs):
+    """Full width of the proprioceptive tail the nets must split off: the fixed
+    scalar block (PROPRIOCEPTIVE_STATE_SIZE) plus the per-class acquired-CTI map.
+    Read from kwargs['proprio_state_size'] (set in TigerBrain.init_agents);
+    falls back to the scalar-only base when absent."""
+    return int(kwargs.get('proprio_state_size', PROPRIOCEPTIVE_STATE_SIZE))
 
 
 def _make_proprio_norm(kwargs):
     """Normaliser for the proprioceptive tail. Default is the pooled
-    LayerNorm(PROPRIOCEPTIVE_STATE_SIZE). When proprio_feature_scaling is on,
-    the tail is instead normalised per-feature upstream
+    LayerNorm over the full tail (proprio_tail_size). When proprio_feature_scaling
+    is on, the tail is instead normalised per-feature upstream
     (TigerBrain.assembly_state_vector), so the net must NOT normalise it
     again -- return Identity to pass it through."""
     if _as_bool(kwargs.get('proprio_feature_scaling', False)):
         return nn.Identity()
-    return nn.LayerNorm(PROPRIOCEPTIVE_STATE_SIZE)
+    return nn.LayerNorm(proprio_tail_size(kwargs))
 
 
 class ExteroceptiveNorm(nn.Module):
@@ -117,6 +131,10 @@ class PolicyNet(nn.Module):
         super(PolicyNet, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
         self.extero_norm = _make_extero_norm(kwargs)
+        # Full proprioceptive-tail width (fixed scalars + per-class acquired-CTI
+        # map). Stored so forward() splits at the run's true boundary rather than
+        # the scalar-only module constant.
+        self.proprio_state_size = proprio_tail_size(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -125,8 +143,8 @@ class PolicyNet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
-        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
+        exteroceptive_part = self.extero_norm(x[:,:-self.proprio_state_size])
+        proprioceptive_part = self.proprio_norm(x[:,-self.proprio_state_size:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -139,6 +157,10 @@ class ValueNet(nn.Module):
         super(ValueNet, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
         self.extero_norm = _make_extero_norm(kwargs)
+        # Full proprioceptive-tail width (fixed scalars + per-class acquired-CTI
+        # map). Stored so forward() splits at the run's true boundary rather than
+        # the scalar-only module constant.
+        self.proprio_state_size = proprio_tail_size(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -147,8 +169,8 @@ class ValueNet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
-        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
+        exteroceptive_part = self.extero_norm(x[:,:-self.proprio_state_size])
+        proprioceptive_part = self.proprio_norm(x[:,-self.proprio_state_size:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -163,6 +185,10 @@ class NEFENet(nn.Module):
         super(NEFENet, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
         self.extero_norm = _make_extero_norm(kwargs)
+        # Full proprioceptive-tail width (fixed scalars + per-class acquired-CTI
+        # map). Stored so forward() splits at the run's true boundary rather than
+        # the scalar-only module constant.
+        self.proprio_state_size = proprio_tail_size(kwargs)
         hidden_size = int(kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -171,8 +197,8 @@ class NEFENet(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
-        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
+        exteroceptive_part = self.extero_norm(x[:,:-self.proprio_state_size])
+        proprioceptive_part = self.proprio_norm(x[:,-self.proprio_state_size:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -184,6 +210,10 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
         self.extero_norm = _make_extero_norm(kwargs)
+        # Full proprioceptive-tail width (fixed scalars + per-class acquired-CTI
+        # map). Stored so forward() splits at the run's true boundary rather than
+        # the scalar-only module constant.
+        self.proprio_state_size = proprio_tail_size(kwargs)
         hidden_size = int(int(kwargs['hidden_size']))
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -192,8 +222,8 @@ class DQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
-        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
+        exteroceptive_part = self.extero_norm(x[:,:-self.proprio_state_size])
+        proprioceptive_part = self.proprio_norm(x[:,-self.proprio_state_size:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
@@ -205,6 +235,10 @@ class DuelingDQN(nn.Module):
         super(DuelingDQN, self).__init__()
         self.proprio_norm = _make_proprio_norm(kwargs)
         self.extero_norm = _make_extero_norm(kwargs)
+        # Full proprioceptive-tail width (fixed scalars + per-class acquired-CTI
+        # map). Stored so forward() splits at the run's true boundary rather than
+        # the scalar-only module constant.
+        self.proprio_state_size = proprio_tail_size(kwargs)
         hidden_dim = int(int(kwargs['hidden_size']))
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
@@ -226,8 +260,8 @@ class DuelingDQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = self.extero_norm(x[:,:-PROPRIOCEPTIVE_STATE_SIZE])
-        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
+        exteroceptive_part = self.extero_norm(x[:,:-self.proprio_state_size])
+        proprioceptive_part = self.proprio_norm(x[:,-self.proprio_state_size:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
