@@ -261,6 +261,52 @@ class TigerBrain:
         # 'mixed'.
         self.use_prototype_state = state_mode in ('prototype', 'mixed')
         self.relational_state = state_mode in ('relational', 'mixed')
+        # Full per-class association-score vector appended to the exteroceptive
+        # block (independent, composable add-on to whatever `state` mode is
+        # active). The relational summary above deliberately COLLAPSES a
+        # group's/cluster's [n_members, K] similarity matrix into 9
+        # permutation-invariant statistics -- which by construction erases
+        # class IDENTITY, so two different unknown clusters (e.g. an echo
+        # cluster sitting near the benign `hue` prototype vs a mirai cluster
+        # near the malicious `hakai` prototype) can produce near-identical
+        # summaries and the DM cannot tell "this guy" from "that guy". When
+        # this flag is on we ALSO hand the DM the un-collapsed association
+        # vector: the cluster's mean similarity to EACH class prototype,
+        # scattered into a fixed, canonical, class-name-keyed layout (see
+        # _class_scores_vector / _build_class_scores_index) so column j always
+        # means the same class across ticks and episodes -- even though the
+        # prototypical classifier assigns raw column codes dynamically by
+        # discovery order and K grows as CTI is bought. This restores the
+        # identity signal the relational bottleneck removes, which is what lets
+        # the agent learn which unknown clusters are worth buying (they turn
+        # into high-reward known classes) and which are not.
+        self.include_class_scores = bool(
+            self.intrusion_detection_kwargs.get('include_class_scores', False))
+        # Representation of each per-class association score:
+        #  - 'softmax' (default): softmax over the mean log-similarities, a
+        #    bounded (0,1) distribution ("looks 72% like hue, 5% like hakai
+        #    ...") that is safe to feed into the value net's UN-normalised
+        #    exteroceptive block (this code base has repeatedly fought value-
+        #    loss blow-ups from unbounded exteroceptive inputs -- see the
+        #    log-score rationale in _relational_summary).
+        #  - 'logsim': the raw mean log-similarity (log(1/cdist)) per class,
+        #    the same space _relational_summary derives its stats from. Richer
+        #    (keeps absolute closeness magnitude) but can carry larger values
+        #    (~[-tens, +23]) into the value net.
+        self.class_scores_encoding = str(
+            self.intrusion_detection_kwargs.get('class_scores_encoding', 'softmax')).strip().lower()
+        if self.class_scores_encoding not in ('softmax', 'logsim'):
+            raise ValueError(
+                "intrusion_detection.class_scores_encoding must be one of "
+                f"'softmax', 'logsim'; got {self.class_scores_encoding!r}")
+        # Value written into a canonical slot whose class is not (yet) a known
+        # class this tick -- i.e. an unbought G2, or any class the encoder has
+        # not registered. Default 0.0: for 'softmax' this reads as "no
+        # probability mass on a class that has no prototype"; for 'logsim' a
+        # low constant (e.g. -30.0) is a more faithful "infinitely far / no
+        # association" and can be set here.
+        self.class_scores_sentinel = float(
+            self.intrusion_detection_kwargs.get('class_scores_sentinel', 0.0))
         # Temperature (alpha) on the reward channels of the relational
         # (exteroceptive) summary: r_max / r_runnerup are tanh(mean_r /
         # (alpha * |reward| scale)) (see _class_reward_feature). alpha > 1
@@ -344,11 +390,13 @@ class TigerBrain:
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
             "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, state=%s, "
             "reward_temperature=%s, proprio_feature_scaling=%s, "
+            "include_class_scores=%s, class_scores_encoding=%s, class_scores_sentinel=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.state_mode,
             self.reward_temperature, self.proprio_feature_scaling,
+            self.include_class_scores, self.class_scores_encoding, self.class_scores_sentinel,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
 
         # Environment and Networking
@@ -559,17 +607,23 @@ class TigerBrain:
         #    known-class prototypes (RELATIONAL_STATE_DIM dims), independent of
         #    stream count and of how many known classes exist. See
         #    _relational_summary.
-        # 'mixed' concatenates both; the build order here must match how each
+        #  - class-scores part (include_class_scores): the full per-class
+        #    association vector, one scalar per class in a fixed canonical
+        #    layout (self._class_scores_dim dims == number of classes in the
+        #    curriculum), appended last. See _build_class_scores_index /
+        #    _class_scores_vector.
+        # 'mixed' concatenates prototype+relational; class scores (if on) are
+        # appended after either. The build order here must match how each
         # group's/cluster's exteroceptive vector is assembled in
-        # act_on_known_traffic / act_on_unknown_clusters.
+        # _exteroceptive_block (act_on_known_traffic / act_on_unknown_clusters).
         # Width of the prototype (raw-centroid) sub-block of the exteroceptive
-        # block: the leading columns, before any relational summary. 0 in pure
-        # 'relational' mode. The DM nets LayerNorm exactly this leading slice
-        # (see neural_modules._make_extero_norm): the centroid enters as raw
-        # absolute coordinates whose scale drifts as the encoder trains, while
-        # the relational summary that may follow it is already bounded/scaled
-        # per-feature (log-score stats + tanh reward channels) and must be left
-        # untouched.
+        # block: the leading columns, before any relational summary or class-
+        # scores vector. 0 in pure 'relational' mode. The DM nets LayerNorm
+        # exactly this leading slice (see neural_modules._make_extero_norm):
+        # the centroid enters as raw absolute coordinates whose scale drifts as
+        # the encoder trains, while everything that may follow it (relational
+        # summary, class-scores vector) is already bounded/scaled per-feature
+        # by construction and must be left untouched.
         self.exteroceptive_proto_dim = 0
         if self.use_prototype_state:
             self.exteroceptive_proto_dim += self.hidden_size
@@ -580,6 +634,14 @@ class TigerBrain:
         self.exteroceptive_dim = self.exteroceptive_proto_dim
         if self.relational_state:
             self.exteroceptive_dim += self.RELATIONAL_STATE_DIM
+        # Canonical, class-name-keyed layout for the full association vector.
+        # Built off env.all_class_labels (the stable Knowns+G1s+G2s union, see
+        # NewTigerEnvironment) so the width and the class->slot mapping are
+        # fixed for the whole run regardless of dynamic code assignment or CTI
+        # purchases. Empty (dim 0) when the feature is off.
+        self._build_class_scores_index()
+        if self.include_class_scores:
+            self.exteroceptive_dim += self._class_scores_dim
         self.state_space_dim = self.exteroceptive_dim
 
         # State space components:
@@ -1211,29 +1273,94 @@ class TigerBrain:
             [s_max, r_max, s_mean, s_min, s_std, margin, r_runnerup, entropy, energy]
         ).to(dtype=score_slice.dtype)
 
+    def _build_class_scores_index(self):
+        """
+        Build the canonical, class-name-keyed layout for the full association
+        vector (see include_class_scores in __init__). Maps every class name in
+        the run's stable curriculum (env.all_class_labels == the Knowns + G1s +
+        G2s union, invariant for the whole run) to a fixed slot index. Because
+        the mapping is keyed by NAME rather than by the classifier's dynamically
+        assigned column code, slot j always denotes the same class across ticks
+        and episodes even though codes are handed out in discovery order and K
+        grows as CTI is bought. A no-op (dim 0) when the feature is off.
+        """
+        if not self.include_class_scores:
+            self._class_scores_index = {}
+            self._class_scores_dim = 0
+            return
+        self._class_scores_index = {
+            name: pos for pos, name in enumerate(self.env.all_class_labels)}
+        self._class_scores_dim = len(self._class_scores_index)
+
+    def _class_scores_vector(self, score_slice):
+        """
+        The full per-class association vector for one group/cluster, scattered
+        into the canonical fixed-width layout built by _build_class_scores_index.
+
+        `score_slice` is that group's/cluster's [n_members, K] rows of
+        prototypical similarity scores (1/cdist logits, columns in encoder-code
+        order). We reduce over members in LOG-similarity space -- exactly as
+        _relational_summary does, and for the same reason: the raw 1/cdist
+        logits blow up hyperbolically as the encoder tightens its clusters, so
+        the mean log-similarity is the stable, bounded per-class quantity. Then,
+        depending on class_scores_encoding, we either softmax it into a bounded
+        (0,1) distribution over classes or keep the raw mean log-similarities.
+
+        Each currently-registered class's scalar is placed at its canonical slot
+        (looked up by name through the live encoder mapping); slots for classes
+        not yet known this tick (unbought G2s, unseen classes) keep the
+        configured sentinel. The result depends only on relation-to-known-classes
+        and on a stable class identity -- never on absolute hidden coordinates.
+        """
+        k = score_slice.shape[1]
+        log_s = torch.log(score_slice.clamp_min(1e-30)).mean(dim=0)  # [K] mean log-similarity
+        if self.class_scores_encoding == 'softmax':
+            per_class = torch.softmax(log_s, dim=0)
+        else:  # 'logsim'
+            per_class = log_s
+        out = torch.full(
+            (self._class_scores_dim,), self.class_scores_sentinel,
+            device=score_slice.device, dtype=score_slice.dtype)
+        # encoder.get_mapping() is name -> code; scatter each registered class's
+        # score from its code column into its canonical slot. Guard code < k in
+        # case the mapping momentarily lists a class whose column is not in this
+        # slice.
+        for name, code in self.encoder.get_mapping().items():
+            pos = self._class_scores_index.get(name)
+            if pos is not None and code < k:
+                out[pos] = per_class[code].to(out.dtype)
+        return out
+
     def _exteroceptive_block(self, centroid, score_slice):
         """
-        Assemble one group's/cluster's exteroceptive state block according to
-        the `state` mode, in the fixed order [prototype centroid | relational
-        summary] -- the same order exteroceptive_dim is sized with in
-        init_agents:
-          - 'prototype': the raw hidden-space centroid alone.
-          - 'relational': the fixed-size relational summary alone.
-          - 'mixed': the concatenation of both.
+        Assemble one group's/cluster's exteroceptive state block, concatenating
+        whichever encodings are active in the fixed order
+        [prototype centroid | relational summary | class-scores vector] -- the
+        same order exteroceptive_dim is sized with in init_agents:
+          - prototype (state in {'prototype','mixed'}): the raw hidden-space
+            centroid.
+          - relational (state in {'relational','mixed'}): the fixed-size
+            relational summary.
+          - class scores (include_class_scores): the full per-class association
+            vector in the canonical layout.
         `centroid` is the group's/cluster's hidden-space centroid; `score_slice`
-        is that group's/cluster's rows of prototypical similarity scores (fed to
-        _relational_summary). Only the encodings the mode needs are computed.
+        is that group's/cluster's rows of prototypical similarity scores. Only
+        the encodings that are active are computed. The centroid is always
+        passed and is used as the device/dtype reference so every part lands on
+        the same device/dtype before the concatenation, regardless of mode.
         """
-        if self.state_mode == 'prototype':
-            return centroid
-        summary = self._relational_summary(score_slice)
-        if self.state_mode == 'relational':
-            return summary
-        # 'mixed': centroid first, then the relational summary, matching a
-        # relational summary cast onto the centroid's device/dtype so the
-        # concatenation is well-formed regardless of upstream dtype.
-        return torch.cat(
-            [centroid, summary.to(device=centroid.device, dtype=centroid.dtype)])
+        parts = []
+        if self.use_prototype_state:
+            parts.append(centroid)
+        if self.relational_state:
+            summary = self._relational_summary(score_slice)
+            parts.append(summary.to(device=centroid.device, dtype=centroid.dtype))
+        if self.include_class_scores:
+            scores_vec = self._class_scores_vector(score_slice)
+            parts.append(scores_vec.to(device=centroid.device, dtype=centroid.dtype))
+        if len(parts) == 1:
+            return parts[0]
+        return torch.cat(parts)
 
     def _call_confidence_decoder(self, decoder, scores, hidden_vectors, labels, query_mask, known_class_mask):
         """
