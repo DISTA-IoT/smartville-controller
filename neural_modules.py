@@ -56,14 +56,19 @@ def proprio_tail_size(kwargs):
 
 
 def _make_proprio_norm(kwargs):
-    """Normaliser for the proprioceptive tail. Default is the pooled
-    LayerNorm over the full tail (proprio_tail_size). When proprio_feature_scaling
-    is on, the tail is instead normalised per-feature upstream
-    (TigerBrain.assembly_state_vector), so the net must NOT normalise it
-    again -- return Identity to pass it through."""
-    if _as_bool(kwargs.get('proprio_feature_scaling', False)):
-        return nn.Identity()
-    return nn.LayerNorm(proprio_tail_size(kwargs))
+    """Normaliser for the proprioceptive tail: always an Identity pass-through.
+
+    The proprioceptive tail is normalised per-feature upstream, at assembly time
+    (TigerBrain.assembly_state_vector) -- counts log1p'd, budget squashed onto
+    (-1, 1), and every already-bounded channel (the confidences, the acquired-CTI
+    fraction and its per-class map, the CTI flag) left exactly as-is. Pooling it
+    through a LayerNorm here would re-entangle those channels: one diverging
+    budget would inflate the per-sample variance and blank the others (including
+    the structural zeros that mark the known-vs-unknown regime), and the sparse
+    0/1 acquired-CTI map would drag the pooled mean/variance. So the net leaves
+    the tail untouched and LayerNorm is confined to the exteroceptive centroid
+    (ExteroceptiveNorm), the only sub-block on a raw, drifting scale."""
+    return nn.Identity()
 
 
 class ExteroceptiveNorm(nn.Module):

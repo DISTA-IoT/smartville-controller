@@ -320,31 +320,22 @@ class TigerBrain:
         # a small positive so it can never zero or flip the divisor.
         self.reward_temperature = max(
             float(self.intrusion_detection_kwargs.get('reward_temperature', 2.0)), 1e-8)
-        # When True, the proprioceptive tail of the state vector is
-        # normalised per-feature at assembly time instead of by the net's
-        # pooled LayerNorm(PROPRIOCEPTIVE_STATE_SIZE): the two unbounded
-        # channels (anomaly/known counts and the accumulated budget) are
-        # individually squashed, while the already-bounded confidences, the
-        # acquired-CTI fraction and the CTI flag pass through
-        # untouched -- so their structural zeros (which double as the
-        # known-vs-unknown regime indicator) stay clean, and a diverging
-        # budget can no longer inflate the pooled variance and blank out the
-        # other five channels for that sample (see assembly_state_vector /
-        # _proprio_budget_feature). The net drops its LayerNorm when this is
-        # on (neural_modules: proprio_norm -> Identity), reading the same flag
-        # from its kwargs. Default False (legacy behaviour: pooled LayerNorm).
-        self.proprio_feature_scaling = bool(
-            self.intrusion_detection_kwargs.get('proprio_feature_scaling', False))
+        # The proprioceptive tail of the state vector is ALWAYS normalised
+        # per-feature at assembly time (assembly_state_vector), never by a
+        # pooled LayerNorm: the two unbounded channels (anomaly/known counts and
+        # the accumulated budget) are individually squashed (log1p / floor-
+        # anchored tanh), while the already-bounded confidences, the acquired-CTI
+        # fraction and its per-class map, and the CTI flag pass through untouched
+        # -- so their structural zeros (which double as the known-vs-unknown
+        # regime indicator) stay clean, and a diverging budget can never inflate
+        # a pooled variance and blank out the other channels. The DM nets leave
+        # the tail untouched (neural_modules: proprio_norm -> Identity) and
+        # confine LayerNorm to the exteroceptive centroid, the only sub-block on
+        # a raw, drifting scale.
         # Per-episode running average of the empirical accept-reward earned per
         # predicted known class, appended to each relational summary
         # (see _relational_summary / _update_relational_reward).
         self._reset_relational_reward_tracker()
-        # Per-episode running |budget| scale used to normalise the budget
-        # channel of the proprioceptive tail when proprio_feature_scaling is
-        # on. Reset alongside the reward tracker so, like the reward memory,
-        # the budget scale is re-estimated from each episode's own experience
-        # rather than carried across episodes.
-        self._reset_proprio_scale_tracker()
         # Ren et al. (2021) define relative Mahalanobis distance as a
         # post-hoc, frozen-feature diagnostic: the encoder is trained first,
         # then RMD is computed against its (fixed) representation. Our
@@ -393,13 +384,13 @@ class TigerBrain:
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
             "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, state=%s, "
-            "reward_temperature=%s, proprio_feature_scaling=%s, "
+            "reward_temperature=%s, "
             "include_class_scores=%s, class_scores_encoding=%s, class_scores_sentinel=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.state_mode,
-            self.reward_temperature, self.proprio_feature_scaling,
+            self.reward_temperature,
             self.include_class_scores, self.class_scores_encoding, self.class_scores_sentinel,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
 
@@ -590,10 +581,6 @@ class TigerBrain:
         # -- reward memory must not leak across episodes any more than the
         # prototypes do.
         self._reset_relational_reward_tracker()
-        # Same rationale for the proprioceptive budget scale: re-estimate it
-        # from this episode's own budget trajectory rather than leaking the
-        # previous episode's magnitude across the reset.
-        self._reset_proprio_scale_tracker()
         self.episode_count += 1
 
     def init_agents(self, args):
@@ -1122,77 +1109,42 @@ class TigerBrain:
         self._reward_abs_n = 0
         self._reward_abs_scale = 0.0
 
-    def _reset_proprio_scale_tracker(self):
-        """
-        (Re)initialise the per-episode running |budget| scale used to
-        normalise the budget channel of the proprioceptive tail when
-        proprio_feature_scaling is on AND there is no bankruptcy floor to
-        anchor to (env.disable_budget_bankrupt_termination is True). In the
-        default regime the budget channel anchors to min_budget/init_budget
-        instead (see _proprio_budget_feature), but the running scale is kept
-        warm on every call so it is always available as the no-floor fallback.
-        `_budget_abs_total` / `_budget_abs_n` accumulate the sum and count of
-        |budget| observed at each state assembly this episode; `_budget_abs_
-        scale` is their ratio (the running mean magnitude), the divisor the
-        budget is squashed against in that fallback.
-
-        Note this is a *dedicated* budget scale, not the reward |scale|:
-          * the reward |scale| is a per-decision magnitude and is only ever
-            populated when relational_state is on (see _update_relational_
-            reward), whereas proprio scaling must work regardless of that flag;
-          * budget is the running *accumulation* of per-decision rewards, so
-            its magnitude is on a different (and larger) scale than a single
-            decision's reward.
-        Dividing budget by its own running magnitude keeps the channel ~O(1)
-        in normal operation and lets tanh bound it under divergence.
-        """
-        self._budget_abs_total = 0.0
-        self._budget_abs_n = 0
-        self._budget_abs_scale = 0.0
-
     def _proprio_budget_feature(self, budget, device, dtype):
         """
         The bounded budget feature for the proprioceptive tail, on (-1, 1).
-        Two regimes, forked on whether the bankruptcy floor is live:
 
-          * Bankruptcy termination ENABLED (env.disable_budget_bankrupt_
-            termination is False, the default): the budget has a meaningful
-            absolute anchor -- min_budget is the death floor and init_budget
-            the starting bankroll -- so encode absolute *runway* rather than a
-            self-relative magnitude. z = (budget - init_budget) / (init_budget
-            - min_budget) is centred on the starting bankroll: z = 0 at the
-            start, z = -1 (tanh -> ~-0.76) at the min_budget floor, positive
-            when ahead. tanh's resolution is best near the floor -- exactly
-            where the buy/afford/bankruptcy decisions need it -- and saturates
-            harmlessly when very solvent. This is independent of the raw
-            budget magnitude, so budget being one or two orders larger than a
-            single reward is irrelevant.
+        A single floor-anchored transform, used in every regime:
 
-          * Bankruptcy termination DISABLED: min_budget is no longer a boundary
-            the episode respects, so there is no floor to anchor to. Fall back
-            to self-normalising by the running |budget| magnitude,
-            tanh(budget / running_scale) -- the reward-style squash -- which
-            still bounds a runaway budget without assuming an absolute anchor.
+            z = (budget - min_budget) / (init_budget - min_budget)
 
-        The running |budget| scale is maintained on every call regardless of
-        regime, so it is always warm as the fallback divisor. Degenerate
-        denominators (~0 start-to-death runway, or ~0 running scale before any
-        budget is seen) fall back to 1.0.
+        centred on the bankruptcy floor rather than on the starting bankroll.
+        min_budget and init_budget are fixed config anchors that always exist
+        (min_budget is the death floor when bankruptcy termination is live and
+        simply the config's low-water reference when it is disabled), so this is
+        a pure, deterministic function of the *current* budget alone -- no
+        running statistics. That matters: an observation channel must not depend
+        on how many steps have elapsed or on earlier budgets this episode, or the
+        same situation would encode differently over time and a replayed
+        transition would be read under a scale it was never encoded against. The
+        old running-|budget| fallback did exactly that (non-Markov, replay-
+        inconsistent); this removes it.
+
+        Centring on the floor puts z = 0 -- tanh's steepest, highest-resolution
+        point -- exactly AT min_budget, where the afford / buy / avoid-bankruptcy
+        decisions actually live; z = 1 (tanh ~ 0.76) at the starting bankroll,
+        z > 1 (saturating toward +1) when comfortably solvent, and z < 0 only
+        when bankruptcy termination is disabled and the budget has sunk below the
+        floor. The trade-off is that the very-solvent region is compressed into
+        tanh's upper tail -- but that is where extra budget least changes the
+        policy, so it is the right place to spend less resolution. Independent of
+        the raw budget magnitude, so budget being orders larger than a single
+        reward is irrelevant. A degenerate runway (min_budget ~= init_budget)
+        falls back to a unit divisor.
         """
         b = float(budget)
-        # Always maintained: the fallback divisor for the no-floor regime.
-        self._budget_abs_total += abs(b)
-        self._budget_abs_n += 1
-        self._budget_abs_scale = self._budget_abs_total / self._budget_abs_n
-        if not self.env.disable_budget_bankrupt_termination:
-            # Floor is live: anchor to it (absolute runway, centred on start).
-            runway = self.env.init_budget - self.env.min_budget
-            denom = runway if abs(runway) > 1e-8 else 1.0
-            z = (b - self.env.init_budget) / denom
-        else:
-            # No floor: self-normalise by the running |budget| magnitude.
-            scale = self._budget_abs_scale if self._budget_abs_scale > 1e-8 else 1.0
-            z = b / scale
+        runway = self.env.init_budget - self.env.min_budget
+        denom = runway if abs(runway) > 1e-8 else 1.0
+        z = (b - self.env.min_budget) / denom
         return torch.tanh(torch.tensor(z, device=device, dtype=dtype))
 
     def _update_relational_reward(self, class_idx, group_reward):
@@ -2616,16 +2568,17 @@ class TigerBrain:
         below), then three trailing scalars (acquired-CTI fraction, CTI-available
         flag, budget). The map sits in the middle on purpose: the three trailing
         scalars keep their fixed negative indices (-3/-2/-1) so the next-state
-        refreshes downstream do not have to know the map's width. With
-        proprio_feature_scaling on, each channel is normalised per-feature here
-        rather than by the net's pooled LayerNorm: the two unbounded scalars are
-        squashed (counts via log1p, budget via the floor-anchored or
-        running-|budget| tanh in _proprio_budget_feature), while the two
-        already-bounded confidences, the acquired-CTI fraction (in [0, 1]), the
-        boolean flag and every already-bounded 0/1 map slot are left exactly
-        as-is -- crucially preserving the structural zero in whichever confidence
-        slot marks the off-regime. The net's proprio_norm becomes an Identity in
-        this mode (neural_modules), so the tail is normalised exactly once.
+        refreshes downstream do not have to know the map's width.
+
+        The tail is ALWAYS normalised per-feature here, never by a pooled
+        LayerNorm downstream: the two unbounded scalars are squashed (counts via
+        log1p, budget via the floor-anchored tanh in _proprio_budget_feature),
+        while the two already-bounded confidences, the acquired-CTI fraction (in
+        [0, 1]), the CTI-available flag and every already-bounded 0/1 map slot
+        are left exactly as-is -- crucially preserving the structural zero in
+        whichever confidence slot marks the off-regime. The DM nets' proprio_norm
+        is an Identity (neural_modules), so the tail is normalised exactly once,
+        here, and LayerNorm is confined to the exteroceptive centroid.
 
         The acquired-CTI fraction (env.acquired_cti_fraction()) is the state's
         scalar memory of how much of this episode's zero-day pool the agent has
@@ -2637,31 +2590,21 @@ class TigerBrain:
         """
         device, dtype = centroid.device, centroid.dtype
         # Per-class acquired-CTI map in the fixed all_class_labels layout; its
-        # 0/1 slots are already bounded, so they pass through untouched under
-        # proprio_feature_scaling exactly like the CTI flag and the fraction.
+        # 0/1 slots are already bounded, so they pass through untouched, exactly
+        # like the CTI flag and the fraction.
         acquired_map = torch.tensor(
             self.env.acquired_cti_vector(), device=device, dtype=dtype)
-        if self.proprio_feature_scaling:
-            leading = torch.stack([
-                torch.log1p(torch.tensor(float(num_anom), device=device, dtype=dtype)),
-                torch.tensor(float(zda_confidence), device=device, dtype=dtype),
-                torch.log1p(torch.tensor(float(num_known), device=device, dtype=dtype)),
-                torch.tensor(float(cs_classif_confidence), device=device, dtype=dtype),
-            ])
-            trailing = torch.stack([
-                torch.tensor(float(self.env.acquired_cti_fraction()), device=device, dtype=dtype),
-                torch.tensor(float(self.env.epistemic_actions_available), device=device, dtype=dtype),
-                self._proprio_budget_feature(curr_budget, device, dtype),
-            ])
-        else:
-            leading = torch.tensor([
-                float(num_anom), float(zda_confidence),
-                float(num_known), float(cs_classif_confidence),
-            ], device=device, dtype=dtype)
-            trailing = torch.tensor([
-                float(self.env.acquired_cti_fraction()),
-                float(self.env.epistemic_actions_available), float(curr_budget)
-            ], device=device, dtype=dtype)
+        leading = torch.stack([
+            torch.log1p(torch.tensor(float(num_anom), device=device, dtype=dtype)),
+            torch.tensor(float(zda_confidence), device=device, dtype=dtype),
+            torch.log1p(torch.tensor(float(num_known), device=device, dtype=dtype)),
+            torch.tensor(float(cs_classif_confidence), device=device, dtype=dtype),
+        ])
+        trailing = torch.stack([
+            torch.tensor(float(self.env.acquired_cti_fraction()), device=device, dtype=dtype),
+            torch.tensor(float(self.env.epistemic_actions_available), device=device, dtype=dtype),
+            self._proprio_budget_feature(curr_budget, device, dtype),
+        ])
         proprio = torch.cat([leading, acquired_map, trailing])
         state_vec = torch.cat([
             centroid.squeeze(0),
