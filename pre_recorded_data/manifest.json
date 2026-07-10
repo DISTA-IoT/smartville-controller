@@ -1,5 +1,5 @@
 {
-  "_about_step8.94": "Pure epistemic rewards are now put in the experience tuples. see previous commit.(991265b0cdd0f8dca2b927739a2e4ca2af6c1821) ",
+  "_about_step8.95": "Add per-class acquired-CTI map to the DM proprioceptive state (afde08c3cc5577e273a801f082c7ad194cae4619) and fixed its layernorm (08ad9cd2e57556feb7f27a0080ef35d4b5f3e036) ",
   "intrusion_detection": {
     "eval": false,
     "learning_rate": 0.001,
