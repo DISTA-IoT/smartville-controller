@@ -64,9 +64,12 @@
     "agent_discount_rate": "0.99",
     "agency": true,
     "state": "mixed",
+    
+    "_about_step8.93": "The following three fellas are new. Ill take out this when they are not new",
     "include_class_scores": true,
     "class_scores_encoding": "softmax",
     "class_scores_sentinel": 0.0,
+
     "proprio_feature_scaling": false,
     "reward_temperature": 2.0,
     "automatic_cs_acceptance": false,
@@ -109,7 +112,7 @@
     "cti_delivery_delay": 0,
     "cti_delivery_jitter": 0,
     "cti_quality_coupling": "purity",
-    "guard_learned_cti_affordability": true
+    "guard_learned_cti_affordability": false
   },
   "neural_modules": {
     "first_stream_input_size": "4",
