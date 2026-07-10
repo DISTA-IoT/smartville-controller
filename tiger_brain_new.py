@@ -2616,8 +2616,45 @@ class TigerBrain:
         # the replay buffer and NaNs the agent's value/critic loss. Sanitise
         # here, at the single point every state passes through, so the DM update
         # stays finite regardless of the IM's health.
+        self._log_proprio_diagnostics(proprio, centroid, state_vec)
         return torch.nan_to_num(state_vec, nan=0.0, posinf=0.0, neginf=0.0)
-    
+
+    def _log_proprio_diagnostics(self, proprio, exteroceptive, state_vec):
+        """Per-decision scale diagnostics for the DM input, under diagnostics/,
+        so a Q-value / value-loss explosion can be traced to the channel that
+        caused it. Logs the L2 norm (and abs-max) of the proprioceptive tail,
+        the L2 norm of the exteroceptive block and of the full state, and every
+        NON-binary proprioceptive scalar by name. The 0/1 channels -- the
+        CTI-available flag and the per-class acquired-CTI map -- are omitted:
+        they are bounded to {0, 1} and cannot be the source of a blow-up.
+
+        Values are read pre-sanitisation (before the state's nan_to_num), so a
+        non-finite exteroceptive/state norm shows up here as inf/nan rather than
+        being silently zeroed. Emitted once per state assembly at the current DM
+        step; the whole read is a single device->host sync to keep it cheap."""
+        if not self.wbt:
+            return
+        stats = torch.stack([
+            proprio.norm(), proprio.abs().max(),
+            exteroceptive.norm(), state_vec.norm(),
+            proprio[0], proprio[1], proprio[2], proprio[3],
+            proprio[-3], proprio[-1],
+        ]).detach().cpu().tolist()
+        names = [
+            'diagnostics/proprio_norm',
+            'diagnostics/proprio_abs_max',
+            'diagnostics/proprio_exteroceptive_norm',
+            'diagnostics/proprio_state_norm',
+            'diagnostics/proprio_num_anom_log1p',
+            'diagnostics/proprio_zda_confidence',
+            'diagnostics/proprio_num_known_log1p',
+            'diagnostics/proprio_cs_classif_confidence',
+            'diagnostics/proprio_acquired_cti_fraction',
+            'diagnostics/proprio_budget_feature',
+        ]
+        self.reporter.log_scalars(dict(zip(names, stats)),
+                                  step=self.wb_tracker.step_counter)
+
     def act(self, state_vec):
         """Gets action from the mitigation agent."""
         action = self.mitigation_agent.act(state_vec)
