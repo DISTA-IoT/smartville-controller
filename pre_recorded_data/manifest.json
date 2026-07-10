@@ -1,4 +1,5 @@
 {
+  "_about_step8.94": "Pure epistemic rewards are now put in the experience tuples. see previous commit.(991265b0cdd0f8dca2b927739a2e4ca2af6c1821) ",
   "intrusion_detection": {
     "eval": false,
     "learning_rate": 0.001,
@@ -64,12 +65,9 @@
     "agent_discount_rate": "0.99",
     "agency": true,
     "state": "mixed",
-    
-    "_about_step8.93": "The following three fellas are new. Ill take out this when they are not new",
     "include_class_scores": true,
     "class_scores_encoding": "softmax",
     "class_scores_sentinel": 0.0,
-
     "proprio_feature_scaling": false,
     "reward_temperature": 2.0,
     "automatic_cs_acceptance": false,
@@ -183,14 +181,14 @@
     "hue": "1.0"
   },
   "prices": {
-    "echo": "20",
+    "echo": "2",
     "hakai": "0",
     "mirai": "200",
     "hajime": "200",
-    "doorlock": "20",
+    "doorlock": "2",
     "gafgyt": "200",
-    "muhstik": "20",
-    "h_scan": "20",
+    "muhstik": "2",
+    "h_scan": "2",
     "okiru": "0",
     "generic_ddos": "0",
     "torii": "0",
