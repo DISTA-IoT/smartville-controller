@@ -2077,6 +2077,8 @@ class TigerBrain:
             if self.intrusion_detection_kwargs['price_decay']: self.env.price_decay()
             accepted_cluster = False
             epistemic_action = False
+            pure_epistemic_reward = 0
+            pure_pragmatic_reward = 0
 
             column = non_missing_columns[idx]
             member_mask = clusters_oh[:, column].bool()
@@ -2141,6 +2143,8 @@ class TigerBrain:
                 accept_reward_scale=self.unknown_accept_reward_scale,
                 malicious_accept_penalty_scale=self.unknown_malicious_accept_penalty_scale)
 
+            pure_pragmatic_reward += current_reward
+
             # Pragmatic-decision tally for this cluster, keyed by its majority
             # true label. Counted in *samples* (cluster members), accumulated
             # per-episode on the env so its grand total is comparable to
@@ -2179,6 +2183,7 @@ class TigerBrain:
                 updates_dict = self.perform_epistemic_action(
                     majority_label, purity=cluster_purity,
                     confidence=cluster_zda_confidence.item())
+                pure_epistemic_reward = -updates_dict['price_payed']
                 current_reward -= updates_dict['price_payed']
                 # Instant delivery of a real acquisition: log the corruption it
                 # arrived with (delayed deliveries log the same in
@@ -2197,6 +2202,7 @@ class TigerBrain:
                     # already paid, so a policy that reads the cluster before
                     # buying beats one that buys blindly.
                     current_reward -= self.useless_epistemic_penalty
+                    pure_epistemic_reward -= self.useless_epistemic_penalty
 
             self.env.current_budget += current_reward
             next_state = state_vec.detach().clone()
@@ -2220,7 +2226,12 @@ class TigerBrain:
 
             end_signal = torch.tensor([self.env.has_episode_ended()], device=self.device, dtype=torch.long)
 
-            self.mitigation_agent.remember(state_vec.detach(), action, current_reward, next_state, end_signal, self.wb_tracker.step_counter)
+            if epistemic_action:
+                self.mitigation_agent.remember(state_vec.detach(), action, pure_epistemic_reward, next_state, end_signal, self.wb_tracker.step_counter)
+            else:
+                self.mitigation_agent.remember(state_vec.detach(), action, pure_pragmatic_reward, next_state, end_signal, self.wb_tracker.step_counter)
+           
+
             self.env.episode_rewards.append(current_reward.item() if hasattr(current_reward, 'item') else current_reward)
             self.env.episode_budgets.append(self.env.current_budget)
 
