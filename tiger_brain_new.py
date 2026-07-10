@@ -2571,14 +2571,29 @@ class TigerBrain:
         refreshes downstream do not have to know the map's width.
 
         The tail is ALWAYS normalised per-feature here, never by a pooled
-        LayerNorm downstream: the two unbounded scalars are squashed (counts via
-        log1p, budget via the floor-anchored tanh in _proprio_budget_feature),
-        while the two already-bounded confidences, the acquired-CTI fraction (in
-        [0, 1]), the CTI-available flag and every already-bounded 0/1 map slot
-        are left exactly as-is -- crucially preserving the structural zero in
-        whichever confidence slot marks the off-regime. The DM nets' proprio_norm
-        is an Identity (neural_modules), so the tail is normalised exactly once,
-        here, and LayerNorm is confined to the exteroceptive centroid.
+        LayerNorm downstream. Each channel is squashed by a transform matched to
+        its range:
+          * the two counts (>= 0, unbounded) via log1p;
+          * the two confidences (SIGNED and unbounded -- despite the name they
+            are not in [0, 1]: under the 'energy'/'baseline' confidence_strategy
+            they are logsumexp / log-ratio values over raw prototypical logits
+            (1/cdist), which reach ~1e9 right after an encoder reset and relax to
+            O(10) as the encoder separates its clusters) via asinh, the signed
+            analogue of log1p: asinh(x) ~ x near 0 so a genuine O(1) confidence
+            is essentially untouched, and ~ sign(x)*log(2|x|) in the tails so a
+            1e9 spike is compressed to ~20 instead of detonating the value net.
+            asinh(0) = 0, so the structural zero in whichever confidence slot
+            marks the off-regime (known vs. unknown traffic) is preserved
+            exactly;
+          * budget via the floor-anchored tanh in _proprio_budget_feature;
+          * the genuinely-bounded channels -- the acquired-CTI fraction (in
+            [0, 1]), the CTI-available flag and every 0/1 acquired-map slot --
+            pass through untouched.
+        The DM nets' proprio_norm is an Identity (neural_modules), so the tail is
+        normalised exactly once, here, and LayerNorm is confined to the
+        exteroceptive centroid. (The raw, un-squashed confidences are still what
+        reaches the W&B scalars and the cti_confidence_threshold comparisons --
+        only the value entering the state vector is compressed.)
 
         The acquired-CTI fraction (env.acquired_cti_fraction()) is the state's
         scalar memory of how much of this episode's zero-day pool the agent has
@@ -2596,9 +2611,9 @@ class TigerBrain:
             self.env.acquired_cti_vector(), device=device, dtype=dtype)
         leading = torch.stack([
             torch.log1p(torch.tensor(float(num_anom), device=device, dtype=dtype)),
-            torch.tensor(float(zda_confidence), device=device, dtype=dtype),
+            torch.asinh(torch.tensor(float(zda_confidence), device=device, dtype=dtype)),
             torch.log1p(torch.tensor(float(num_known), device=device, dtype=dtype)),
-            torch.tensor(float(cs_classif_confidence), device=device, dtype=dtype),
+            torch.asinh(torch.tensor(float(cs_classif_confidence), device=device, dtype=dtype)),
         ])
         trailing = torch.stack([
             torch.tensor(float(self.env.acquired_cti_fraction()), device=device, dtype=dtype),
