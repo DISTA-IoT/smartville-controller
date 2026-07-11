@@ -61,10 +61,13 @@ class SimbaBrain:
         self.episode_count = 0
         self._total_ticks = cfg.max_episode_ticks or 1_000_000
         self._pending = None          # (state, action, scaled_reward)
-        # POX-side attributes (tiger_server wires these into the
-        # flowstats listener); set by from_tiger_config, unused offline.
+        # POX-side attributes the paper tiger_server reads off the brain
+        # (flowstats-listener wiring + /initialize response). Set by
+        # from_tiger_config; harmless/unused offline.
+        self.seed = cfg.seed
         self.traffic_dict = None
         self.ips_containers = None
+        self.data_recorder = None     # SIMBA does not record captures
         if getattr(cfg, 'im_snapshot_path', '') and os.path.exists(cfg.im_snapshot_path):
             self.im.load(cfg.im_snapshot_path)
             self._log(f'IM weights loaded from {cfg.im_snapshot_path}')

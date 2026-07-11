@@ -29,6 +29,14 @@ class SimbaEnvironment:
         self.wasted_buys = 0
         self.bankrupt = False
 
+    @property
+    def current_knowledge(self) -> Dict[str, List[str]]:
+        """Live curriculum view, in the dict shape the POX FlowLogger reads
+        (`current_knowledge['G2s']` / `['G1s']`). Kept in sync as CTI buys
+        move classes G2 -> Knowns, so the paper's GNS3 flowstats listener
+        stays correct when driven by SimbaBrain."""
+        return {'Knowns': self.knowns, 'G1s': self.g1s, 'G2s': self.g2s}
+
     # ------------------------------------------------------------ CTI market
     def quote(self, label: Optional[str]) -> Optional[float]:
         """Price to buy `label`'s CTI, or None when it is not on sale
