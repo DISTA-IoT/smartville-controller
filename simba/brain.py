@@ -31,7 +31,7 @@ from .config import SimbaConfig, _as_flat_dict
 from .environment import SimbaEnvironment
 from .inference import SimbaInference
 
-PROPRIO_DIM = 8
+PROPRIO_DIM = 8   # + one known-flag per curriculum class (see _state)
 ACCEPT, BLOCK, BUY = 0, 1, 2
 ABLATIONS = ('drl', 'no_epistemic', 'greedy_cti')
 
@@ -46,9 +46,17 @@ class SimbaBrain:
         self.im = SimbaInference(cfg, logger)
         self.im.trainable = set(cfg.knowns)
         self.env = SimbaEnvironment(cfg, logger)
-        # the DM sees the group's centroid in the *stationary* input space
+        # The DM sees the group's centroid in the *stationary* input space
         # (not the drifting learned embedding), plus a proprioceptive block
-        self.agent = DQNAgent(cfg, state_dim=self.im.input_rep_dim() + PROPRIO_DIM)
+        # that ends with one known-flag PER curriculum class (canonical
+        # order). The per-class flags are what make knowledge *selectively*
+        # valuable: with only an aggregate knowns-count, V(s) cannot tell a
+        # world where doorlock is Known from one where mirai is — the
+        # continuation value of every buy collapses to the average value of
+        # knowledge (mostly worthless), and the DQN rationally stops buying.
+        self._class_order = sorted(cfg.all_classes())
+        self.agent = DQNAgent(cfg, state_dim=self.im.input_rep_dim()
+                              + PROPRIO_DIM + len(self._class_order))
         self.training = True          # False => greedy policy, no DM updates
         self.episode_count = 0
         self._total_ticks = cfg.max_episode_ticks or 1_000_000
@@ -252,7 +260,10 @@ class SimbaBrain:
             len(self.env.knowns) / max(1, len(cfg.all_classes())),
             min(self.env.ticks / self._total_ticks, 1.0),
         ], dtype=centroid.dtype, device=centroid.device)
-        return torch.cat([centroid, proprio]).detach()
+        known_flags = torch.tensor(
+            [1.0 if c in self.env.knowns else 0.0 for c in self._class_order],
+            dtype=centroid.dtype, device=centroid.device)
+        return torch.cat([centroid, proprio, known_flags]).detach()
 
     def _decide(self, state, is_unknown, quote) -> int:
         """The epistemic action only exists for unknown clusters (as in

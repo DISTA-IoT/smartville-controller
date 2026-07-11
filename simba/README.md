@@ -69,7 +69,8 @@ default `gamma=0.998` and the default synthetic rates, doorlock
 (rate 5, price 40) is clearly worth buying and echo (rate 1, price 400)
 clearly is not.
 
-Two more anti-"zero-epistemic-collapse" defaults, learned the hard way:
+Three anti-"zero-epistemic-collapse" design points, each learned by
+reproducing the collapse:
 
 * **bankruptcy does not terminate episodes** (`bankrupt_terminates:
   false`; it stays a reported metric). With termination on, random
@@ -78,7 +79,16 @@ Two more anti-"zero-epistemic-collapse" defaults, learned the hard way:
   never past exploration;
 * **exploration is buy-averse** (`explore_buy_weight: 0.1`): a uniform
   random draw over three actions pays a CTI price every third decision,
-  drowning the buy action's value signal in exploration damage.
+  drowning the buy action's value signal in exploration damage;
+* **the DM state carries one known-flag PER curriculum class** (canonical
+  order), not just an aggregate knowns count. This is the subtle one: with
+  only a count, V(s) cannot tell a world where *doorlock* is Known from
+  one where *mirai* is, so the continuation value of every buy collapses
+  to the average value of knowledge — which, dominated by the worthless
+  malicious labels bought during exploration, is small — and the DQN
+  *rationally* stops buying. Selective buying requires the value function
+  to see *which* knowledge it owns. (Changes the DM state dimension, so
+  DM checkpoints are curriculum-specific.)
 
 ## Inference module (kept honest, kept small)
 
