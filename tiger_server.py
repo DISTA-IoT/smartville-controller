@@ -539,7 +539,15 @@ def launch(**kwargs):
 
         try:
           # The controllerBrain holds the ML functionalities.
-          controller_brain = TigerBrain(args, wb_tracker = wb_tracker)
+          # intrusion_detection.brain selects the implementation:
+          # 'tiger' (default, full TIGER stack) or 'simba' (the minimal
+          # IM+DM stack in smartController/simba/).
+          brain_impl = args.get('intrusion_detection', {}).get('brain', 'tiger')
+          if brain_impl == 'simba':
+            from smartController.simba.brain import SimbaBrain
+            controller_brain = SimbaBrain.from_tiger_config(args)
+          else:
+            controller_brain = TigerBrain(args, wb_tracker = wb_tracker)
         except Exception as e:
           shutdown_process()
           return _init_error(f"Error creating controller brain: {e}")
