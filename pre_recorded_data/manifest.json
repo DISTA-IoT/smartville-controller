@@ -81,7 +81,7 @@
     "dynamic_knowledge": false,
     "disable_budget_bankrupt_termination": false,
     "disable_budget_win_termination": true,
-    "boltzmann_sampling": false,
+    "boltzmann_sampling": true,
     "update_target_freq": "1000",
     "use_per": true,
     "n_step_rewards": "3",
