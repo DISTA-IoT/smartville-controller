@@ -2036,6 +2036,7 @@ class TigerBrain:
         epistemic_costs = 0
         rewards_per_accepted_clusters = 0
         rewards_per_blocked_clusters = 0
+        impurity_penalties_total = 0
         # Per-cluster zda_confidence values this tick, for threshold calibration.
         cluster_confidences = []
         # Sum of per-cluster impurity (1 - purity) this tick, used both to
@@ -2062,6 +2063,7 @@ class TigerBrain:
             epistemic_action = False
             pure_epistemic_reward = 0
             pure_pragmatic_reward = 0
+            impurity_penalties = 0
 
             column = non_missing_columns[idx]
             member_mask = clusters_oh[:, column].bool()
@@ -2160,6 +2162,7 @@ class TigerBrain:
                 cluster_impurity_sum += cluster_impurity
 
                 if self.cluster_impurity_penalty_weight > 0.0:
+                    impurity_penalties -= self.cluster_impurity_penalty_weight * cluster_impurity
                     current_reward -= self.cluster_impurity_penalty_weight * cluster_impurity
 
             if epistemic_action:
@@ -2231,9 +2234,12 @@ class TigerBrain:
 
             clustering_reward += reward_val
             epistemic_actions_taken += int(epistemic_action)
-            epistemic_costs += reward_val if epistemic_action else 0
-            rewards_per_accepted_clusters += reward_val if accepted_cluster else 0
-            rewards_per_blocked_clusters += reward_val if not accepted_cluster else 0
+            epistemic_costs += pure_epistemic_reward if epistemic_action else 0
+            rewards_per_accepted_clusters += pure_pragmatic_reward if accepted_cluster else 0
+            rewards_per_blocked_clusters +=  pure_pragmatic_reward if not accepted_cluster and not epistemic_action else 0
+            impurity_penalties_total += impurity_penalties
+
+
 
         if len(centroids[~missing]) > 0 and self.wbt:
 
@@ -2246,7 +2252,8 @@ class TigerBrain:
                 AGENT+'/'+'epistemic_costs': epistemic_costs,
                 AGENT+'/'+'rewards_per_accepted_clusters': rewards_per_accepted_clusters,
                 AGENT+'/'+'rewards_per_blocked_clusters': rewards_per_blocked_clusters,
-                AGENT+'/'+'mean_cluster_impurity': cluster_impurity_sum / num_identified
+                AGENT+'/'+'mean_cluster_impurity': cluster_impurity_sum / num_identified,
+                AGENT+'/'+'cluster_impurity_penalty': impurity_penalties_total
             }
             # Representation-scale diagnostic (unknown/zero-day regime).
             if centroid_norms:
@@ -2257,17 +2264,11 @@ class TigerBrain:
                 cluster_scalars['diagnostics/exteroceptive_abs_max_unknown'] = max(extero_abs_maxes)
             if proto_logit_raw_maxes:
                 cluster_scalars['diagnostics/proto_logit_raw_max_unknown'] = max(proto_logit_raw_maxes)
-            # Supervision-value component: total impurity penalty deducted this
-            # tick and the mean cluster impurity behind it. Emitted only when
-            # the knob is on, so the series stay hidden in the default regime.
-            if self.cluster_impurity_penalty_weight > 0.0:
-                cluster_scalars[AGENT+'/'+'cluster_impurity_penalty'] = \
-                    self.cluster_impurity_penalty_weight * cluster_impurity_sum
+                
                 
             # Per-cluster zda_confidence distribution this tick, for threshold
             # calibration: summary scalars plus a histogram of the raw values.
             if cluster_confidences:
-                import wandb
                 conf_t = torch.tensor(cluster_confidences)
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_mean'] = conf_t.mean().item()
                 cluster_scalars[AGENT+'/'+'cluster_zda_confidence_min'] = conf_t.min().item()
