@@ -184,10 +184,10 @@
   "prices": {
     "echo": "2",
     "hakai": "0",
-    "mirai": "200",
-    "hajime": "200",
+    "mirai": "20",
+    "hajime": "20",
     "doorlock": "2",
-    "gafgyt": "200",
+    "gafgyt": "20",
     "muhstik": "2",
     "h_scan": "2",
     "okiru": "0",
