@@ -7,3 +7,4 @@ tiger_data_collection
 *.jsonl
 shard*
 .ipynb_checkpoints
+runs_simba/
