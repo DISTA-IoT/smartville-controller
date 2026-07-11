@@ -171,14 +171,40 @@ plugs into the existing `smart_check` loop unchanged. Without a
 pretrained IM snapshot the module cold-starts online: everything is
 unknown until the Known buffers fill and the first calibration runs.
 
-## Reading the results
+## Reading the results (wandb)
 
-Per-episode wandb series: `train/return`, `train/final_budget`,
-`train/n_buys`, `buys/<class>`, `train/cs_acc`, `train/ad_recall`,
-`train/epsilon`, `train/dm_loss`, `train/im_loss`. Eval summary:
-`eval_mean_return`, `eval_mean_buys`, `eval_buys/<class>`.
+The x-axis is a **monotonic per-tick global step** (never reset across
+episodes), so every series updates *live* during a run rather than only
+at episode boundaries — the fix for "I see the run but no running
+metrics". Logging lives in `SimbaBrain`, so it works identically offline
+and inside GNS3 (the controller's `WandBTracker` is passed through
+`from_tiger_config`).
+
+* **`running/*`** — windowed means flushed every `log_every_ticks` ticks
+  (config, default 25): `budget`, `reward_per_tick`, the reward
+  breakdown `service_per_tick` / `damage_per_tick` /
+  `blocked_benign_per_tick` / `cti_spend_per_tick`, the action mix
+  `accept_rate` / `block_rate` / `buy_rate`, `epsilon`, `knowns_count`,
+  `cum_buys`, `cum_wasted_buys`, `cs_acc`, `ad_recall`, `ad_precision`,
+  `im_loss`, `dm_loss`.
+* **`events/buy`**, **`events/buy_<class>`**, **`events/buy_price`**,
+  **`events/wasted_buy`** — point-in-time spikes at the exact step a CTI
+  purchase happens, so you can see *when* and *which* label was bought.
+* **`episode/*`** (training) and **`eval_episode/*`** (greedy eval) —
+  per-episode summaries at the episode's final step: `return`,
+  `final_budget`, `n_buys`, `wasted_buys`, `bankrupt`, plus
+  `im_loss`/`dm_loss`/`cs_acc`/`ad_recall`/`buy_rate`.
+* **run summary** — `eval_mean_return`, `eval_std_return`,
+  `eval_mean_buys`, `eval_bankruptcies`, `eval_buys/<class>`.
+
+stdout mirrors this: every episode prints the action mix (A/B/Buy), the
+`svc/dmg/spend` reward breakdown, losses, buys and a `BANKRUPT` marker;
+`--heartbeat N` adds a within-episode progress line every N ticks (use it
+on long real traces where one episode is thousands of ticks), and
+`--print-every N` thins the per-episode lines.
 
 The intended end state: `drl` buys the cheap high-volume benign
 zero-days early, never the malicious/overpriced ones — beating
 `no_epistemic` by the recovered `(1-alpha)` gap and `greedy_cti` by the
-avoided waste.
+avoided waste. Watch `running/cum_buys` plateau at a small number and
+`events/buy_<class>` fire only on the worthwhile classes.

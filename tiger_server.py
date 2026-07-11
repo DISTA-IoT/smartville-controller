@@ -545,7 +545,7 @@ def launch(**kwargs):
           brain_impl = args.get('intrusion_detection', {}).get('brain', 'tiger')
           if brain_impl == 'simba':
             from smartController.simba.brain import SimbaBrain
-            controller_brain = SimbaBrain.from_tiger_config(args)
+            controller_brain = SimbaBrain.from_tiger_config(args, wb_tracker=wb_tracker)
           else:
             controller_brain = TigerBrain(args, wb_tracker = wb_tracker)
         except Exception as e:

@@ -170,7 +170,7 @@ class SimbaConfig:
         'okiru', 'generic_ddos', 'torii', 'cc_heartbeat'])
 
     # ---------------------------------------------------------- logging
-    log_every_ticks: int = 25
+    log_every_ticks: int = 25      # wandb `running/*` flush cadence, in ticks
 
     # ----------------------------------------------------------- persistence
     im_snapshot_path: str = ''     # optional pretrained IM weights (GNS3 mode)
