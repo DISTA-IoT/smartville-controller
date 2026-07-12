@@ -4,7 +4,5 @@ PrometheusLogs
 *.log
 tiger_data_collection
 .venv
-*.jsonl
-shard*
 .ipynb_checkpoints
 runs_simba/
