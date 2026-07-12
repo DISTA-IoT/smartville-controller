@@ -50,6 +50,12 @@ def parse_args(argv=None):
                     help='stdout: within-episode progress every N ticks '
                          '(0=off; use on long real traces)')
     ap.add_argument('--device', default='cpu')
+    ap.add_argument('--no-manifest', action='store_true',
+                    help="don't adopt curriculum/rewards/prices/dims from the "
+                         "trace manifest.json; run purely on SimbaConfig "
+                         'defaults (+ CLI overrides). Use this to calibrate the '
+                         'config.py defaults against real data without the '
+                         'recorded run leaking its own economy into the trial.')
     ap.add_argument('--synthetic', action='store_true',
                     help='generate a synthetic trace under DATA if none exists')
     ap.add_argument('--synth-ticks', type=int, default=200)
@@ -179,7 +185,8 @@ def main(argv=None):
                        max_shards=args.max_shards, max_samples=args.max_samples)
 
     cfg = SimbaConfig()
-    cfg.apply_manifest(trace.manifest)
+    if not args.no_manifest:
+        cfg.apply_manifest(trace.manifest)
     cfg.ablation = args.mode
     cfg.seed = args.seed
     cfg.device = args.device

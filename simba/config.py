@@ -47,24 +47,60 @@ decisions per tick. Keep that inequality in mind when adapting prices to
 a new trace (this is exactly the trap where a correctly-implemented DQN
 "converges to zero epistemic actions": the label IS worth its price
 undiscounted, but not under gamma).
+
+-----------------------------------------------------------------------
+Real traces (pre_recorded_data/) — what the defaults are calibrated to
+-----------------------------------------------------------------------
+The synthetic trace separated the worthwhile buys by VOLUME (doorlock
+5 flows/tick vs echo 1). The real GNS3 capture does not: every class
+arrives at ~32 flows/tick, so volume is uninformative and the selective
+axis becomes benign-vs-malicious. Two real-trace effects the synthetic
+economics did not model, and how the defaults answer them:
+
+  * malicious buys are NOT quite "nothing". Buying a malicious label
+    turns a noisy unknown cluster (which the DM sometimes mis-accepts for
+    -r) into a Known class it blocks cleanly (0) — a "de-noising" gain
+    worth ~150-400/class here. So malicious prices are set (550) safely
+    ABOVE that, keeping them a net loss for a greedy buyer;
+  * the online IM must stay near its pretrained snapshot. At the dense
+    real flow rate a large `im_learning_rate` drifts the encoder away
+    from the representation the DM policy was trained against, degrading
+    and destabilising the DM at eval — hence the reduced default.
+
+With these defaults, `--no-manifest` offline runs on pre_recorded_data/
+rank drl > no_epistemic > greedy_cti (drl buys exactly {doorlock, echo}
+and skips all malicious). NB: `apply_manifest` deliberately does NOT
+override these — a recorded run's own rewards/prices are adopted only as
+setdefaults, so the calibrated defaults here win unless a trial passes
+explicit overrides.
 """
 
 from dataclasses import dataclass, field, fields
 from typing import Dict, List, Optional
 
 
+# Calibrated on the pre_recorded_data/ real capture (see the "real traces"
+# note in this module's docstring). Unlike the synthetic trace — where the
+# doorlock:echo VOLUME ratio (5:1) did the separating — every class in the
+# real capture arrives at ~32 flows/tick, so volume no longer distinguishes
+# the worthwhile buys. The selective axis is therefore benign-vs-malicious,
+# and the prices are set so that:
+#   * benign zero-days (doorlock, echo) recover a large (1-alpha) service
+#     gap (~1000/class over an episode) and are priced well below it -> a
+#     value-learning DQN buys both, promptly;
+#   * malicious zero-days only offer classifier "de-noising" value (buying a
+#     label turns a noisy unknown cluster the DM might mis-accept into a
+#     known class it blocks cleanly). On the real trace that is worth only
+#     ~150-400/class, so pricing them at 550 makes buying them a net loss --
+#     `greedy_cti` (buys everything affordable) is punished, `drl` skips them.
 DEFAULT_PRICES = {
-    # benign zero-days: doorlock is high-volume and cheap (worth buying),
-    # echo is low-volume and overpriced (not worth buying).
     'doorlock': 40.0,
-    'echo': 400.0,
-    # malicious zero-days: never worth buying (blocking already handles
-    # them), so any price here is wasted spend for a greedy buyer.
-    'mirai': 150.0,
-    'gafgyt': 150.0,
-    'hajime': 150.0,
-    'h_scan': 150.0,
-    'muhstik': 150.0,
+    'echo': 80.0,
+    'mirai': 550.0,
+    'gafgyt': 550.0,
+    'hajime': 550.0,
+    'h_scan': 550.0,
+    'muhstik': 550.0,
 }
 
 
@@ -81,7 +117,13 @@ class SimbaConfig:
     seed: int = 777
 
     # ------------------------------------------------- inference module (IM)
-    im_learning_rate: float = 1e-3
+    # Online (in-episode) IM step size. Kept an order of magnitude below the
+    # pretraining rate: on the dense real trace (~410 flows/tick) a 1e-3
+    # online rate lets the encoder DRIFT away from the pretrained snapshot the
+    # DM policy was trained against, which silently degrades and destabilises
+    # the DM at eval (return variance blew up ~9x). 1e-4 keeps the IM stable
+    # while still assimilating purchased labels via the buy_train_burst.
+    im_learning_rate: float = 1e-4
     im_train_steps_per_tick: int = 1
     im_support_size: int = 8       # support samples per class per episode step
     im_query_size: int = 8         # query samples per class per training step
@@ -108,7 +150,11 @@ class SimbaConfig:
     pretrain_learning_rate: float = 1e-3
 
     # ------------------------------------------------------ environment
-    init_budget: float = 1000.0
+    # Enough headroom that a greedy_cti buyer can actually afford every CTI
+    # label it wants (7 buys, up to ~2.9k on the real prices) and so genuinely
+    # demonstrates the over-spend, rather than being silently rescued by the
+    # affordability guard.
+    init_budget: float = 2500.0
     min_budget: float = 0.0        # bankruptcy line (see bankrupt_terminates)
     # If True, an episode ends the moment the budget drops below
     # min_budget. Default False: the episode runs its full length and
@@ -144,7 +190,12 @@ class SimbaConfig:
     grad_clip: float = 10.0
     eps_start: float = 1.0
     eps_end: float = 0.05
-    eps_decay_steps: int = 100_000  # linear decay horizon, in decision steps
+    # Linear decay horizon, in decision steps. The real trace is only ~51
+    # ticks (~1k decisions) per episode, vs the 200-tick synthetic one, so
+    # 100k steps would keep the agent exploring for ~100 episodes before it
+    # ever exploits. 30k floors epsilon in ~30 episodes, leaving the rest of a
+    # normal (>=100 episode) run to exploit.
+    eps_decay_steps: int = 30_000
     # Probability mass the RANDOM (exploratory) draw puts on the buy
     # action; the rest is split evenly between accept/block. A uniform
     # 1/3 makes exploration itself ruinously expensive (every third
