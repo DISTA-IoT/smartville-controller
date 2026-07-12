@@ -6,15 +6,19 @@ baseline for the epistemic (CTI-purchase) action. This document adds that
 baseline to SIMBA as the `fixed_threshold_cti` ablation, runs it against
 the calibrated defaults, and reports the result.
 
-**Headline:** the confidence-threshold heuristic does **not** beat the
-value-learning DM (`drl`), for a structural reason the data makes explicit
-— on this trace the IM's confidence score is *anti-correlated* with which
-labels are worth buying, so no threshold recovers `drl`'s selective
-`{doorlock, echo}`. This is the expected and desired outcome: it is exactly
-the gap between "how novel does this look" (what a confidence threshold
-sees) and "is this label worth paying for" (what the value function
-learns). **No default parameter, price, learning rate or state dimension
-was changed** — only the new threshold knob was added and swept.
+**Headline:** across the swept thresholds the heuristic never beats the
+value-learning DM (`drl`, mean **2778**) — its best single run is **1748**
+(θ=2.0, seed 6) and its best *mean* is **1005** (θ=2.0), below even
+`no_epistemic` (never-buy, 1500). The reason the data makes explicit: on
+this trace the IM's confidence score is *not aligned* with which labels are
+worth buying — `doorlock`, the single most worthwhile label, is the **least
+anomalous** purchasable class — so **no threshold recovers `drl`'s selective
+`{doorlock, echo}`**; the policy never buys `doorlock` at any θ>1.0. This is
+the expected, desired outcome: exactly the gap between "how novel does this
+look" (all a confidence threshold sees) and "is this label worth paying for"
+(what the value function learns). **No default parameter, price, learning
+rate or state dimension was changed** — only the new threshold knob was
+added and swept.
 
 ---
 
@@ -86,43 +90,45 @@ to buy exactly `{doorlock, echo}`.
 
 A confidence threshold cannot express that preference, because **the IM's
 anomaly score does not track worth-buying**. Per-cluster `a`, grouped by
-the cluster's majority true class (pretrained IM, seed 6, measured under
-`no_epistemic` so the whole G2 pool stays visible):
+the cluster's majority true class (the seed-6 pretrained IM, `tau=2.888`,
+measured under `no_epistemic` so the whole G2 pool stays visible; same
+single-threaded pretrain the runs below use):
 
-| class | role | on&nbsp;sale | n | min | p25 | **median** | p75 | p90 | max |
-|---|---|---|--:|--:|--:|--:|--:|--:|--:|
-| okiru | mal | no (G1) | 153 | 2.32 | 2.75 | 2.92 | 3.12 | 3.41 | 4.06 |
-| generic_ddos | mal | no (G1) | 153 | 2.27 | 2.62 | 2.77 | 3.09 | 3.22 | 3.91 |
-| cc_heartbeat | mal | no (G1) | 170 | 1.52 | 1.81 | 1.92 | 2.15 | 2.28 | 2.57 |
-| hajime | mal | **yes** | 153 | 1.20 | 1.49 | **1.60** | 1.88 | 1.91 | 2.29 |
-| h_scan | mal | **yes** | 697 | 1.00 | 1.33 | **1.54** | 1.76 | 1.95 | 2.43 |
-| gafgyt | mal | **yes** | 153 | 1.21 | 1.46 | **1.53** | 1.72 | 1.88 | 2.11 |
-| echo | **ben** | **yes** | 1856 | 1.00 | 1.19 | **1.44** | 1.78 | 2.17 | 3.36 |
-| mirai | mal | **yes** | 1291 | 1.00 | 1.14 | **1.26** | 1.52 | 1.69 | 2.22 |
-| muhstik | mal | **yes** | 3340 | 1.00 | 1.13 | **1.26** | 1.43 | 1.74 | 3.50 |
-| doorlock | **ben** | **yes** | 1379 | 1.00 | 1.06 | **1.14** | 1.27 | 1.45 | 2.65 |
-| hue | ben | no (Known) | 76 | 1.00 | 1.04 | 1.14 | 1.22 | 1.41 | 1.77 |
-| hakai | mal | no (Known) | 15 | 1.00 | 1.01 | 1.15 | 1.18 | 1.41 | 1.43 |
-| torii | mal | no (Known) | 9 | 1.00 | 1.03 | 1.06 | 1.13 | 1.17 | 1.17 |
+| class | role | on&nbsp;sale | n | p25 | **median** | p75 | p90 |
+|---|---|---|--:|--:|--:|--:|--:|
+| torii | mal | no (Known) | 29 | 1.03 | 1.07 | 1.13 | 1.17 |
+| hakai | mal | no (Known) | 26 | 1.04 | 1.08 | 1.13 | 1.49 |
+| **doorlock** | **ben** | **yes** | 403 | 1.04 | **1.09** | 1.18 | 1.27 |
+| hue | ben | no (Known) | 16 | 1.04 | 1.10 | 1.19 | 1.45 |
+| **echo** | **ben** | **yes** | 635 | 1.08 | **1.20** | 1.41 | 1.72 |
+| muhstik | mal | **yes** | 2324 | 1.10 | **1.21** | 1.38 | 1.59 |
+| mirai | mal | **yes** | 1017 | 1.11 | **1.22** | 1.37 | 1.49 |
+| h_scan | mal | **yes** | 621 | 1.20 | **1.31** | 1.43 | 1.58 |
+| hajime | mal | **yes** | 147 | 1.22 | **1.36** | 1.52 | 1.61 |
+| gafgyt | mal | **yes** | 148 | 1.14 | **1.44** | 1.60 | 1.85 |
+| cc_heartbeat | mal | no (G1) | 172 | 1.64 | 1.83 | 2.12 | 2.26 |
+| generic_ddos | mal | no (G1) | 153 | 1.62 | 1.93 | 2.20 | 2.36 |
+| okiru | mal | no (G1) | 153 | 1.96 | 2.30 | 2.50 | 2.80 |
 
 Read the **purchasable (on-sale)** rows by median anomaly:
 
 ```
-doorlock(BEN) 1.14  <  mirai(MAL) 1.26  ≈  muhstik(MAL) 1.26  <  echo(BEN) 1.44
-             <  gafgyt(MAL) 1.53  ≈  h_scan(MAL) 1.54  <  hajime(MAL) 1.60
+doorlock(BEN) 1.09  <  echo(BEN) 1.20  ≈  muhstik(MAL) 1.21  ≈  mirai(MAL) 1.22
+             <  h_scan(MAL) 1.31  <  hajime(MAL) 1.36  <  gafgyt(MAL) 1.44
 ```
 
 `doorlock` — the single most worthwhile label — is the **least anomalous**
-purchasable class, and benign/malicious medians are fully interleaved.
-Consequences for any single threshold `θ`:
+purchasable class, and `echo` (the other worthwhile buy, median `1.20`) is
+sandwiched *between* `doorlock` and the two highest-volume malicious
+zero-days `muhstik` (`1.21`) and `mirai` (`1.22`) — statistically
+indistinguishable from them. Consequences for any single threshold `θ`:
 
-* to buy `doorlock` at all you need `θ <= ~1.14`, which also admits
-  `mirai`, `muhstik` and essentially every malicious label → you over-spend
-  exactly like `greedy_cti`;
-* to exclude the malicious labels you need `θ` above their medians
-  (`~1.3–1.6`), which also excludes `doorlock` and most of `echo` → you buy
-  almost nothing worthwhile, and the few clusters left above the line are
-  dominated by the malicious tail (`hajime`, `h_scan`, `gafgyt`).
+* to buy `doorlock` at all you need `θ ≲ 1.1`, which also admits every
+  malicious label → you over-spend exactly like `greedy_cti`;
+* `echo` cannot be separated from `muhstik`/`mirai`: any `θ` low enough to
+  buy `echo` also buys those two (which, being the highest-volume classes,
+  dominate the spend), and any `θ` high enough to reject them also rejects
+  `echo` — and always rejects `doorlock`.
 
 There is **no** `θ` that selects `{doorlock, echo}` and rejects the
 malicious G2s. The value function can, because it conditions the buy on the
@@ -147,20 +153,41 @@ state), not on how novel the cluster looks.
 **`fixed_threshold_cti` sweep** — new; `mean(dist)/tau > cti_confidence_threshold`,
 same defaults/harness as above.
 
-_Sweep running (θ ∈ {1.0, 1.25, 1.5, 2.0} × seeds 6, 1, 120/10 episodes);
-the table lands in a follow-up commit._
-<!-- THRESHOLD_TABLE -->
+| `cti_confidence_threshold` | seed 6 | seed 1 | **mean** | what it buys |
+|--:|--:|--:|--:|---|
+| 1.0 | 267 ± 562 | 331 ± 503 | **299** | all 7 labels — degenerates to `greedy_cti` |
+| 1.25 | 455 ± 359 | 503 ± 456 | **479** | `echo` + 4–5 malicious labels; **never `doorlock`** |
+| 1.5 | 925 ± 255 | 142 ± 211 | **534** | s6: `echo`+`mirai`+`muhstik`; s1: `mirai`+`muhstik` only; **never `doorlock`** |
+| 2.0 | 1748 ± 283 | 263 ± 100 | **1005** | s6: mostly `echo`; s1: `mirai`+`muhstik`; **never `doorlock`** |
 
+The threshold fires on 100 % of unknown clusters at `θ=1.0` (⇒ `greedy_cti`),
+then 44 % / 15 % / 1 % at `θ = 1.25 / 1.5 / 2.0`, and ~0 % by `θ=3.0`
+(⇒ `no_epistemic`). Three things stand out:
 
-The purchasable-cluster buy fractions the sweep operationalises (from the
-per-class table in §2): `θ=1.0` fires on 100 % of unknown clusters
-(⇒ `greedy_cti`), `1.25`→56 %, `1.5`→28 %, `2.0`→6.5 %, `≥3.0`→~0 %
-(⇒ `no_epistemic`). Because `doorlock` (the most worthwhile label, median
-`a=1.14`) sits *below* the malicious medians, every threshold either admits
-the malicious labels along with `doorlock` (low `θ`, over-spend) or drops
-`doorlock` while still catching the malicious tail (high `θ`) — so no
-setting reaches `drl`'s selective `{doorlock, echo}`, and the best
-threshold return stays below `drl`.
+1. **No setting beats `drl`.** The best single run (seed 6, `θ=2.0`) reaches
+   1748 — still ~900 below `drl`'s worse seed (2633) and ~1030 below its
+   mean (2778). Every mean is below every reference except `greedy_cti`.
+2. **It never buys `doorlock`**, the most worthwhile label, at any `θ>1.0`.
+   `doorlock` is the least anomalous purchasable class (§2), so the moment
+   the threshold rises enough to skip *any* malicious label it has already
+   skipped `doorlock`. The best the policy can do is recover *`echo`* alone
+   — half of `drl`'s `{doorlock, echo}` — which is exactly the ~1000-point
+   gap to `drl`.
+3. **It is brittle across seeds.** At `θ ∈ {1.5, 2.0}` seed 6 happens to
+   catch `echo`'s upper tail (return climbs to 1748) while seed 1's IM puts
+   the high-volume `mirai`/`muhstik` tails above the line and `echo` below,
+   so it spends 550-a-label on malicious CTI and craters to 142–263. A
+   *fixed* anomaly threshold selects benign on one IM and malicious on
+   another — because it keys on how novel a cluster looks, which the IM's
+   idiosyncratic geometry controls, not on whether the label pays off. On
+   average the sweep peak (`θ=2.0`, 1005) sits *below even `no_epistemic`*
+   (1500): confidence-gated buying, without learning *what* to buy, is worse
+   than never buying.
+
+This is the intended result: the heuristic operationalizes the confidence
+score faithfully and still loses, because "how novel is this cluster" and
+"is this label worth paying for" are different questions — the first is all
+a threshold can see, the second is what the value function learns.
 
 ---
 
@@ -169,21 +196,26 @@ threshold return stays below `drl`.
 ```bash
 cd smartville-controller
 
-# the threshold policy at one setting (pure calibrated defaults + one knob):
-python simba_offline.py pre_recorded_data/ --no-manifest --no-wandb \
-    --mode fixed_threshold_cti --set cti_confidence_threshold=1.5 \
-    --seed 6 --episodes 120 --eval-episodes 10
+# the whole sweep in this document (theta x seed):
+for th in 1.0 1.25 1.5 2.0; do for s in 6 1; do
+  OMP_NUM_THREADS=1 python simba_offline.py pre_recorded_data/ \
+      --no-manifest --no-wandb --mode fixed_threshold_cti \
+      --set cti_confidence_threshold=$th --seed $s \
+      --episodes 120 --eval-episodes 10 \
+      --run-name fixed_threshold_cti_t${th}_seed${s}
+done; done
 
-# reference modes:
-python simba_offline.py pre_recorded_data/ --no-manifest --no-wandb \
-    --mode drl --seed 6 --episodes 120 --eval-episodes 10
+# reference modes are NOT re-run here -- their numbers are the calibrated
+# study's (REAL_DATA_CALIBRATION.md), same defaults/harness/seeds.
 ```
 
 `--no-manifest` runs on pure `SimbaConfig` defaults (the recorded run's own
-economy is never loaded — see `REAL_DATA_CALIBRATION.md`). The per-class
-anomaly-score table above is reproduced by the diagnostic in this ablation
-(pretrain the IM, measure `mean(d)/tau` per unknown cluster grouped by
-majority true class).
+economy is never loaded — see `REAL_DATA_CALIBRATION.md`). `OMP_NUM_THREADS=1`
+pins the pretrain so `tau` (and thus the exact `a` values) reproduce; the
+*qualitative* result — `doorlock` least-anomalous, no threshold selective —
+is thread- and seed-robust. The per-class anomaly-score table in §2 is a
+diagnostic over the same pretrained IM (measure `mean(d)/tau` per unknown
+cluster, grouped by majority true class, under `no_epistemic`).
 
 ---
 
