@@ -44,6 +44,11 @@ def parse_args(argv=None):
     ap.add_argument('--seed', type=int, default=777)
     ap.add_argument('--episodes', type=int, default=120)
     ap.add_argument('--eval-episodes', type=int, default=5)
+    ap.add_argument('--print-every', type=int, default=1,
+                    help='stdout: print an episode summary line every N episodes')
+    ap.add_argument('--heartbeat', type=int, default=0,
+                    help='stdout: within-episode progress every N ticks '
+                         '(0=off; use on long real traces)')
     ap.add_argument('--device', default='cpu')
     ap.add_argument('--synthetic', action='store_true',
                     help='generate a synthetic trace under DATA if none exists')
@@ -95,18 +100,26 @@ def seed_everything(seed: int):
     torch.manual_seed(seed)
 
 
-def run_episode(brain, trace, collect=None):
-    """One pass over the trace; returns (env summary, aggregated tick info)."""
+def run_episode(brain, trace, collect=None, ep_idx=None, heartbeat=0):
+    """One pass over the trace; returns (env summary, aggregated tick info).
+
+    `heartbeat` > 0 prints a within-episode progress line every that-many
+    ticks — useful on long real traces where a single episode is many
+    thousands of ticks and the per-episode line would otherwise be the
+    only sign of life for minutes.
+    """
     brain.begin_episode(total_ticks=len(trace))
     agg = defaultdict(float)
     n_ticks = 0
     losses_im, losses_dm, cs_accs = [], [], []
+    sum_keys = ('n_decisions', 'n_buys', 'n_accept', 'n_block', 'n_wasted_buys',
+                'tick_reward', 'service', 'damage', 'blocked_benign',
+                'cti_spend', 'ad_tp', 'ad_fp', 'ad_fn', 'ad_tn')
     for t in range(len(trace)):
         flow, pkt, labels = trace.tick(t)
         info = brain.step_tick(flow, pkt, labels)
         n_ticks += 1
-        for k in ('n_decisions', 'n_buys', 'tick_reward',
-                  'ad_tp', 'ad_fp', 'ad_fn', 'ad_tn'):
+        for k in sum_keys:
             agg[k] += info.get(k) or 0
         if info.get('im_loss') is not None:
             losses_im.append(info['im_loss'])
@@ -114,10 +127,17 @@ def run_episode(brain, trace, collect=None):
             losses_dm.append(info['dm_loss'])
         if info.get('cs_acc') is not None:
             cs_accs.append(info['cs_acc'])
+        if heartbeat and n_ticks % heartbeat == 0:
+            tag = f'ep {ep_idx}' if ep_idx is not None else 'ep'
+            print(f'[simba]   {tag} · tick {n_ticks}/{len(trace)}  '
+                  f'budget {brain.env.budget:9.1f}  '
+                  f'buys {len(brain.env.buys)} [{_buys_str(brain)}]  '
+                  f'eps {brain.agent.epsilon:.3f}', flush=True)
         if brain.env.episode_ended(len(trace)):
             break
     summary = brain.env.summary()
     tp, fp, fn = agg['ad_tp'], agg['ad_fp'], agg['ad_fn']
+    dec = max(1.0, agg['n_decisions'])
     metrics = {
         'im_loss': float(np.mean(losses_im)) if losses_im else 0.0,
         'dm_loss': float(np.mean(losses_dm)) if losses_dm else 0.0,
@@ -125,10 +145,21 @@ def run_episode(brain, trace, collect=None):
         'ad_recall': tp / max(1.0, tp + fn),
         'ad_precision': tp / max(1.0, tp + fp),
         'decisions': agg['n_decisions'],
+        'accept_rate': agg['n_accept'] / dec,
+        'block_rate': agg['n_block'] / dec,
+        'buy_rate': agg['n_buys'] / dec,
+        'service': agg['service'],
+        'damage': agg['damage'],
+        'blocked_benign': agg['blocked_benign'],
+        'cti_spend': agg['cti_spend'],
     }
     if collect is not None:
         collect.append(summary['return'])
     return summary, metrics
+
+
+def _buys_str(brain):
+    return ','.join(l for _, l, _ in brain.env.buys) or '-'
 
 
 def main(argv=None):
@@ -178,44 +209,64 @@ def main(argv=None):
             print(f'[simba] wandb disabled ({e})', file=sys.stderr)
 
     seed_everything(args.seed)
-    brain = SimbaBrain(cfg)
+    brain = SimbaBrain(cfg, wb_run=wb)
     print(f'[simba] trace: {len(trace)} ticks / {trace.num_samples()} samples | '
-          f'mode={args.mode} seed={args.seed} device={args.device}')
+          f'mode={args.mode} seed={args.seed} device={args.device} | '
+          f'classes: {len(cfg.knowns)}K/{len(cfg.g1s)}G1/{len(cfg.g2s)}G2 | '
+          f'DM state_dim={brain.agent.model.net[0].in_features} | '
+          f'wandb={"on" if wb else "off"}', flush=True)
+    print(f'[simba] economics: alpha(unknown-accept)={cfg.unknown_accept_discount} '
+          f'gamma={cfg.gamma} init_budget={cfg.init_budget} '
+          f'prices={ {c: cfg.price_of(c) for c in cfg.g2s} }', flush=True)
     t0 = time.time()
     brain.pretrain(trace)
-    print(f'[simba] IM pretrained in {time.time()-t0:.1f}s  tau={brain.im.tau:.3f}')
+    print(f'[simba] IM pretrained in {time.time()-t0:.1f}s  tau={brain.im.tau:.3f}  '
+          f'cluster_radius={brain.im.cluster_radius}', flush=True)
 
     # ------------------------------------------------------------- training
+    print(f'[simba] === training {args.episodes} episodes '
+          f'(mode={args.mode}) ===', flush=True)
     for ep in range(args.episodes):
-        summary, metrics = run_episode(brain, trace)
-        row = {f'train/{k}': v for k, v in {**summary, **metrics}.items()}
-        row['train/epsilon'] = brain.agent.epsilon
-        for _, label, _ in brain.env.buys:
-            row[f'buys/{label}'] = row.get(f'buys/{label}', 0) + 1
-        if wb:
-            wb.log(row, step=ep)
-        if ep % 5 == 0 or ep == args.episodes - 1:
-            buys = ','.join(l for _, l, _ in brain.env.buys) or '-'
-            print(f'[simba] ep {ep:4d}  return {summary["return"]:9.1f}  '
-                  f'budget {summary["final_budget"]:9.1f}  '
-                  f'buys [{buys}] wasted {summary["wasted_buys"]:.0f}  '
-                  f'bankrupt {bool(summary["bankrupt"])}  '
-                  f'eps {brain.agent.epsilon:.3f}  cs_acc {metrics["cs_acc"]:.2f}  '
-                  f'ad_rec {metrics["ad_recall"]:.2f}')
+        summary, metrics = run_episode(brain, trace, ep_idx=ep,
+                                       heartbeat=args.heartbeat)
+        brain.log_episode(extra={'im_loss': metrics['im_loss'],
+                                 'dm_loss': metrics['dm_loss'],
+                                 'cs_acc': metrics['cs_acc'],
+                                 'ad_recall': metrics['ad_recall'],
+                                 'buy_rate': metrics['buy_rate']})
+        if ep % args.print_every == 0 or ep == args.episodes - 1:
+            print(f'[simba] ep {ep:4d}  ret {summary["return"]:9.1f}  '
+                  f'budget {summary["final_budget"]:8.1f}  '
+                  f'A/B/Buy {metrics["accept_rate"]:.2f}/{metrics["block_rate"]:.2f}/'
+                  f'{metrics["buy_rate"]:.2f}  '
+                  f'buys {int(summary["n_buys"])} [{_buys_str(brain)}] '
+                  f'wasted {summary["wasted_buys"]:.0f}  '
+                  f'svc/dmg/spend {metrics["service"]:.0f}/{metrics["damage"]:.0f}/'
+                  f'{metrics["cti_spend"]:.0f}  '
+                  f'eps {brain.agent.epsilon:.3f}  '
+                  f'cs {metrics["cs_acc"]:.2f} adR {metrics["ad_recall"]:.2f} '
+                  f'imL {metrics["im_loss"]:.3f} dmL {metrics["dm_loss"]:.3f}'
+                  + ('  BANKRUPT' if summary['bankrupt'] else ''), flush=True)
 
     # ------------------------------------------------------------ evaluation
+    print(f'[simba] === evaluation {args.eval_episodes} greedy episodes ===',
+          flush=True)
     brain.training = False
     eval_returns, eval_buys, eval_bankrupt = [], [], 0
     eval_buy_labels = defaultdict(int)
     for ep in range(args.eval_episodes):
-        summary, metrics = run_episode(brain, trace, collect=eval_returns)
+        summary, metrics = run_episode(brain, trace, collect=eval_returns,
+                                       ep_idx=ep, heartbeat=args.heartbeat)
+        brain.log_episode()
         eval_buys.append(summary['n_buys'])
         eval_bankrupt += int(summary['bankrupt'])
         for _, label, _ in brain.env.buys:
             eval_buy_labels[label] += 1
         print(f'[simba] EVAL ep {ep}  return {summary["return"]:9.1f}  '
-              f'buys {summary["n_buys"]:.0f}  '
-              f'bought [{",".join(l for _, l, _ in brain.env.buys) or "-"}]')
+              f'budget {summary["final_budget"]:8.1f}  '
+              f'buys {int(summary["n_buys"])} [{_buys_str(brain)}]  '
+              f'A/B/Buy {metrics["accept_rate"]:.2f}/{metrics["block_rate"]:.2f}/'
+              f'{metrics["buy_rate"]:.2f}', flush=True)
     brain.training = True
 
     results = {

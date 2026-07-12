@@ -38,10 +38,11 @@ ABLATIONS = ('drl', 'no_epistemic', 'greedy_cti')
 
 class SimbaBrain:
 
-    def __init__(self, cfg: SimbaConfig, logger=None):
+    def __init__(self, cfg: SimbaConfig, logger=None, wb_run=None):
         assert cfg.ablation in ABLATIONS, f'unknown ablation {cfg.ablation}'
         self.cfg = cfg
         self.logger = logger
+        self.wb_run = wb_run          # optional wandb run for progressive logging
         torch.manual_seed(cfg.seed)
         self.im = SimbaInference(cfg, logger)
         self.im.trainable = set(cfg.knowns)
@@ -61,6 +62,14 @@ class SimbaBrain:
         self.episode_count = 0
         self._total_ticks = cfg.max_episode_ticks or 1_000_000
         self._pending = None          # (state, action, scaled_reward)
+        # Progressive-logging state: a monotonic per-tick step (the wandb
+        # x-axis, never reset across episodes) plus a window accumulator
+        # that is flushed as windowed means every cfg.log_every_ticks.
+        self.global_step = 0
+        self.cum_buys = 0
+        self.cum_wasted_buys = 0
+        self.cum_buys_by_class: Dict[str, int] = {}
+        self._win = self._fresh_window()
         # POX-side attributes the paper tiger_server reads off the brain
         # (flowstats-listener wiring + /initialize response). Set by
         # from_tiger_config; harmless/unused offline.
@@ -76,12 +85,114 @@ class SimbaBrain:
         if self.logger:
             self.logger.info(f'SIMBA: {msg}')
 
+    # ------------------------------------------------------ progressive logging
+    @staticmethod
+    def _fresh_window():
+        return {'ticks': 0, 'decisions': 0, 'reward': 0.0, 'service': 0.0,
+                'damage': 0.0, 'blocked_benign': 0.0, 'cti_spend': 0.0,
+                'n_accept': 0, 'n_block': 0, 'n_buys': 0, 'n_wasted': 0,
+                'tp': 0, 'fp': 0, 'fn': 0, 'tn': 0,
+                'im_losses': [], 'dm_losses': [], 'cs_accs': []}
+
+    def _accumulate(self, info):
+        w = self._win
+        w['ticks'] += 1
+        w['decisions'] += info['n_decisions']
+        w['reward'] += info['tick_reward']
+        w['service'] += info['service']
+        w['damage'] += info['damage']
+        w['blocked_benign'] += info['blocked_benign']
+        w['cti_spend'] += info['cti_spend']
+        w['n_accept'] += info['n_accept']
+        w['n_block'] += info['n_block']
+        w['n_buys'] += info['n_buys']
+        w['n_wasted'] += info['n_wasted_buys']
+        for k in ('tp', 'fp', 'fn', 'tn'):
+            w[k] += info.get('ad_' + k, 0)
+        if info.get('im_loss') is not None:
+            w['im_losses'].append(info['im_loss'])
+        if info.get('dm_loss') is not None:
+            w['dm_losses'].append(info['dm_loss'])
+        if info.get('cs_acc') is not None:
+            w['cs_accs'].append(info['cs_acc'])
+
+    def _flush_running(self):
+        """Emit windowed-mean running metrics to wandb, then reset the
+        window. Called every cfg.log_every_ticks ticks; no-op without a run
+        or when not training (eval must not pollute the training curves)."""
+        w, self._win = self._win, self._fresh_window()
+        if self.wb_run is None or not self.training or w['ticks'] == 0:
+            return
+        dec = max(1, w['decisions'])
+        tp, fp, fn = w['tp'], w['fp'], w['fn']
+        d = {
+            'running/budget': self.env.budget,
+            'running/reward_per_tick': w['reward'] / w['ticks'],
+            'running/service_per_tick': w['service'] / w['ticks'],
+            'running/damage_per_tick': w['damage'] / w['ticks'],
+            'running/blocked_benign_per_tick': w['blocked_benign'] / w['ticks'],
+            'running/cti_spend_per_tick': w['cti_spend'] / w['ticks'],
+            'running/epsilon': self.agent.epsilon,
+            'running/episode': self.episode_count,
+            'running/knowns_count': len(self.env.knowns),
+            'running/cum_buys': self.cum_buys,
+            'running/cum_wasted_buys': self.cum_wasted_buys,
+            'running/accept_rate': w['n_accept'] / dec,
+            'running/block_rate': w['n_block'] / dec,
+            'running/buy_rate': w['n_buys'] / dec,
+            'running/decisions_per_tick': w['decisions'] / w['ticks'],
+        }
+        if tp + fn > 0:
+            d['running/ad_recall'] = tp / (tp + fn)
+        if tp + fp > 0:
+            d['running/ad_precision'] = tp / (tp + fp)
+        if w['cs_accs']:
+            d['running/cs_acc'] = sum(w['cs_accs']) / len(w['cs_accs'])
+        if w['im_losses']:
+            d['running/im_loss'] = sum(w['im_losses']) / len(w['im_losses'])
+        if w['dm_losses']:
+            d['running/dm_loss'] = sum(w['dm_losses']) / len(w['dm_losses'])
+        self.wb_run.log(d, step=self.global_step)
+
+    def _on_buy(self, label, price):
+        self.cum_buys += 1
+        self.cum_buys_by_class[label] = self.cum_buys_by_class.get(label, 0) + 1
+        self._log_event('events/buy', 1, {
+            f'events/buy_{label}': 1,
+            'events/buy_price': price,
+            'running/cum_buys': self.cum_buys})
+
+    def _log_event(self, key, value, extra=None):
+        """Log a spiky point-in-time marker (a buy / wasted buy) at the
+        current global step so it lines up with the running curves."""
+        if self.wb_run is None or not self.training:
+            return
+        payload = {key: value}
+        if extra:
+            payload.update(extra)
+        self.wb_run.log(payload, step=self.global_step)
+
+    def log_episode(self, extra=None):
+        """Log an episode-boundary summary (episode/*) at the current step.
+        Called by the offline runner and by process_input (GNS3)."""
+        if self.wb_run is None:
+            return
+        s = self.env.summary()
+        prefix = 'eval_episode' if not self.training else 'episode'
+        d = {f'{prefix}/{k}': v for k, v in s.items()}
+        d[f'{prefix}/index'] = self.episode_count
+        if extra:
+            d.update({f'{prefix}/{k}': v for k, v in extra.items()})
+        self.wb_run.log(d, step=self.global_step)
+
     # ---------------------------------------------------------------- setup
     @classmethod
-    def from_tiger_config(cls, args: dict) -> 'SimbaBrain':
+    def from_tiger_config(cls, args: dict, wb_tracker=None) -> 'SimbaBrain':
         """Build from the JSON config payload the dashboard POSTs to the
         controller's /initialize endpoint. Optional overrides live under
-        an `simba:` block; everything else is mapped from the usual keys."""
+        an `simba:` block; everything else is mapped from the usual keys.
+        `wb_tracker` (the controller's WandBTracker) is used for progressive
+        wandb logging in the GNS3 modality."""
         det = args.get('intrusion_detection', {})
         know = args.get('knowledge', {})
         d = {
@@ -105,7 +216,8 @@ class SimbaBrain:
         cfg = SimbaConfig.from_dict(d)
         if not cfg.max_episode_ticks:
             cfg.max_episode_ticks = int(det.get('max_episode_steps', 1000))
-        brain = cls(cfg, logger=args.get('logger'))
+        wb_run = getattr(wb_tracker, 'wb_run', None) if wb_tracker else None
+        brain = cls(cfg, logger=args.get('logger'), wb_run=wb_run)
         brain.traffic_dict = args.get('traffic_dict')
         brain.ips_containers = args.get('ips_containers')
         return brain
@@ -151,9 +263,13 @@ class SimbaBrain:
         """Process one batch of flow samples. Returns a metrics dict."""
         cfg = self.cfg
         info = {'n_samples': len(labels), 'n_decisions': 0, 'n_buys': 0,
-                'tick_reward': 0.0, 'im_loss': None, 'dm_loss': None}
+                'n_accept': 0, 'n_block': 0, 'n_wasted_buys': 0,
+                'tick_reward': 0.0, 'service': 0.0, 'damage': 0.0,
+                'blocked_benign': 0.0, 'cti_spend': 0.0,
+                'im_loss': None, 'dm_loss': None}
         if len(labels) == 0:
             self.env.ticks += 1
+            self.global_step += 1
             return info
 
         self.im.push(flow, pkt, labels)
@@ -203,15 +319,29 @@ class SimbaBrain:
             outcome = self.env.group_outcome(
                 action, [labels[i] for i in members])
             reward = outcome['total']
-            if action == BUY:
+            info['service'] += outcome['service']
+            info['damage'] += outcome['damage']
+            info['blocked_benign'] += outcome['blocked_benign']
+            if action == ACCEPT:
+                info['n_accept'] += 1
+            elif action == BLOCK:
+                info['n_block'] += 1
+            elif action == BUY:
+                on_sale = quote is not None
                 charged = self.env.buy(majority)
                 reward -= charged
                 info['n_buys'] += 1
-                if majority in self.env.knowns:   # purchase succeeded
+                info['cti_spend'] += charged
+                if on_sale and majority in self.env.knowns:  # purchase succeeded
                     self.im.trainable.add(majority)
                     for _ in range(cfg.buy_train_burst):
                         self.im.train_step()
                     self.im.calibrate()
+                    self._on_buy(majority, charged)
+                else:
+                    info['n_wasted_buys'] += 1
+                    self.cum_wasted_buys += 1
+                    self._log_event('events/wasted_buy', 1)
             self.env.apply(reward)
             info['tick_reward'] += reward
             info['n_decisions'] += 1
@@ -242,6 +372,11 @@ class SimbaBrain:
 
         info['budget'] = self.env.budget
         info['epsilon'] = self.agent.epsilon
+
+        self.global_step += 1
+        self._accumulate(info)
+        if self.global_step % cfg.log_every_ticks == 0:
+            self._flush_running()
         return info
 
     # ------------------------------------------------------------ internals
@@ -304,12 +439,16 @@ class SimbaBrain:
         if cfg.use_packet_feats:
             pkt_feats = torch.stack([f.get_packet_features() for f in flows])
         labels = [f.element_class for f in flows]
-        self.step_tick(flow_feats, pkt_feats, labels)
+        info = self.step_tick(flow_feats, pkt_feats, labels)
 
         if self.env.episode_ended(self._total_ticks):
             summary = self.env.summary()
-            self._log(f'episode {self.episode_count} ended: {summary}')
+            self._log(f'episode {self.episode_count} ended: {summary} '
+                      f'| bought {self.cum_buys_by_class}')
+            self._flush_running()
+            self.log_episode()
             self.begin_episode()
+        return info
 
     def get_profiling_stats_dict(self):
         return {}
