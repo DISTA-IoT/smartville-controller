@@ -1,0 +1,435 @@
+{
+  "drl_seed4": {
+    "mode": "drl",
+    "seed": 4,
+    "eval_mean_return": 1561.45,
+    "eval_std_return": 279.3464873593366,
+    "eval_mean_buys": 1.9,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "doorlock": 9
+    }
+  },
+  "no_epistemic_seed6": {
+    "mode": "no_epistemic",
+    "seed": 6,
+    "eval_mean_return": 1521.1,
+    "eval_std_return": 66.55901516699296,
+    "eval_mean_buys": 0.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {}
+  },
+  "no_epistemic_seed1": {
+    "mode": "no_epistemic",
+    "seed": 1,
+    "eval_mean_return": 1478.0,
+    "eval_std_return": 151.8502140268495,
+    "eval_mean_buys": 0.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {}
+  },
+  "no_epistemic_seed2": {
+    "mode": "no_epistemic",
+    "seed": 2,
+    "eval_mean_return": 935.475,
+    "eval_std_return": 237.81808830490587,
+    "eval_mean_buys": 0.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {}
+  },
+  "no_epistemic_seed3": {
+    "mode": "no_epistemic",
+    "seed": 3,
+    "eval_mean_return": 868.35,
+    "eval_std_return": 182.2155728800368,
+    "eval_mean_buys": 0.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {}
+  },
+  "no_epistemic_seed4": {
+    "mode": "no_epistemic",
+    "seed": 4,
+    "eval_mean_return": 1627.5,
+    "eval_std_return": 128.5024805208055,
+    "eval_mean_buys": 0.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {}
+  },
+  "greedy_cti_seed6": {
+    "mode": "greedy_cti",
+    "seed": 6,
+    "eval_mean_return": 739.3,
+    "eval_std_return": 48.3591769987869,
+    "eval_mean_buys": 7.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 10,
+      "gafgyt": 10,
+      "echo": 10,
+      "hajime": 10,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "greedy_cti_seed1": {
+    "mode": "greedy_cti",
+    "seed": 1,
+    "eval_mean_return": 847.3,
+    "eval_std_return": 56.10490174663886,
+    "eval_mean_buys": 7.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 10,
+      "gafgyt": 10,
+      "echo": 10,
+      "hajime": 10,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "greedy_cti_seed2": {
+    "mode": "greedy_cti",
+    "seed": 2,
+    "eval_mean_return": 1106.7,
+    "eval_std_return": 73.40544938899292,
+    "eval_mean_buys": 7.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 10,
+      "gafgyt": 10,
+      "echo": 10,
+      "hajime": 10,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "greedy_cti_seed3": {
+    "mode": "greedy_cti",
+    "seed": 3,
+    "eval_mean_return": 715.3,
+    "eval_std_return": 47.653016693594545,
+    "eval_mean_buys": 7.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 10,
+      "gafgyt": 10,
+      "echo": 10,
+      "hajime": 10,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "greedy_cti_seed4": {
+    "mode": "greedy_cti",
+    "seed": 4,
+    "eval_mean_return": 1488.65,
+    "eval_std_return": 36.5799125203984,
+    "eval_mean_buys": 6.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 10,
+      "gafgyt": 10,
+      "echo": 10,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "fixed_threshold_cti_t1.0_seed6": {
+    "mode": "fixed_threshold_cti",
+    "seed": 6,
+    "eval_mean_return": 267.35,
+    "eval_std_return": 561.6198469605574,
+    "eval_mean_buys": 7.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "gafgyt": 10,
+      "echo": 10,
+      "hajime": 10,
+      "doorlock": 10,
+      "muhstik": 10,
+      "h_scan": 10
+    }
+  },
+  "fixed_threshold_cti_t1.0_seed1": {
+    "mode": "fixed_threshold_cti",
+    "seed": 1,
+    "eval_mean_return": 330.85,
+    "eval_std_return": 503.0059293885113,
+    "eval_mean_buys": 6.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 9,
+      "gafgyt": 8,
+      "echo": 10,
+      "hajime": 9,
+      "doorlock": 4,
+      "muhstik": 10
+    }
+  },
+  "fixed_threshold_cti_t1.0_seed2": {
+    "mode": "fixed_threshold_cti",
+    "seed": 2,
+    "eval_mean_return": 1256.8,
+    "eval_std_return": 292.42368235148126,
+    "eval_mean_buys": 6.7,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 7,
+      "gafgyt": 10,
+      "echo": 10,
+      "hajime": 10,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "fixed_threshold_cti_t1.0_seed3": {
+    "mode": "fixed_threshold_cti",
+    "seed": 3,
+    "eval_mean_return": 1540.95,
+    "eval_std_return": 196.9460522579724,
+    "eval_mean_buys": 5.0,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "echo": 10,
+      "muhstik": 10,
+      "doorlock": 10,
+      "gafgyt": 9,
+      "hajime": 1
+    }
+  },
+  "fixed_threshold_cti_t1.0_seed4": {
+    "mode": "fixed_threshold_cti",
+    "seed": 4,
+    "eval_mean_return": 1029.2,
+    "eval_std_return": 505.7607487735678,
+    "eval_mean_buys": 4.6,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "gafgyt": 7,
+      "echo": 10,
+      "doorlock": 6,
+      "muhstik": 10,
+      "h_scan": 3
+    }
+  },
+  "fixed_threshold_cti_t1.25_seed6": {
+    "mode": "fixed_threshold_cti",
+    "seed": 6,
+    "eval_mean_return": 455.25,
+    "eval_std_return": 358.577275493024,
+    "eval_mean_buys": 4.2,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "gafgyt": 7,
+      "echo": 10,
+      "muhstik": 10,
+      "hajime": 5
+    }
+  },
+  "fixed_threshold_cti_t1.25_seed1": {
+    "mode": "fixed_threshold_cti",
+    "seed": 1,
+    "eval_mean_return": 502.825,
+    "eval_std_return": 456.2374388681841,
+    "eval_mean_buys": 3.8,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 5,
+      "echo": 10,
+      "hajime": 2,
+      "muhstik": 10,
+      "gafgyt": 1
+    }
+  },
+  "fixed_threshold_cti_t1.25_seed2": {
+    "mode": "fixed_threshold_cti",
+    "seed": 2,
+    "eval_mean_return": 2081.775,
+    "eval_std_return": 302.7252560078197,
+    "eval_mean_buys": 5.2,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "h_scan": 1,
+      "gafgyt": 2,
+      "echo": 10,
+      "hajime": 9,
+      "doorlock": 10,
+      "muhstik": 10
+    }
+  },
+  "fixed_threshold_cti_t1.25_seed3": {
+    "mode": "fixed_threshold_cti",
+    "seed": 3,
+    "eval_mean_return": 1336.95,
+    "eval_std_return": 507.13532217742437,
+    "eval_mean_buys": 4.1,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "echo": 8,
+      "muhstik": 10,
+      "doorlock": 10,
+      "gafgyt": 3
+    }
+  },
+  "fixed_threshold_cti_t1.25_seed4": {
+    "mode": "fixed_threshold_cti",
+    "seed": 4,
+    "eval_mean_return": 880.85,
+    "eval_std_return": 232.05751442261032,
+    "eval_mean_buys": 3.1,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "echo": 10,
+      "muhstik": 10,
+      "h_scan": 1
+    }
+  },
+  "fixed_threshold_cti_t1.5_seed6": {
+    "mode": "fixed_threshold_cti",
+    "seed": 6,
+    "eval_mean_return": 924.975,
+    "eval_std_return": 254.82997885845379,
+    "eval_mean_buys": 3.4,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "gafgyt": 4,
+      "echo": 10,
+      "muhstik": 10
+    }
+  },
+  "fixed_threshold_cti_t1.5_seed1": {
+    "mode": "fixed_threshold_cti",
+    "seed": 1,
+    "eval_mean_return": 142.125,
+    "eval_std_return": 211.42635390367022,
+    "eval_mean_buys": 2.2,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "muhstik": 10,
+      "echo": 2
+    }
+  },
+  "fixed_threshold_cti_t1.5_seed2": {
+    "mode": "fixed_threshold_cti",
+    "seed": 2,
+    "eval_mean_return": 2191.475,
+    "eval_std_return": 731.563005232632,
+    "eval_mean_buys": 4.1,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "doorlock": 10,
+      "muhstik": 10,
+      "hajime": 6,
+      "mirai": 5
+    }
+  },
+  "fixed_threshold_cti_t1.5_seed3": {
+    "mode": "fixed_threshold_cti",
+    "seed": 3,
+    "eval_mean_return": 1159.325,
+    "eval_std_return": 366.066815110302,
+    "eval_mean_buys": 2.6,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "muhstik": 10,
+      "doorlock": 6
+    }
+  },
+  "fixed_threshold_cti_t1.5_seed4": {
+    "mode": "fixed_threshold_cti",
+    "seed": 4,
+    "eval_mean_return": 701.525,
+    "eval_std_return": 422.1263355027734,
+    "eval_mean_buys": 2.5,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "muhstik": 10,
+      "h_scan": 4,
+      "gafgyt": 1
+    }
+  },
+  "fixed_threshold_cti_t2.0_seed6": {
+    "mode": "fixed_threshold_cti",
+    "seed": 6,
+    "eval_mean_return": 1747.65,
+    "eval_std_return": 282.8231381977083,
+    "eval_mean_buys": 1.2,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "muhstik": 2
+    }
+  },
+  "fixed_threshold_cti_t2.0_seed1": {
+    "mode": "fixed_threshold_cti",
+    "seed": 1,
+    "eval_mean_return": 262.9,
+    "eval_std_return": 100.30299098232315,
+    "eval_mean_buys": 2.1,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "mirai": 10,
+      "muhstik": 10,
+      "echo": 1
+    }
+  },
+  "fixed_threshold_cti_t2.0_seed2": {
+    "mode": "fixed_threshold_cti",
+    "seed": 2,
+    "eval_mean_return": 1269.6,
+    "eval_std_return": 864.7017491597898,
+    "eval_mean_buys": 1.8,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "doorlock": 4,
+      "muhstik": 4
+    }
+  },
+  "fixed_threshold_cti_t2.0_seed3": {
+    "mode": "fixed_threshold_cti",
+    "seed": 3,
+    "eval_mean_return": 865.6,
+    "eval_std_return": 181.66742278130113,
+    "eval_mean_buys": 2.1,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "muhstik": 10,
+      "doorlock": 1
+    }
+  },
+  "fixed_threshold_cti_t2.0_seed4": {
+    "mode": "fixed_threshold_cti",
+    "seed": 4,
+    "eval_mean_return": 1033.3,
+    "eval_std_return": 265.7890799111205,
+    "eval_mean_buys": 1.3,
+    "eval_bankruptcies": 0,
+    "eval_buys_per_class": {
+      "echo": 10,
+      "muhstik": 3
+    }
+  }
+}
