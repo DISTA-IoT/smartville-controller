@@ -180,7 +180,25 @@ class SimbaConfig:
     prices: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_PRICES))
 
     # -------------------------------------------------- decision module (DM)
-    ablation: str = 'drl'          # 'drl' | 'no_epistemic' | 'greedy_cti'
+    ablation: str = 'drl'  # 'drl'|'no_epistemic'|'greedy_cti'|'fixed_threshold_cti'
+    # fixed_threshold_cti ablation only -- the reviewer's "buy CTI whenever
+    # uncertain" threshold policy (mirrors TIGER's intrusion_detection.
+    # fixed_threshold_cti / cti_confidence_threshold). On an unknown cluster the
+    # policy FORCES a CTI buy whenever the IM's anomaly score for that cluster --
+    # a = mean(nearest-prototype distance)/tau, i.e. the un-clamped form of the
+    # `dist_ratio` confidence channel the DM already sees in its state -- exceeds
+    # this value (and the label is on sale and affordable), otherwise it defers
+    # the accept/block choice to the learned DQN. Higher a == the IM is more
+    # confident the cluster is nothing it knows == less confident in any
+    # known-class assignment == "more uncertain". Because a > 1 for every unknown
+    # cluster (each member is beyond the novelty threshold tau), a threshold <= 1
+    # buys every unknown cluster (degenerating to greedy_cti) while larger
+    # thresholds buy only the progressively more-anomalous clusters. It never
+    # chooses WHICH label is worth buying (only how novel the cluster looks), so
+    # unlike the value-learning DM it cannot separate the worthwhile benign
+    # zero-days from the not-worth-buying malicious ones -- see
+    # UNCERTAINTY_THRESHOLD_ABLATION.md.
+    cti_confidence_threshold: float = 1.5
     gamma: float = 0.998
     dm_learning_rate: float = 5e-4
     dm_hidden: int = 128
