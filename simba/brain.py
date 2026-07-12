@@ -33,7 +33,7 @@ from .inference import SimbaInference
 
 PROPRIO_DIM = 8   # + one known-flag per curriculum class (see _state)
 ACCEPT, BLOCK, BUY = 0, 1, 2
-ABLATIONS = ('drl', 'no_epistemic', 'greedy_cti')
+ABLATIONS = ('drl', 'no_epistemic', 'greedy_cti', 'fixed_threshold_cti')
 
 
 class SimbaBrain:
@@ -314,7 +314,8 @@ class SimbaBrain:
                                 min_dist[members], members, labels)
             majority = Counter(labels[i] for i in members).most_common(1)[0][0]
             quote = self.env.quote(majority)
-            action = self._decide(state, is_unknown, quote)
+            uncertainty = self._cluster_uncertainty(min_dist[members])
+            action = self._decide(state, is_unknown, quote, uncertainty)
 
             outcome = self.env.group_outcome(
                 action, [labels[i] for i in members])
@@ -403,7 +404,28 @@ class SimbaBrain:
             dtype=centroid.dtype, device=centroid.device)
         return torch.cat([centroid, proprio, known_flags]).detach()
 
-    def _decide(self, state, is_unknown, quote) -> int:
+    def _cluster_uncertainty(self, dists) -> float:
+        """The cluster's IM anomaly score a = mean(d)/tau: the mean
+        nearest-prototype distance of the cluster's members divided by the
+        calibrated novelty threshold tau. a > 1 <=> the cluster sits, on
+        average, beyond the boundary the IM uses to flag traffic as unknown,
+        so higher a == the IM is more confident the cluster is nothing it
+        knows (== less confident in any known-class assignment == "more
+        uncertain"). This is the un-clamped form of the `dist_ratio`
+        confidence channel the DM sees in its state (_state clamps a to
+        [0,3] and rescales to [0,1]); the fixed_threshold_cti policy
+        thresholds on it directly, mirroring TIGER's cti_confidence_threshold
+        gate. Returns +inf during cold start (no prototypes / tau not yet
+        calibrated), i.e. "maximally uncertain"."""
+        if len(dists) == 0:
+            return 0.0
+        tau = self.im.tau
+        mean_d = float(dists.float().mean())
+        if not (tau < float('inf')) or tau <= 0 or not (mean_d < float('inf')):
+            return float('inf')
+        return mean_d / tau
+
+    def _decide(self, state, is_unknown, quote, uncertainty=0.0) -> int:
         """The epistemic action only exists for unknown clusters (as in
         TIGER): known-traffic groups are accept/block for every mode."""
         mode = self.cfg.ablation
@@ -416,6 +438,18 @@ class SimbaBrain:
                           self.env.budget - quote >= self.cfg.min_budget)
             if affordable:
                 return BUY   # buy ASAP, guarding bankrupt buys
+            return self.agent.act(state, allowed=pragmatic, explore=explore)
+        if mode == 'fixed_threshold_cti':
+            # "Buy CTI whenever uncertain": force the buy when the cluster's
+            # anomaly score clears cti_confidence_threshold and the label is on
+            # sale and affordable (same bankruptcy guard as greedy_cti); else
+            # defer the accept/block choice to the learned DQN. The epistemic
+            # slot is fully scripted here, so -- like greedy_cti -- the agent is
+            # only ever queried for the pragmatic actions.
+            affordable = (quote is not None and
+                          self.env.budget - quote >= self.cfg.min_budget)
+            if affordable and uncertainty > self.cfg.cti_confidence_threshold:
+                return BUY
             return self.agent.act(state, allowed=pragmatic, explore=explore)
         return self.agent.act(state, explore=explore)
 

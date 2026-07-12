@@ -121,6 +121,19 @@ only restrict/force the epistemic action at decision time:
 * `greedy_cti` — action 2 forced on every unknown cluster whose CTI is
   on sale and affordable (`budget - price >= min_budget`, i.e. bankrupt
   buys are guarded); pragmatic actions still learned.
+* `fixed_threshold_cti` — the "buy CTI whenever uncertain" threshold
+  policy (a reviewer-requested heuristic baseline; SIMBA's port of
+  TIGER's `fixed_threshold_cti`). Action 2 is forced on an unknown
+  cluster whenever the IM's anomaly score for it — `mean(dist)/tau`, the
+  un-clamped `dist_ratio` confidence channel the DM already sees —
+  exceeds `cti_confidence_threshold` (and the CTI is on sale and
+  affordable, same bankrupt guard as `greedy_cti`); otherwise the
+  accept/block choice is deferred to the learned DQN. It reads *how
+  novel* a cluster looks but never *whether its label is worth buying*,
+  so it cannot separate the benign zero-days (worth buying) from the
+  malicious ones (not) the way the value-learning DM does — sweeping the
+  threshold only trades greedy-like over-spend for `no_epistemic`-like
+  under-buying. See `UNCERTAINTY_THRESHOLD_ABLATION.md`.
 
 Orthogonal to the modes, `--hard-g2s CLASS...` (config `hard_g2s`)
 removes classes from the CTI market entirely — layer it on `greedy_cti`
