@@ -181,6 +181,18 @@ class SimbaConfig:
 
     # -------------------------------------------------- decision module (DM)
     ablation: str = 'drl'  # 'drl'|'no_epistemic'|'greedy_cti'|'fixed_threshold_cti'
+    # The DM value-learning algorithm. Orthogonal to `ablation` (which only
+    # gates the epistemic action): every variant learns the same MDP with the
+    # same hyperparameters below, differing only in the TD target and Q-head --
+    #   'dqn'          -- vanilla: target = r + gamma * max_a' Q_target(s',a');
+    #   'ddqn'         -- Double DQN: the online net selects a' and the target
+    #                     net scores it (curbs the max-operator overestimation);
+    #   'dueling_ddqn' -- the same Double-DQN target on a dueling head that
+    #                     splits state-value V(s) from advantage A(s,a).
+    # Default 'dqn' reproduces the shipped/calibrated agent exactly; the knob
+    # only swaps the learner, so DM checkpoints are agent-specific (a dueling
+    # state_dict does not load into a plain QNet). See simba/agent.py.
+    dm_agent: str = 'dqn'  # 'dqn' | 'ddqn' | 'dueling_ddqn'
     # fixed_threshold_cti ablation only -- the reviewer's "buy CTI whenever
     # uncertain" threshold policy (mirrors TIGER's intrusion_detection.
     # fixed_threshold_cti / cti_confidence_threshold). On an unknown cluster the

@@ -29,9 +29,19 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from simba.agent import DM_AGENTS                       # noqa: E402
 from simba.brain import SimbaBrain, ABLATIONS           # noqa: E402
 from simba.config import SimbaConfig                    # noqa: E402
 from simba.data import load_trace                       # noqa: E402
+
+
+def run_name_for(mode: str, agent: str, seed: int) -> str:
+    """Default run/output name. The 'dqn' agent keeps the historical
+    `<mode>_seed<seed>` name (so existing result dirs and the calibration
+    docs' reproduce commands are unchanged); the new learners insert the
+    agent to keep grid runs from colliding."""
+    base = mode if agent == 'dqn' else f'{mode}_{agent}'
+    return f'{base}_seed{seed}'
 
 
 def parse_args(argv=None):
@@ -41,6 +51,9 @@ def parse_args(argv=None):
                                  'dirs — newest wins); with --synthetic, the '
                                  'dir where the synthetic trace is generated')
     ap.add_argument('--mode', default='drl', choices=list(ABLATIONS))
+    ap.add_argument('--agent', default='dqn', choices=list(DM_AGENTS),
+                    help='DM value-learner (orthogonal to --mode): dqn | ddqn '
+                         '| dueling_ddqn. Default dqn is the shipped agent.')
     ap.add_argument('--seed', type=int, default=777)
     ap.add_argument('--episodes', type=int, default=120)
     ap.add_argument('--eval-episodes', type=int, default=5)
@@ -188,6 +201,7 @@ def main(argv=None):
     if not args.no_manifest:
         cfg.apply_manifest(trace.manifest)
     cfg.ablation = args.mode
+    cfg.dm_agent = args.agent
     cfg.seed = args.seed
     cfg.device = args.device
     if args.prices_json:
@@ -200,7 +214,7 @@ def main(argv=None):
         cfg.hard_g2s = list(args.hard_g2s)
     apply_overrides(cfg, args.overrides)
 
-    run_name = args.run_name or f'{args.mode}_seed{args.seed}'
+    run_name = args.run_name or run_name_for(args.mode, args.agent, args.seed)
     out_dir = args.out or os.path.join('runs_simba', run_name)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -218,7 +232,7 @@ def main(argv=None):
     seed_everything(args.seed)
     brain = SimbaBrain(cfg, wb_run=wb)
     print(f'[simba] trace: {len(trace)} ticks / {trace.num_samples()} samples | '
-          f'mode={args.mode} seed={args.seed} device={args.device} | '
+          f'mode={args.mode} agent={args.agent} seed={args.seed} device={args.device} | '
           f'classes: {len(cfg.knowns)}K/{len(cfg.g1s)}G1/{len(cfg.g2s)}G2 | '
           f'DM state_dim={brain.agent.model.net[0].in_features} | '
           f'wandb={"on" if wb else "off"}', flush=True)
@@ -278,6 +292,7 @@ def main(argv=None):
 
     results = {
         'mode': args.mode,
+        'agent': args.agent,
         'seed': args.seed,
         'eval_mean_return': float(np.mean(eval_returns)) if eval_returns else 0.0,
         'eval_std_return': float(np.std(eval_returns)) if eval_returns else 0.0,

@@ -19,7 +19,8 @@ simba/
   inference.py     IM: GRU+MLP encoder, prototypical classifier,
                    G1-supervised anomaly threshold, input-space clustering
   environment.py   budget, curriculum knowledge, CTI marketplace, rewards
-  agent.py         DM: one plain DQN (eps-greedy, uniform replay, 1-step TD)
+  agent.py         DM: a value-learner (eps-greedy, uniform replay, 1-step
+                   TD); dm_agent picks dqn | ddqn | dueling_ddqn
   brain.py         SimbaBrain: ties IM+DM+env; offline & POX modalities
 simba_offline.py       train+eval one (mode, seed) pair on a trace
 simba_experiments.py   parallel launcher over modes x seeds x GPUs (wandb: SIMBA)
@@ -140,16 +141,50 @@ removes classes from the CTI market entirely — layer it on `greedy_cti`
 with every not-worth-buying class listed to get the "oracle buyer"
 upper-bound baseline, mirroring TIGER's `hard_g2s`.
 
+## Agents (the value-learner axis)
+
+A second, **orthogonal** axis to the ablation modes: the DM's
+value-learner itself, selected by `dm_agent` (`--agent` offline, config
+`simba.dm_agent` in GNS3). The modes gate *whether/when* the epistemic
+action is taken; the agent gates *how the Q-values are learned*. All
+three learn the same MDP with **the same state, the same replay, and every
+hyperparameter identical** — only the TD target and the Q-head change, so
+they are a clean like-for-like comparison (nothing calibrated moved):
+
+* `dqn` — the shipped default: 1-step target `r + γ·maxₐ' Q_target(s',a')`,
+  plain MLP head. Omitting `--agent` reproduces every earlier result
+  byte-for-byte (the `dqn` run name stays `<mode>_seed<seed>`);
+* `ddqn` — Double DQN: the **online** net selects `a'`, the **target** net
+  scores it, decoupling selection from evaluation to curb the max-operator
+  overestimation bias. Same MLP head as `dqn`;
+* `dueling_ddqn` — the same Double-DQN target on a **dueling** head that
+  splits a scalar state-value `V(s)` from the per-action advantage
+  `A(s,a)` (`Q = V + A − mean A`), same trunk width.
+
+Because only the learner changes, DM checkpoints are **agent-specific** (a
+`dueling_ddqn` `dm_final.pt` will not load into a `dqn`/`ddqn` `QNet`), just
+as they are already curriculum-specific. Grid over the axis with
+`simba_experiments.py --agents dqn ddqn dueling_ddqn` (see below); it is
+independent of `--ablation-modes`, so you can compare learners under `drl`
+while still running the `no_epistemic`/`greedy_cti` reference baselines.
+
 ## Offline usage
 
 ```bash
 # synthetic smoke run, no wandb
 python simba_offline.py ./simba_synth --synthetic --mode drl --seed 6 --no-wandb
 
-# full comparison on pre-recorded traces, wandb project SIMBA
+# a single Dueling-Double-DQN run (the agent axis; --mode still selects the
+# ablation, here the full drl action space)
+python simba_offline.py pre_recorded_data/ --no-manifest --no-wandb \
+    --mode drl --agent dueling_ddqn --seed 6 --episodes 120 --eval-episodes 10
+
+# full comparison on pre-recorded traces, wandb project SIMBA:
+# 3 modes x 3 learners x 2 seeds
 python simba_experiments.py pre_recorded_data/ \
     --gpus 0 2 3 4 5 6 \
     --ablation-modes drl no_epistemic greedy_cti \
+    --agents dqn ddqn dueling_ddqn \
     --seeds 6 1 \
     --episodes 300 --wandb-project SIMBA
 
@@ -175,6 +210,7 @@ intrusion_detection:
   brain: simba
 simba:                 # optional SimbaConfig overrides
   gamma: 0.998
+  dm_agent: dueling_ddqn   # dqn (default) | ddqn | dueling_ddqn
   im_snapshot_path: /pox/pox/smartController/simba_models/im_pretrained.pt
 ```
 
