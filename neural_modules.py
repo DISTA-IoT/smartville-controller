@@ -219,7 +219,10 @@ class DQN(nn.Module):
         # map). Stored so forward() splits at the run's true boundary rather than
         # the scalar-only module constant.
         self.proprio_state_size = proprio_tail_size(kwargs)
-        hidden_size = int(int(kwargs['hidden_size']))
+        # DM trunk width: dm_hidden decouples the value net's width from the
+        # IM's hidden_size (SIMBA's dm_hidden); falls back to hidden_size so
+        # unconfigured runs keep the legacy coupled width.
+        hidden_size = int(kwargs.get('dm_hidden') or kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, int(int(kwargs['action_size'])))
@@ -244,7 +247,9 @@ class DuelingDQN(nn.Module):
         # map). Stored so forward() splits at the run's true boundary rather than
         # the scalar-only module constant.
         self.proprio_state_size = proprio_tail_size(kwargs)
-        hidden_dim = int(int(kwargs['hidden_size']))
+        # DM trunk width: dm_hidden decouples the value net's width from the
+        # IM's hidden_size (SIMBA's dm_hidden); falls back to hidden_size.
+        hidden_dim = int(kwargs.get('dm_hidden') or kwargs['hidden_size'])
         self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
 

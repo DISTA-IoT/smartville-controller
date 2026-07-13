@@ -170,6 +170,16 @@ class TigerBrain:
         self.attractive_weight = float(args.intrusion_detection.attractive_weight)
         self.repulsive_weight = float(args.intrusion_detection.repulsive_weight)
         self.learning_rate = float(args.intrusion_detection.learning_rate)
+        # SIMBA parity: the inference module and the decision module can run on
+        # different step sizes (SIMBA's calibration study found the online IM
+        # must stay an order of magnitude below the DM's rate -- im 1e-4 vs dm
+        # 5e-4 -- or the encoder drifts away from its pretrained snapshot and
+        # destabilises the DM). Both keys default to the legacy shared
+        # `learning_rate`, so unconfigured runs are unchanged. im_learning_rate
+        # is consumed here (init_inference_neural_modules); dm_learning_rate is
+        # remapped onto the agents' `learning_rate` in init_agents.
+        self.im_learning_rate = float(
+            args.intrusion_detection.get('im_learning_rate', self.learning_rate))
         self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
         # K1: decouple the inference-module training cadence from the (inference)
         # tick. online_inference still runs every tick for live metrics; training
@@ -380,19 +390,45 @@ class TigerBrain:
         # buy every available G2, and hard_g2s carves out the ones it must block
         # instead, yielding a "buy only the G2s that matter" oracle policy.
         self.hard_g2s = list(self.intrusion_detection_kwargs.get('hard_g2s', []) or [])
+        # --- SIMBA-parity knobs (all default to legacy no-ops). ---
+        # Extra IM gradient steps fired right after a purchased CTI label is
+        # delivered (SIMBA's buy_train_burst): without them the freshly bought
+        # class sits in the classifier untrained until the regular one-step-per-
+        # tick cadence catches up, transiently degrading accuracy -- a hidden,
+        # unintended cost of every buy. 0 (default) keeps the legacy behaviour.
+        self.buy_train_burst = max(0, int(
+            self.intrusion_detection_kwargs.get('buy_train_burst', 0)))
+        # When True, the DM replays once per *decision* taken this tick instead
+        # of once per tick, matching SIMBA (which calls agent.replay() after
+        # every group/cluster decision). Default False keeps the legacy
+        # one-replay-per-tick cadence.
+        self.dm_replay_per_decision = bool(
+            self.intrusion_detection_kwargs.get('dm_replay_per_decision', False))
+        # Penalty scale on blocking benign traffic (SIMBA's block_benign_scale /
+        # beta): a blocked group loses scale * (the positive per-flow reward it
+        # would have earned). The legacy TIGER rule scores every block as 0
+        # (blocking is free), which removes the lost-service cost that makes
+        # over-blocking unprofitable in SIMBA's economy; 0.0 (default)
+        # reproduces that legacy rule exactly.
+        self.block_benign_penalty_scale = float(
+            self.intrusion_detection_kwargs.get('block_benign_penalty_scale', 0.0))
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
             "classification_accuracy_reward_weight=%s, exclude_g1_from_ad_known_set=%s, state=%s, "
             "reward_temperature=%s, "
             "include_class_scores=%s, class_scores_encoding=%s, class_scores_sentinel=%s, "
-            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s\033[0m",
+            "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s, "
+            "im_learning_rate=%s, buy_train_burst=%s, dm_replay_per_decision=%s, "
+            "block_benign_penalty_scale=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.state_mode,
             self.reward_temperature,
             self.include_class_scores, self.class_scores_encoding, self.class_scores_sentinel,
-            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold)
+            self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold,
+            self.im_learning_rate, self.buy_train_burst, self.dm_replay_per_decision,
+            self.block_benign_penalty_scale)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -695,6 +731,16 @@ class TigerBrain:
         if agent_type not in agent_mapping:
             raise ValueError(f'Unknown agent type: {agent_type}')
 
+        # SIMBA parity: let the DM run on its own step size. Every agent class
+        # reads kwargs['learning_rate'] for its optimizers, so remap the
+        # optional dm_learning_rate onto that key here, at the single agent
+        # construction point. Safe w.r.t. the IM: init_inference_neural_modules
+        # uses self.im_learning_rate (captured in __init__ before this runs),
+        # never re-reading intrusion_detection.learning_rate.
+        dm_lr = args.intrusion_detection.get('dm_learning_rate', None)
+        if dm_lr is not None:
+            args.intrusion_detection.learning_rate = float(dm_lr)
+
         agent_class = agent_mapping[agent_type]
         args.intrusion_detection.action_size = 3  # block, pass or TCI acquisition
         args.intrusion_detection.state_size = self.state_space_dim
@@ -831,7 +877,7 @@ class TigerBrain:
             list(self.classifier.parameters())
 
         self.classifier.to(self.device)
-        self.optimizer = optim.Adam(params_for_optimizer, lr=self.learning_rate)
+        self.optimizer = optim.Adam(params_for_optimizer, lr=self.im_learning_rate)
 
         if self.eval:
             self.classifier.eval()
@@ -1621,6 +1667,15 @@ class TigerBrain:
             positive = torch.relu(group_rewards)
             negative = group_rewards - positive
             return (accept_reward_scale * positive.sum() + malicious_accept_penalty_scale * negative.sum()).item()
+        # Blocked: the benign reward the group would have earned is charged as a
+        # lost-service penalty scaled by block_benign_penalty_scale (SIMBA's
+        # beta). At the default 0.0 this is the legacy "blocking is free" rule;
+        # at 1.0 it reproduces SIMBA's economy, where blocking a benign flow
+        # costs the full reward it would have earned. Blocked malicious content
+        # stays at zero either way (no damage, no gain).
+        if self.block_benign_penalty_scale > 0.0:
+            return -(self.block_benign_penalty_scale
+                     * torch.relu(group_rewards).sum()).item()
         return 0
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
@@ -2350,6 +2405,11 @@ class TigerBrain:
             with self.profile("onl_inf_AD"):
                 zda_predictions, predicted_zda_mask = self.online_anomaly_detection(merged_batch, logits, hiddens, one_hot_labels, merged_query_mask)
         
+        # Decisions taken so far this episode, snapshotted before this tick's
+        # group/cluster decisions run -- used below to replay the DM once per
+        # decision (SIMBA parity) when dm_replay_per_decision is on.
+        steps_before_tick = self.env.steps_done if self.agency else 0
+
         num_online = online_batch.zda_labels.shape[0]
         # Always evaluate to update online stats (CMs) and get metrics
         # evaluate_anomaly_detection expects zda_labels and zda_predictions for the query subset
@@ -2430,7 +2490,14 @@ class TigerBrain:
 
         if self.agency:
             with self.profile("onl_inf_ER"):
-                self.mitigation_agent.replay(self.wb_tracker.step_counter)
+                # SIMBA replays after every decision; legacy TIGER replays once
+                # per tick. dm_replay_per_decision matches the former by
+                # running one replay per decision this tick actually produced.
+                n_replays = 1
+                if self.dm_replay_per_decision:
+                    n_replays = max(1, self.env.steps_done - steps_before_tick)
+                for _ in range(n_replays):
+                    self.mitigation_agent.replay(self.wb_tracker.step_counter)
 
         if self.agency:
             self.logger_instance.info(f'Online {INFERENCE} current budget: {self.env.current_budget} \n')
@@ -3110,6 +3177,22 @@ class TigerBrain:
         # on). For instant delivery this is the buying step; for delayed
         # delivery it is the step the CTI actually arrives.
         self._pending_epistemic_delays[new_label] = self.wb_tracker.step_counter
+        # SIMBA-parity buy_train_burst: assimilate the just-delivered class
+        # immediately with a burst of IM gradient steps, instead of leaving it
+        # untrained until the regular per-tick cadence catches up. The class's
+        # replay buffer is already populated (G2 traffic is buffered by true
+        # label before purchase), so the burst has data to train on; each step
+        # degrades to a no-op if balanced sampling is not yet possible. This
+        # runs mid-online_inference (the modules are momentarily in eval mode
+        # for the tick's forward passes), so flip them to train mode for the
+        # burst and back to eval to leave the surrounding tick undisturbed.
+        if self.buy_train_burst > 0:
+            self.classifier.train()
+            self.confidence_decoder.train()
+            for _ in range(self.buy_train_burst):
+                self.train_inf_module_single_batch()
+            self.classifier.eval()
+            self.confidence_decoder.eval()
 
     def _poll_cti_deliveries(self):
         """
