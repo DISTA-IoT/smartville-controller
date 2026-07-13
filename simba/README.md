@@ -50,7 +50,7 @@ fraction of its value is realised (sandboxing / no SLA). Therefore:
   `alpha*r` to `r` — worth it iff the price is below the remaining
   volume gap;
 * buying a **malicious** zero-day's label converts "blocked unknown"
-  (0) into "blocked known" (0) — *never* worth it;
+  (0) into "blocked known" (0) —  worth it only in so far its price is below the gain produced by denoising the IM trhough learning from that labels;
 * `no_epistemic` forfeits the benign gap forever; `greedy_cti` wastes
   the price of every malicious/overpriced label. Only a learner that
   reads the cluster (state = stationary input-space centroid + budget /
@@ -63,12 +63,7 @@ value learner the price must satisfy
 price  <  (1 - alpha) * r * rate * γ^d / (1 - γ^d)
 ```
 
-with `rate` = the class's flows/tick and `d` = DM decisions/tick. If you
-swap in your own traces and the DQN "converges to zero epistemic
-actions", check this inequality before blaming the agent — with the
-default `gamma=0.998` and the default synthetic rates, doorlock
-(rate 5, price 40) is clearly worth buying and echo (rate 1, price 400)
-clearly is not.
+with `rate` = the class's flows/tick and `d` = DM decisions/tick.
 
 Three anti-"zero-epistemic-collapse" design points, each learned by
 reproducing the collapse:
@@ -88,10 +83,9 @@ reproducing the collapse:
   to the average value of knowledge — which, dominated by the worthless
   malicious labels bought during exploration, is small — and the DQN
   *rationally* stops buying. Selective buying requires the value function
-  to see *which* knowledge it owns. (Changes the DM state dimension, so
-  DM checkpoints are curriculum-specific.)
+  to see *which* knowledge it owns. 
 
-## Inference module (kept honest, kept small)
+## Inference module
 
 * **encoder** GRU over the `[10,4]` flowstats window + MLP over mean raw
   packet bytes → LayerNorm'd `hidden_size` embedding;
@@ -224,8 +218,7 @@ unknown until the Known buffers fill and the first calibration runs.
 
 The x-axis is a **monotonic per-tick global step** (never reset across
 episodes), so every series updates *live* during a run rather than only
-at episode boundaries — the fix for "I see the run but no running
-metrics". Logging lives in `SimbaBrain`, so it works identically offline
+at episode boundaries. Logging lives in `SimbaBrain`, so it works identically offline
 and inside GNS3 (the controller's `WandBTracker` is passed through
 `from_tiger_config`).
 
