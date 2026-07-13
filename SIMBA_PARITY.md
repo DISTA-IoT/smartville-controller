@@ -64,10 +64,17 @@ is annotated with the `SimbaConfig` field it mirrors).
 
 ## Deliberate residual differences
 
-* `neural_modules.hidden_size` stays **200** (SIMBA: 64): the shipped
-  pretrained IM checkpoints are h200 and cold-starting the IM online is the
-  instability SIMBA's calibration warns about. The drift problem is addressed
-  by `im_learning_rate: 1e-4` instead.
+* `neural_modules.hidden_size` stays **200** (SIMBA: 64) *until a
+  SIMBA-geometry IM is pretrained*: the shipped pretrained IM checkpoints are
+  h200 and cold-starting the IM online is the instability SIMBA's calibration
+  warns about. The drift problem is addressed by `im_learning_rate: 1e-4`
+  instead. To close the gap, pretrain with
+  `tiger/config/overrides/tiger_pretraining.yaml` (now the SIMBA-geometry
+  recipe: h64, single GRU layer, no dropout, `use_encoder: false`, `simba_ad`),
+  rename the saved best checkpoints to
+  `multiclass_flow_packet_classifier_pretrained_h64.pt` /
+  `flow_packet_confidence_decoder_pretrained_h64.pt` in `tiger_models/`, and
+  uncomment the "SIMBA-geometry IM" block in `dista_tiger.yaml`.
 * Unknown-traffic **clustering** stays on the G1-supervised kernel-regression
   head (SIMBA clusters in the standardised raw-input space). Both derive their
   granularity from the G1 pseudo zero-days; the substrate differs.
@@ -77,3 +84,12 @@ is annotated with the `SimbaConfig` field it mirrors).
   per-class acquired-CTI map, the analogue of SIMBA's per-class known-flags.
 * Episode length is `max_episode_steps: 1000` DM decisions ≈ SIMBA's 51-tick
   real-trace episode at ~20 decisions/tick.
+
+## Running the offline experiment grid live
+
+`tiger/tests/simba_parity_ablations.py` replays `simba_experiments.py`'s grid
+(ablation modes × DM agents × seeds) on the live GNS3 stack via `dash_cli.py`,
+under the `dista_tiger` profile: modes `drl` / `no_epistemic` / `greedy_cti` /
+`fixed_threshold_cti` (one run per threshold in the sweep) / `oracle`
+(greedy + `hard_g2s` blocklist of the malicious G2s), agents `DQN` / `DDQN` /
+`DuelingDDQN`, default seeds 6 and 1.
