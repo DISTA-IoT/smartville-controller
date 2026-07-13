@@ -215,7 +215,7 @@ class SimbaBrain:
         d.update(args.get('simba') or {})
         cfg = SimbaConfig.from_dict(d)
         if not cfg.max_episode_ticks:
-            cfg.max_episode_ticks = int(det.get('max_episode_steps', 1000))
+            cfg.max_episode_ticks = int(det.get('max_episode_steps', 1000)) # Warning! for tiger, episode steps are decisions, ticks are instead online input batches here!
         wb_run = getattr(wb_tracker, 'wb_run', None) if wb_tracker else None
         brain = cls(cfg, logger=args.get('logger'), wb_run=wb_run)
         brain.traffic_dict = args.get('traffic_dict')
