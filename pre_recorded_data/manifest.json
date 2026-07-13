@@ -96,7 +96,6 @@
     "epistemic_regularisation_factor": "0.1",
     "transitionnet_kl_divergence_regularisation_factor": "1.0",
     "variational_variational_transition_loss": false,
-    "leakyrelu_alpha": 0.2,
     "actor_train_interval_steps": "100",
     "entropy_reg_coefficient": "1",
     "temperature_for_action_sampling": "1.0",

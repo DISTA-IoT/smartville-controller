@@ -600,7 +600,7 @@ class TransitionNet(nn.Module):
 
         self.transition_input_size = int(kwargs['proprioceptive_state_size']) + int(kwargs['action_size'])
         self.recurrent_layers = int(kwargs['recurrent_layers'])
-        self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
+        self.act = nn.LeakyReLU(kwargs['leaky_relu_alpha'])
         self.fc1 = nn.Linear(self.transition_input_size, int(kwargs['hidden_size']))
         self.fc2 = nn.Linear(int(int(kwargs['hidden_size'])), int(kwargs['proprioceptive_state_size']))
 
@@ -631,7 +631,7 @@ class NewTransitionNet(nn.Module):
         self.state_size = int(kwargs['state_size'])
 
         self.transition_input_size = int(kwargs['state_size']) + int(kwargs['action_size'])
-        self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
+        self.act = nn.LeakyReLU(kwargs['leaky_relu_alpha'])
 
 
         self.action_stream_fc1 = nn.Linear(self.action_size, int(kwargs['hidden_size'])//4)
@@ -679,7 +679,7 @@ class VariationalTransitionNet(nn.Module):
         self.state_size = int(kwargs['state_size'])
 
         self.transition_input_size = int(kwargs['state_size']) + int(kwargs['action_size'])
-        self.act = nn.LeakyReLU(kwargs['leakyrelu_alpha'])
+        self.act = nn.LeakyReLU(kwargs['leaky_relu_alpha'])
 
 
         self.action_stream_fc1 = nn.Linear(self.action_size, int(kwargs['hidden_size'])//4)
