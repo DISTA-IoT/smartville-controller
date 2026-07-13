@@ -980,8 +980,30 @@ class ValueLearningAgent:
         self.gamma = float(kwargs['agent_discount_rate'])  # discount rate
         self.boltzmann_sampling = kwargs['boltzmann_sampling']
         self.epsilon = float(kwargs['init_epsilon_egreedy'])  # exploration rate
+        self.init_epsilon = self.epsilon  # schedule anchor for linear decay
         self.epsilon_min = float(kwargs['greedy_min'])
         self.epsilon_decay = float(kwargs['greedy_decay'])
+        # --- SIMBA-parity exploration/learning knobs (legacy no-op defaults) ---
+        # eps_linear_decay_steps > 0 switches the epsilon schedule from the
+        # legacy per-replay multiplicative decay (greedy_decay) to SIMBA's
+        # linear decay per ACT step: epsilon runs linearly from
+        # init_epsilon_egreedy down to greedy_min over this many decisions,
+        # recomputed inside act() from self.act_steps. 0 keeps the legacy rule.
+        self.eps_linear_decay_steps = int(kwargs.get('eps_linear_decay_steps', 0))
+        self.act_steps = 0
+        # Probability mass a RANDOM (exploratory) draw puts on the epistemic
+        # buy action (2), the rest split evenly between accept/block --
+        # SIMBA's buy-averse exploration (a uniform 1/3 pays a CTI price every
+        # third random decision, drowning the buy action's true value in
+        # exploration damage). Negative (default) keeps the legacy uniform draw.
+        self.explore_buy_weight = float(kwargs.get('explore_buy_weight', -1.0))
+        # Rewards are multiplied by this before entering the replay memory
+        # (SIMBA's reward_scale; TD learning only ever sees the scaled value,
+        # the environment/budget stays unscaled). 1.0 is the legacy no-op.
+        self.dm_reward_scale = float(kwargs.get('dm_reward_scale', 1.0))
+        # Minimum stored transitions before gradient updates begin (SIMBA's
+        # learn_start). 0 keeps the legacy start-asap behaviour.
+        self.dm_learn_start = int(kwargs.get('dm_learn_start', 0))
 
         self.agent_type = kwargs['agent']
         if self.agent_type == 'DuelingDQN' or self.agent_type == 'DuelingDDQN':
@@ -1040,6 +1062,11 @@ class ValueLearningAgent:
 
 
     def remember(self, state, action, reward, next_state, done, step):
+        # SIMBA-parity reward scaling: TD learning only ever sees the scaled
+        # reward; the environment's budget bookkeeping upstream stays raw.
+        # No-op at the default scale of 1.0.
+        if self.dm_reward_scale != 1.0:
+            reward = reward * self.dm_reward_scale
         self.n_step_buffer.append((state, action, reward, next_state, done))
 
         if done:
@@ -1093,22 +1120,46 @@ class ValueLearningAgent:
                 # sample from a categorical distribution
                 return torch.multinomial(action_probs, 1).item()
             else:
+                # SIMBA-parity linear epsilon schedule: recompute epsilon from
+                # the number of decisions taken so far, running linearly from
+                # the initial value down to epsilon_min over
+                # eps_linear_decay_steps decisions. When the knob is 0 the
+                # legacy per-replay multiplicative decay (in replay()) applies.
+                self.act_steps += 1
+                if self.eps_linear_decay_steps > 0:
+                    frac = min(1.0, self.act_steps / max(1, self.eps_linear_decay_steps))
+                    self.epsilon = self.init_epsilon \
+                        + frac * (self.epsilon_min - self.init_epsilon)
+
                 if random.random() <= self.epsilon:
+                    # Buy-averse exploration (SIMBA's explore_buy_weight): the
+                    # random draw puts `w` mass on the epistemic action (2) and
+                    # splits the rest between accept/block. Falls back to the
+                    # legacy uniform draw when the weight is unset (negative).
+                    if self.explore_buy_weight >= 0.0 and self.action_size == 3:
+                        w = self.explore_buy_weight
+                        return random.choices(
+                            [0, 1, 2],
+                            weights=[(1.0 - w) / 2, (1.0 - w) / 2, w], k=1)[0]
                     return random.randrange(self.action_size)
-                
+
                 q_values = self.model(state).squeeze()
                 return q_values.argmax(0).item()
 
 
     def replay(self, step):
 
+        # SIMBA-parity learn_start: hold gradient updates until the memory has
+        # at least this many transitions (never less than a full batch).
+        min_transitions = max(self.replay_batch_size, self.dm_learn_start)
+
         if self.use_per:
-            if len(self.memory) < self.replay_batch_size:
+            if len(self.memory) < min_transitions:
                 return
             states, actions, rewards, next_states, dones, idxs, is_weights = self.memory.sample(self.replay_batch_size)
             is_weights = is_weights.to(self.device)
         else:
-            if self.memory_size_actual < self.replay_batch_size:
+            if self.memory_size_actual < min_transitions:
                 return
             indices = random.sample(range(self.memory_size_actual), self.replay_batch_size)
             minibatch = [self.memory[i] for i in indices]
@@ -1203,8 +1254,9 @@ class ValueLearningAgent:
                 'diagnostics/td_error_abs_max': td_errors.abs().max().item(),
             }, step=step)
             
-        # Epsilon decay
-        if self.epsilon > self.epsilon_min:
+        # Epsilon decay (legacy multiplicative, per replay). Skipped when the
+        # SIMBA-parity linear schedule is active -- act() then owns epsilon.
+        if self.eps_linear_decay_steps <= 0 and self.epsilon > self.epsilon_min:
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
 
