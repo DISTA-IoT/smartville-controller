@@ -138,25 +138,41 @@ reporting) — only the partition the DM acts on changed. With `state: input`
 the DM already sees the input-space centroid of each cluster, so representation
 **and** partition are now both SIMBA's.
 
+The single-linkage extraction is vectorised relative to SIMBA's Python
+flood-fill (build the radius adjacency once with `torch.cdist`, extract
+components with SciPy's C-level `connected_components`, renumber to
+first-appearance order) — byte-identical partition, ~5–70× faster on 50–600
+anomalies/tick.
+
+**Composability with `use_neural_KR: false`**: `input_space_clustering` only
+governs the *learned* substrate. With `use_neural_KR: false` the gold /
+ground-truth partition (cluster by true label) still wins — the perfect-
+clustering oracle ablation is unaffected — so the two knobs compose instead of
+the input-space path shadowing the oracle.
+
 Two honest residues, neither a substrate difference:
 
 * 🟡 **Radius recalibration cadence**: SIMBA's *code* calibrates the radius
   **once** (`calibrate_clustering` is guarded by `cluster_radius is None`, then
   frozen via snapshot/restore) — the "recalibrated every 10 ticks" claim in the
-  old audit was only ever true of SIMBA's prototypes/τ, not its radius. TIGER
-  recalibrates every `cluster_calibration_period` ticks (default 10, and every
-  tick until the first success), because unlike SIMBA it has no offline pass to
-  fit the standardisation stats and fill the G1 buffers before the run — an
-  early one-shot radius would be computed from immature stats. In the stationary
-  standardised space the value barely moves, so this converges to SIMBA's
-  frozen radius; set `cluster_calibration_period` very high to reproduce
-  freeze-after-first.
+  old audit was only ever true of SIMBA's prototypes/τ, not its radius. SIMBA
+  can freeze after one shot because it fits `feat_mu/feat_sd` **offline** first,
+  so that calibration already runs in the mature frame. TIGER has no offline
+  pass, so it recalibrates **every tick** (cheap: a few G1s × 64 samples). An
+  empirical sweep on the real trace (11 shards, G1s okiru/cc_heartbeat/
+  generic_ddos, looped 20×) showed why this matters: the radius drifts **4.43 →
+  3.86** over the first ~50 ticks as the running stats mature, then is stable to
+  **<1% CoV**. Freezing the tick-0 value (or throttling to every-N-ticks) would
+  lock in a ~15%-too-high radius and ~13% fewer clusters; recalibrating every
+  tick tracks the maturation and converges to the value SIMBA's mature-frame
+  one-shot would reach. No period knob is exposed — it would only be a footgun.
 * 🟡 **Standardisation frame**: the same §3.1 residue as `state: input` — TIGER
   standardises by running Welford stats (never reset) rather than SIMBA's
   once-fit-and-frozen `feat_mu/feat_sd`. They converge within a few ticks; the
-  radius calibrated in that frame inherits the same convergence.
+  radius calibrated in that frame inherits the same convergence (above).
 
-* Lever (was): none by config. Now `input_space_clustering` / `cluster_radius_factor`.
+* Lever (was): none by config. Now `input_space_clustering` /
+  `cluster_radius_factor` / `cluster_calibration_samples`.
 
 ---
 

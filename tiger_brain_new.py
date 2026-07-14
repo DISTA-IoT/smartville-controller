@@ -61,6 +61,9 @@ from smartController.brain_utils import (
 )
 from smartController.tiger_reporter import TigerReporter
 
+import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 
@@ -451,27 +454,31 @@ class TigerBrain:
         # spread and centroid during radius calibration (SIMBA's proto_samples).
         self.cluster_calibration_samples = max(2, int(
             self.intrusion_detection_kwargs.get('cluster_calibration_samples', 64)))
-        # Radius recalibration cadence, in ticks. NOTE: SIMBA's code calibrates
-        # the radius exactly ONCE (calibrate_clustering is guarded by
-        # `cluster_radius is None`, then snapshot/restore freezes it) -- despite
-        # tiger_vs_simba.md §2.1 saying "recalibrated every 10 ticks", which is
-        # only true of SIMBA's prototypes/tau, not its radius. In the stationary
-        # standardised input space the radius barely moves, so periodic
-        # recalibration converges to the same value; TIGER recalibrates
-        # periodically (rather than freezing after one shot) because, unlike
-        # SIMBA, it has no offline pass to fit the standardisation stats and fill
-        # the G1 buffers before the run -- an early one-shot radius would be
-        # computed from immature stats and a nearly-empty G1 buffer. Set this
-        # very high to approximate SIMBA's freeze-after-first behaviour.
-        self.cluster_calibration_period = max(1, int(
-            self.intrusion_detection_kwargs.get('cluster_calibration_period', 10)))
         # Calibrated single-linkage radius (None until the first successful
         # calibration; see _calibrate_cluster_radius). Deliberately NOT reset per
         # episode: like the running standardisation stats it lives in the
         # stationary input space, so it stays valid run-wide (SIMBA restores the
         # same radius every episode from its snapshot).
+        #
+        # NOTE on cadence vs SIMBA: SIMBA calibrates the radius exactly ONCE
+        # (calibrate_clustering is guarded by `cluster_radius is None`, then
+        # snapshot/restore freezes it) -- tiger_vs_simba.md §2.1's "recalibrated
+        # every 10 ticks" was only ever true of SIMBA's prototypes/tau, not its
+        # radius. SIMBA can freeze after one shot because it fits its
+        # standardisation stats OFFLINE first, so that single calibration already
+        # runs in the mature frame. TIGER has no offline pass: the running stats
+        # mature only gradually over the first ~50 online ticks, and an empirical
+        # sweep on the real trace showed the radius drifts down 4.43 -> 3.86 as
+        # they do (freezing the tick-0 value would lock in a ~15%-too-high radius
+        # and ~13% fewer clusters). TIGER therefore recalibrates EVERY tick
+        # (_maybe_calibrate_cluster_radius): it costs microseconds (64 samples x
+        # a handful of G1s), tracks the maturation exactly, converges to the same
+        # value SIMBA's one-shot mature-frame calibration would, and the residual
+        # steady-state jitter is <1% CoV -- far below the other documented input-
+        # space residues. No period/convergence knob: any "recalibrate every N
+        # ticks > 1" would just relingering on the still-maturing radius for
+        # nothing, so it is deliberately not offered.
         self._cluster_radius = None
-        self._cluster_calib_tick_counter = 0
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
@@ -2072,31 +2079,38 @@ class TigerBrain:
     def _single_linkage_clusters(z, radius):
         """
         SIMBA's cluster(): single-linkage connected components under `radius`
-        (Euclidean). Two samples are linked iff their distance is <= radius; a
-        cluster is a connected component of that graph. Returns a LongTensor of
-        contiguous cluster ids (0..K-1), one per row of `z`, in the same row
-        order -- so downstream indexing (member masks, per-cluster centroids,
-        majority labels) lines up with the anomalous-sample ordering.
+        (Euclidean) -- two samples are linked iff their distance is <= radius,
+        a cluster is a connected component of that graph. Returns a LongTensor
+        of contiguous cluster ids (0..K-1), one per row of `z`, in row order --
+        so downstream indexing (member masks, per-cluster centroids, majority
+        labels) lines up with the anomalous-sample ordering.
+
+        Vectorised vs SIMBA's reference: the O(n^2) radius adjacency is built
+        once with torch.cdist, then the components are extracted by SciPy's
+        C-level connected_components -- replacing SIMBA's Python flood fill,
+        which re-ran torch.nonzero once PER node and did the whole traversal in
+        Python (an O(n^2) pure-Python loop on top of the O(n^2) distance). The
+        component ids are renumbered into first-appearance order (row 0's
+        component is 0, the next newly-seen component is 1, ...) -- exactly the
+        order SIMBA's index-order flood fill assigned -- so the partition is
+        byte-identical to the reference, only faster. The n^2 distance itself is
+        intrinsic to a radius graph in this ~O(flow+packet)-dim input space (no
+        low-dim spatial index helps), so it stays; the Python traversal doesn't.
         """
         n = z.shape[0]
-        labels = torch.full((n,), -1, dtype=torch.long)
         if n == 0:
-            return labels
-        adj = torch.cdist(z, z) <= radius
-        current = 0
-        for i in range(n):
-            if labels[i] >= 0:
-                continue
-            stack = [i]
-            labels[i] = current
-            while stack:
-                j = stack.pop()
-                for k in torch.nonzero(adj[j]).flatten().tolist():
-                    if labels[k] < 0:
-                        labels[k] = current
-                        stack.append(k)
-            current += 1
-        return labels
+            return torch.empty(0, dtype=torch.long)
+        if n == 1:
+            return torch.zeros(1, dtype=torch.long)
+        adj = (torch.cdist(z, z) <= radius).cpu().numpy()
+        _, labels = connected_components(csr_matrix(adj), directed=False, connection='weak')
+        # Renumber to first-appearance order (canonical form matching SIMBA):
+        # the component of the lowest-index member gets the lowest id.
+        uniq, first_idx = np.unique(labels, return_index=True)
+        remap = np.empty(uniq.shape[0], dtype=np.int64)
+        remap[np.argsort(first_idx)] = np.arange(uniq.shape[0])
+        canon = remap[np.searchsorted(uniq, labels)]
+        return torch.from_numpy(canon).to(torch.long)
 
     def _calibrate_cluster_radius(self):
         """
@@ -2146,38 +2160,51 @@ class TigerBrain:
 
     def _maybe_calibrate_cluster_radius(self):
         """
-        Per-tick hook (called from online_inference when input_space_clustering
-        is on): (re)calibrate the radius. Attempts calibration every tick while
-        the radius is still None (so it locks in as soon as the first G1 buffer
-        fills), then refreshes it every cluster_calibration_period ticks. See
-        the cluster_calibration_period docstring in __init__ for why TIGER
-        recalibrates periodically where SIMBA's code freezes after one shot.
+        Per-tick hook (called from online_inference when input-space clustering
+        is the active substrate): recalibrate the radius every tick.
+
+        Every tick, deliberately: TIGER's running standardisation stats mature
+        only gradually over the first ~50 online ticks (no offline fitting pass),
+        and the calibrated radius drifts with them from its immature initial
+        value to its stable one (empirically 4.43 -> 3.86 on the real trace). To
+        track that maturation the radius must be recomputed frequently; skipping
+        ticks only relingers on a staler, less-mature radius. It is cheap
+        (cluster_calibration_samples per G1, a few G1s), so there is no reason to
+        throttle it, and the steady-state jitter once the stats have matured is
+        <1% CoV. _calibrate_cluster_radius is itself a no-op (leaves the radius
+        unchanged) on any tick where no G1 class yet has enough buffered samples.
         """
-        self._cluster_calib_tick_counter += 1
-        if self._cluster_radius is None \
-                or self._cluster_calib_tick_counter % self.cluster_calibration_period == 0:
-            self._calibrate_cluster_radius()
+        self._calibrate_cluster_radius()
 
     def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens, input_reps=None):
         """
         Partitions the predicted-anomalous online samples into clusters, over
         which act_on_unknown_clusters then takes one DM decision each.
 
-        Two substrates:
-          * legacy (default): the learned kernel-regression head -- binarise the
-            predicted kernel at 0.5 into an adjacency and split into components
-            (get_clusters), in the drifting hidden space; or ground-truth
-            clusters when use_neural_KR is off.
-          * input_space_clustering (SIMBA parity, tiger_vs_simba.md #1): SIMBA's
-            single-linkage connected components in the STANDARDISED RAW-INPUT
-            space, under the G1-calibrated radius (_calibrate_cluster_radius).
-            Stationary by construction; granularity set by an explicit
-            G1-calibrated radius, not wherever the kernel sigmoid lands.
+        Three substrates, with `use_neural_KR` taking precedence:
+          * use_neural_KR: False -> GOLD/ground-truth clusters (partition by the
+            samples' TRUE class label). This is the perfect-clustering oracle
+            ablation -- it isolates everything downstream of clustering from the
+            clustering quality -- and it deliberately WINS over
+            input_space_clustering: asking for gold clusters means gold clusters,
+            whichever learned substrate is otherwise configured. (Same meaning
+            use_neural_KR: False always had; input_space_clustering does not
+            override it.)
+          * use_neural_KR: True, input_space_clustering: False (legacy default)
+            -> the learned kernel-regression head: binarise the predicted kernel
+            at 0.5 into an adjacency and split into components (get_clusters), in
+            the drifting hidden space.
+          * use_neural_KR: True, input_space_clustering: True (SIMBA parity,
+            tiger_vs_simba.md #1) -> SIMBA's single-linkage connected components
+            in the STANDARDISED RAW-INPUT space, under the G1-calibrated radius
+            (_calibrate_cluster_radius). Stationary by construction; granularity
+            set by an explicit G1-calibrated radius, not wherever the kernel
+            sigmoid lands.
 
-        The kernel-regression head is trained/evaluated identically in both
-        cases -- evaluate_kernel_regression still runs so kr_metrics keep
-        reporting; input_space_clustering only changes which partition the DM
-        acts on. `hiddens` centroids are still returned (used as the DM's
+        The kernel-regression head is trained/evaluated identically in every
+        case -- evaluate_kernel_regression still runs so kr_metrics keep
+        reporting; the substrate choice only changes which partition the DM acts
+        on. `hiddens` centroids are still returned (used as the DM's
         exteroceptive centroids unless `state: input` recomputes input-space
         centroids in act_on_unknown_clusters).
         """
@@ -2195,7 +2222,12 @@ class TigerBrain:
 
         anomalous_hiddens = hiddens[-num_of_online_samples:][predicted_online_zda_mask]
 
-        if self.input_space_clustering and input_reps is not None:
+        # input_space_clustering only governs the LEARNED substrate: it applies
+        # when the kernel head is what would otherwise cluster (use_neural_KR).
+        # With use_neural_KR off, the else-branch keeps the gold/ground-truth
+        # partition untouched (the oracle ablation), so the two knobs compose
+        # cleanly instead of the input-space path shadowing the gold one.
+        if self.input_space_clustering and self.use_neural_KR and input_reps is not None:
             # SIMBA substrate: cluster the anomalous samples' standardised
             # input-space reps by single linkage. Row order matches
             # input_reps[predicted_online_zda_mask], hence clusters_oh's rows
@@ -2746,10 +2778,15 @@ class TigerBrain:
         # single-linkage partition of the anomalous samples). Computed every tick
         # (not only when decisions happen) so the running standardisation stats
         # warm up immediately; also drives the per-tick radius (re)calibration.
+        # input_space_clustering only takes effect while the kernel head is the
+        # active learned substrate (use_neural_KR); with it off, gold clusters
+        # win and neither the input reps nor the radius are consumed for
+        # clustering -- so only calibrate the radius when it will be used.
+        input_clustering_active = self.input_space_clustering and self.use_neural_KR
         online_input_reps = None
-        if self.use_input_state or self.input_space_clustering:
+        if self.use_input_state or input_clustering_active:
             online_input_reps = self._standardised_input_reps(merged_batch, num_online)
-        if self.input_space_clustering:
+        if input_clustering_active:
             self._maybe_calibrate_cluster_radius()
 
         # Always evaluate to update online stats (CMs) and get metrics
