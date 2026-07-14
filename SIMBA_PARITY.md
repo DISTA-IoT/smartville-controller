@@ -43,6 +43,7 @@ is annotated with the `SimbaConfig` field it mirrors).
 | `prices` / `rewards` / curriculum | `prices:` / `rewards:` / `knowledge:` blocks | already carried SIMBA's calibrated values |
 | CE prototypical loss | `use_huber_cs: false` | |
 | AD: dist > tau (G1-calibrated) | `inference_model_variant: simba_ad`, `ad_threshold: 0.5` | **new variant** `im_models/simba_ad.py` |
+| DM state: stationary input-space centroid | `state: input` | **new mode** — SIMBA's `input_rep` (latest flow row + window mean + mean packet bytes, log1p / ÷255, running per-feature standardisation) |
 | prototypes exclude G1 at inference | `exclude_g1_from_ad_known_set: true` | |
 | no impurity shaping / no AD oracle / static prices | `cluster_impurity_penalty_weight: 0`, `hard_epistemic_action: false`, `price_decay: false` | |
 
@@ -78,12 +79,16 @@ is annotated with the `SimbaConfig` field it mirrors).
 * Unknown-traffic **clustering** stays on the G1-supervised kernel-regression
   head (SIMBA clusters in the standardised raw-input space). Both derive their
   granularity from the G1 pseudo zero-days; the substrate differs.
-* The DM's exteroceptive state is the hidden-space centroid (`state:
-  prototype`), not SIMBA's stationary input-space centroid; the low IM rate is
-  what keeps it near-stationary. TIGER's proprio tail already carries the
-  per-class acquired-CTI map, the analogue of SIMBA's per-class known-flags.
+* ~~The DM's exteroceptive state is the hidden-space centroid~~ **closed**:
+  `state: input` now feeds the DM SIMBA's stationary input-space centroid.
+  TIGER's proprio tail already carries the per-class acquired-CTI map, the
+  analogue of SIMBA's per-class known-flags.
 * Episode length is `max_episode_steps: 1000` DM decisions ≈ SIMBA's 51-tick
   real-trace episode at ~20 decisions/tick.
+
+**The full remaining-difference audit lives in `tiger_vs_simba.md`** —
+subsystem by subsystem, with impact ratings and the lever that would close
+each gap.
 
 ## Running the offline experiment grid live
 

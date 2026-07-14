@@ -1043,6 +1043,15 @@ class ValueLearningAgent:
         # Soft updates
         self.use_soft_update = kwargs['use_soft_update']
         self.tau = float(kwargs['tau'])
+        # Hard-update cadence, counted in GRADIENT steps inside replay() (SIMBA's
+        # target_update_freq rule). Only used when use_soft_update is off: the
+        # legacy hard-update path in TigerBrain.process_input checks
+        # `step_counter % update_target_freq == 0` once per tick, but the counter
+        # advances by many decisions per tick, so it lands exactly on a multiple
+        # only by chance -- with soft updates off that left the target net
+        # effectively frozen for long, random stretches.
+        self.update_target_freq = int(kwargs['update_target_freq'])
+        self.gradient_steps = 0
 
         # Value-divergence guardrails (see default.yaml). The DM previously had
         # neither a gradient clip (unlike the IM) nor a bootstrap-target clamp,
@@ -1232,9 +1241,16 @@ class ValueLearningAgent:
                 self.model.parameters(), self.dm_grad_clip_max_norm)
         self.optimizer.step()
 
-        # Soft target update
+        # Target update: soft (Polyak) per gradient step, or -- SIMBA's rule --
+        # a hard copy every update_target_freq gradient steps when soft updates
+        # are off (see the cadence note in __init__).
         if self.use_soft_update:
             self.update_target_model(soft=True)
+        else:
+            self.gradient_steps += 1
+            if self.update_target_freq > 0 and \
+                    self.gradient_steps % self.update_target_freq == 0:
+                self.update_target_model()
 
         # Log
         if self.wbl:
