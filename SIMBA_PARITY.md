@@ -44,6 +44,7 @@ is annotated with the `SimbaConfig` field it mirrors).
 | CE prototypical loss | `use_huber_cs: false` | |
 | AD: dist > tau (G1-calibrated) | `inference_model_variant: simba_ad`, `ad_threshold: 0.5` | **new variant** `im_models/simba_ad.py` |
 | DM state: stationary input-space centroid | `state: input` | **new mode** — SIMBA's `input_rep` (latest flow row + window mean + mean packet bytes, log1p / ÷255, running per-feature standardisation) |
+| unknown clustering: input-space single-linkage, G1-calibrated radius | `input_space_clustering: true`, `cluster_radius_factor: 1.0` | **new** — SIMBA's `cluster()` + `calibrate_clustering()` in `collective_anomaly_detection` |
 | prototypes exclude G1 at inference | `exclude_g1_from_ad_known_set: true` | |
 | no impurity shaping / no AD oracle / static prices | `cluster_impurity_penalty_weight: 0`, `hard_epistemic_action: false`, `price_decay: false` | |
 
@@ -52,7 +53,10 @@ is annotated with the `SimbaConfig` field it mirrors).
 * `tiger_brain_new.py` — `im_learning_rate` (IM optimizer), `dm_learning_rate`
   remap in `init_agents`, `buy_train_burst` in `_register_delivered_cti`,
   per-decision DM replay in `online_inference`, blocked-benign penalty in
-  `_decision_reward`.
+  `_decision_reward`, and input-space clustering (`input_space_clustering`):
+  `_single_linkage_clusters` (verbatim port of SIMBA's `cluster()`),
+  `_calibrate_cluster_radius` (SIMBA's G1-calibrated radius over the per-class
+  buffers), and the `input_reps`-driven branch in `collective_anomaly_detection`.
 * `tiger_agents.py` (`ValueLearningAgent`) — linear per-decision epsilon
   schedule, buy-averse exploration draw, TD reward scaling, learn-start guard.
 * `neural_modules.py` — `dm_hidden` decouples the DQN/DuelingDQN trunk width
@@ -76,9 +80,12 @@ is annotated with the `SimbaConfig` field it mirrors).
   `multiclass_flow_packet_classifier_pretrained_h64.pt` /
   `flow_packet_confidence_decoder_pretrained_h64.pt` in `tiger_models/`, and
   uncomment the "SIMBA-geometry IM" block in `dista_tiger.yaml`.
-* Unknown-traffic **clustering** stays on the G1-supervised kernel-regression
-  head (SIMBA clusters in the standardised raw-input space). Both derive their
-  granularity from the G1 pseudo zero-days; the substrate differs.
+* ~~Unknown-traffic **clustering** stays on the G1-supervised kernel-regression
+  head~~ **closed**: `input_space_clustering: true` now partitions unknown
+  traffic by SIMBA's single-linkage connected components in the standardised
+  raw-input space, under a G1-calibrated radius (`_calibrate_cluster_radius`).
+  The kernel head is still trained/evaluated (its metrics keep reporting); only
+  the DM-facing partition changed. See `tiger_vs_simba.md` §2.1.
 * ~~The DM's exteroceptive state is the hidden-space centroid~~ **closed**:
   `state: input` now feeds the DM SIMBA's stationary input-space centroid.
   TIGER's proprio tail already carries the per-class acquired-CTI map, the

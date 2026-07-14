@@ -116,29 +116,47 @@ Legend: 🔴 could plausibly change results · 🟡 second-order · ⚪ cosmetic
 
 ## 2. Collective anomaly detection (clustering)
 
-### 2.1 🔴 Clustering substrate — the biggest remaining architectural gap
-* **SIMBA**: unknown samples are clustered in the **standardised raw-input
-  space** by single-linkage connected components under a radius calibrated on
-  the G1s (1.25× the max within-class 90th-percentile spread, capped at 0.6×
-  the min between-class centroid distance, recalibrated every 10 ticks).
-  Stationary by construction; cluster granularity is explicitly G1-calibrated.
-* **TIGER**: unknown samples are clustered by the **learned kernel head**
-  (`DistKernelRegressor` similarity net over hidden vectors), binarised at
-  0.5 into an adjacency and split into components (`get_clusters`). The kernel
-  is trained by the KR loss toward the class-identity kernel (G1-supervised,
-  so the *supervision* is analogous), but the metric lives in the drifting
-  hidden space and its granularity is wherever the sigmoid lands, not a
-  calibrated radius.
-* Impact: how many clusters per tick, and how pure they are, is the main
-  driver of decision count, wasted buys, and CTI targeting (majority label).
-  This is the most likely place live behaviour still diverges from SIMBA.
-* Note: `state: input` shows the DM the input-space centroid of whatever the
-  kernel head clustered — the *representation* is now SIMBA's, the *partition*
-  is not.
-* Lever: none by config. Closing it means clustering `input_reps` in the brain
-  (SIMBA's `cluster()` is ~20 lines and the standardised reps already exist
-  under `state: input`) with a G1-calibrated radius — a contained but real
-  code change to `collective_anomaly_detection`.
+### 2.1 ✅ (closed) Clustering substrate
+Was the biggest remaining architectural gap; now ported. `input_space_clustering:
+true` (in `dista_tiger.yaml`) makes `collective_anomaly_detection` partition the
+predicted-anomalous online samples by **single-linkage connected components in
+the standardised raw-input space** — a verbatim port of SIMBA's `cluster()`
+(proven byte-identical over 300 random trials) — under a radius calibrated on
+the G1 pseudo zero-days exactly as SIMBA does (`_calibrate_cluster_radius`):
+
+```
+radius = 1.25 * max_G1(90th-pct within-class pairwise distance)
+radius = min(radius, 0.6 * min between-G1-centroid distance)   [>= 2 G1s]
+radius *= cluster_radius_factor
+```
+
+The G1 samples are drawn from their per-class replay buffers and placed in the
+same standardised frame the online clustering uses (`_standardise_raw`,
+read-only so calibration draws don't perturb the running stats). The learned
+kernel-regression head is still trained and evaluated (`kr_metrics` keep
+reporting) — only the partition the DM acts on changed. With `state: input`
+the DM already sees the input-space centroid of each cluster, so representation
+**and** partition are now both SIMBA's.
+
+Two honest residues, neither a substrate difference:
+
+* 🟡 **Radius recalibration cadence**: SIMBA's *code* calibrates the radius
+  **once** (`calibrate_clustering` is guarded by `cluster_radius is None`, then
+  frozen via snapshot/restore) — the "recalibrated every 10 ticks" claim in the
+  old audit was only ever true of SIMBA's prototypes/τ, not its radius. TIGER
+  recalibrates every `cluster_calibration_period` ticks (default 10, and every
+  tick until the first success), because unlike SIMBA it has no offline pass to
+  fit the standardisation stats and fill the G1 buffers before the run — an
+  early one-shot radius would be computed from immature stats. In the stationary
+  standardised space the value barely moves, so this converges to SIMBA's
+  frozen radius; set `cluster_calibration_period` very high to reproduce
+  freeze-after-first.
+* 🟡 **Standardisation frame**: the same §3.1 residue as `state: input` — TIGER
+  standardises by running Welford stats (never reset) rather than SIMBA's
+  once-fit-and-frozen `feat_mu/feat_sd`. They converge within a few ticks; the
+  radius calibrated in that frame inherits the same convergence.
+
+* Lever (was): none by config. Now `input_space_clustering` / `cluster_radius_factor`.
 
 ---
 
@@ -291,8 +309,9 @@ ticks repeatedly; live traffic is nonstationary in ways the trace never was.
 
 ## 6. Priority list (if live results still diverge)
 
-1. **Clustering substrate** (§2.1) — port SIMBA's input-space single-linkage +
-   G1-calibrated radius into `collective_anomaly_detection`.
+1. ✅ **Clustering substrate** (§2.1) — DONE: SIMBA's input-space single-linkage
+   + G1-calibrated radius ported into `collective_anomaly_detection`, gated by
+   `input_space_clustering` (on in `dista_tiger.yaml`).
 2. **Cross-tick transition chaining** (§3.3) — port SIMBA's `_pending`.
 3. **Proprio channels** (§3.2) — add the quote/price and group-size channels.
 4. **Prototype caching** (§1.3) — 64-sample prototypes recomputed every 10

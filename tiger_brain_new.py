@@ -428,6 +428,50 @@ class TigerBrain:
         # reproduces that legacy rule exactly.
         self.block_benign_penalty_scale = float(
             self.intrusion_detection_kwargs.get('block_benign_penalty_scale', 0.0))
+        # --- Input-space clustering substrate (SIMBA parity, tiger_vs_simba.md
+        # priority #1). When True, the unknown-traffic partition is produced by
+        # single-linkage connected components in the STANDARDISED RAW-INPUT
+        # space (SIMBA's cluster()), under a radius calibrated on the G1 pseudo
+        # zero-days, instead of by binarising the learned kernel head over the
+        # drifting hidden space (legacy get_clusters). This is the SIMBA
+        # substrate: stationary by construction, with granularity set by an
+        # explicit G1-calibrated radius rather than wherever the kernel sigmoid
+        # lands. The kernel-regression head is still trained and evaluated
+        # (kr_metrics keep reporting); only the partition the DM acts on changes.
+        # Pairs naturally with `state: input` (which shows the DM the same
+        # input-space centroids); off by default -> legacy kernel clustering.
+        self.input_space_clustering = bool(
+            self.intrusion_detection_kwargs.get('input_space_clustering', False))
+        # Scale on the calibrated clustering radius (SIMBA's cluster_radius_factor):
+        # <1 splits more finely, >1 merges. 1.0 (default) = SIMBA's calibrated
+        # radius verbatim.
+        self.cluster_radius_factor = float(
+            self.intrusion_detection_kwargs.get('cluster_radius_factor', 1.0))
+        # How many samples per G1 class are drawn to estimate its within-class
+        # spread and centroid during radius calibration (SIMBA's proto_samples).
+        self.cluster_calibration_samples = max(2, int(
+            self.intrusion_detection_kwargs.get('cluster_calibration_samples', 64)))
+        # Radius recalibration cadence, in ticks. NOTE: SIMBA's code calibrates
+        # the radius exactly ONCE (calibrate_clustering is guarded by
+        # `cluster_radius is None`, then snapshot/restore freezes it) -- despite
+        # tiger_vs_simba.md §2.1 saying "recalibrated every 10 ticks", which is
+        # only true of SIMBA's prototypes/tau, not its radius. In the stationary
+        # standardised input space the radius barely moves, so periodic
+        # recalibration converges to the same value; TIGER recalibrates
+        # periodically (rather than freezing after one shot) because, unlike
+        # SIMBA, it has no offline pass to fit the standardisation stats and fill
+        # the G1 buffers before the run -- an early one-shot radius would be
+        # computed from immature stats and a nearly-empty G1 buffer. Set this
+        # very high to approximate SIMBA's freeze-after-first behaviour.
+        self.cluster_calibration_period = max(1, int(
+            self.intrusion_detection_kwargs.get('cluster_calibration_period', 10)))
+        # Calibrated single-linkage radius (None until the first successful
+        # calibration; see _calibrate_cluster_radius). Deliberately NOT reset per
+        # episode: like the running standardisation stats it lives in the
+        # stationary input space, so it stays valid run-wide (SIMBA restores the
+        # same radius every episode from its snapshot).
+        self._cluster_radius = None
+        self._cluster_calib_tick_counter = 0
         self.logger_instance.info(
             "\033[1m[TigerBrain] unknown_accept_reward_scale=%s, unknown_malicious_accept_penalty_scale=%s\033[0m, "
             " useless_epistemic_penalty=%s, cluster_impurity_penalty_weight=%s, "
@@ -436,7 +480,7 @@ class TigerBrain:
             "include_class_scores=%s, class_scores_encoding=%s, class_scores_sentinel=%s, "
             "ad_loss_backprop_to_encoder=%s, grad_clip_max_norm=%s, ad_threshold=%s, cti_threshold=%s, "
             "im_learning_rate=%s, buy_train_burst=%s, dm_replay_per_decision=%s, "
-            "block_benign_penalty_scale=%s\033[0m",
+            "block_benign_penalty_scale=%s, input_space_clustering=%s, cluster_radius_factor=%s\033[0m",
             self.unknown_accept_reward_scale, self.unknown_malicious_accept_penalty_scale,
             self.useless_epistemic_penalty, self.cluster_impurity_penalty_weight,
             self.classification_accuracy_reward_weight, self.exclude_g1_from_ad_known_set, self.state_mode,
@@ -444,7 +488,7 @@ class TigerBrain:
             self.include_class_scores, self.class_scores_encoding, self.class_scores_sentinel,
             self.ad_loss_backprop_to_encoder, self.grad_clip_max_norm, self.ad_threshold, self.cti_confidence_threshold,
             self.im_learning_rate, self.buy_train_burst, self.dm_replay_per_decision,
-            self.block_benign_penalty_scale)
+            self.block_benign_penalty_scale, self.input_space_clustering, self.cluster_radius_factor)
 
         # Environment and Networking
         self.container_ips = args.container_ips
@@ -1397,22 +1441,37 @@ class TigerBrain:
             d += int(self.kwargs['neural_modules'].get('third_stream_input_size', 0))
         return d
 
-    def _raw_input_reps(self, batch, tail_n):
+    def _raw_input_reps_from_streams(self, flow_features, packet_features, node_features):
         """
-        SIMBA's _raw_rep for the batch's last `tail_n` (online) rows: fixed,
-        parameter-free transforms only -- flowstats are heavy-tailed counters
-        (log1p-compress), packet bytes live in [0, 255] (scale to [0, 1]) --
-        summarised as [latest flow row | window mean | mean packet bytes]
-        so a flow's window-fill phase doesn't scatter same-class samples.
+        SIMBA's _raw_rep computed directly from raw feature streams (rather than
+        a Batch's online tail): fixed, parameter-free transforms only --
+        flowstats are heavy-tailed counters (log1p-compress), packet bytes live
+        in [0, 255] (scale to [0, 1]) -- summarised as
+        [latest flow row | window mean | mean packet bytes] so a flow's
+        window-fill phase doesn't scatter same-class samples. Shared by the
+        per-tick online path (_raw_input_reps) and the G1-buffer sampling that
+        calibrates the input-space clustering radius (_calibrate_cluster_radius),
+        so both live in exactly the same raw representation.
         """
-        flow = torch.log1p(torch.clamp(batch.flow_features[-tail_n:], min=0.0))
+        flow = torch.log1p(torch.clamp(flow_features, min=0.0))
         parts = [flow[:, -1, :], flow.mean(dim=1)]
         if self.use_packet_feats:
-            parts.append((batch.packet_features[-tail_n:] / 255.0).mean(dim=1))
+            parts.append((packet_features / 255.0).mean(dim=1))
         if self.use_node_feats:
-            node = torch.log1p(torch.clamp(batch.node_features[-tail_n:], min=0.0))
+            node = torch.log1p(torch.clamp(node_features, min=0.0))
             parts.append(node.mean(dim=1))
         return torch.cat(parts, dim=1)
+
+    def _raw_input_reps(self, batch, tail_n):
+        """
+        SIMBA's _raw_rep for the batch's last `tail_n` (online) rows -- a thin
+        wrapper over _raw_input_reps_from_streams selecting the online tail of
+        each stream.
+        """
+        return self._raw_input_reps_from_streams(
+            batch.flow_features[-tail_n:],
+            batch.packet_features[-tail_n:] if self.use_packet_feats else None,
+            batch.node_features[-tail_n:] if self.use_node_feats else None)
 
     def _update_input_stats(self, x):
         """
@@ -1453,8 +1512,22 @@ class TigerBrain:
         """
         x = self._raw_input_reps(batch, tail_n).detach()
         self._update_input_stats(x)
-        if self._input_stats_count < 2:
+        return self._standardise_raw(x)
+
+    def _standardise_raw(self, x):
+        """
+        Standardise a batch of raw input representations by the CURRENT running
+        per-feature statistics, WITHOUT folding them into those statistics --
+        the read-only counterpart to _standardised_input_reps. Used to place
+        G1-buffer samples in exactly the same standardised frame the online
+        clustering uses (_calibrate_cluster_radius) without letting those
+        replayed samples perturb the running mean/variance. Returns the input
+        unchanged while fewer than two samples have been observed (no stats
+        yet), matching _standardised_input_reps' cold-start behaviour.
+        """
+        if self._input_stats_mean is None or self._input_stats_count < 2:
             return x
+        x = x.to(self._input_stats_mean.device)
         sd = torch.sqrt(self._input_stats_m2 / (self._input_stats_count - 1)) + 1e-6
         return (x - self._input_stats_mean) / sd
 
@@ -1995,13 +2068,122 @@ class TigerBrain:
         # above, so emit their current state once the tick's decisions are in.
         self._log_reward_beliefs()
 
-    def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens):
+    @staticmethod
+    def _single_linkage_clusters(z, radius):
         """
-        Clusters eventual ZDAs using kernel regression or ground truth.
+        SIMBA's cluster(): single-linkage connected components under `radius`
+        (Euclidean). Two samples are linked iff their distance is <= radius; a
+        cluster is a connected component of that graph. Returns a LongTensor of
+        contiguous cluster ids (0..K-1), one per row of `z`, in the same row
+        order -- so downstream indexing (member masks, per-cluster centroids,
+        majority labels) lines up with the anomalous-sample ordering.
+        """
+        n = z.shape[0]
+        labels = torch.full((n,), -1, dtype=torch.long)
+        if n == 0:
+            return labels
+        adj = torch.cdist(z, z) <= radius
+        current = 0
+        for i in range(n):
+            if labels[i] >= 0:
+                continue
+            stack = [i]
+            labels[i] = current
+            while stack:
+                j = stack.pop()
+                for k in torch.nonzero(adj[j]).flatten().tolist():
+                    if labels[k] < 0:
+                        labels[k] = current
+                        stack.append(k)
+            current += 1
+        return labels
+
+    def _calibrate_cluster_radius(self):
+        """
+        Calibrate the single-linkage clustering radius on the G1 pseudo
+        zero-days, in the standardised raw-input space -- SIMBA's
+        calibrate_clustering. Large enough to swallow a class's own spread,
+        small enough to keep distinct classes apart:
+
+            radius = 1.25 * max_g1(90th-pct within-class pairwise distance)
+            radius = min(radius, 0.6 * min between-G1-centroid distance)   [>=2 G1s]
+            radius *= cluster_radius_factor
+
+        G1 samples come from their per-class replay buffers (the shadow buffers
+        SIMBA keeps), placed in the same standardised frame the online clustering
+        uses via _standardise_raw (read-only: calibration draws never perturb the
+        running stats). No-op -- leaving any previously calibrated radius intact
+        -- until the standardisation stats exist and at least one G1 class has
+        enough buffered samples; until the first success the radius stays None
+        and clustering falls back to a single component (SIMBA's cold start).
+        """
+        if self._input_stats_mean is None or self._input_stats_count < 2:
+            return
+        need = max(2, self.batch_size)
+        within, cents = [], []
+        for label in self.env.current_knowledge['G1s']:
+            codes = self.encoder.get_codes_for_labels([label])
+            if not codes:
+                continue
+            buf = self.replay_buffers.get(codes[0])
+            if buf is None or len(buf) < need:
+                continue
+            n = min(self.cluster_calibration_samples, len(buf))
+            flow, packet, node, _ = buf.sample(n)
+            x = self._standardise_raw(
+                self._raw_input_reps_from_streams(flow, packet, node))
+            if x.shape[0] < 2:
+                continue
+            within.append(torch.quantile(torch.pdist(x), 0.9).item())
+            cents.append(x.mean(dim=0))
+        if not within:
+            return
+        radius = 1.25 * max(within)
+        if len(cents) > 1:
+            between = torch.pdist(torch.stack(cents)).min().item()
+            radius = min(radius, 0.6 * between)
+        self._cluster_radius = radius * self.cluster_radius_factor
+
+    def _maybe_calibrate_cluster_radius(self):
+        """
+        Per-tick hook (called from online_inference when input_space_clustering
+        is on): (re)calibrate the radius. Attempts calibration every tick while
+        the radius is still None (so it locks in as soon as the first G1 buffer
+        fills), then refreshes it every cluster_calibration_period ticks. See
+        the cluster_calibration_period docstring in __init__ for why TIGER
+        recalibrates periodically where SIMBA's code freezes after one shot.
+        """
+        self._cluster_calib_tick_counter += 1
+        if self._cluster_radius is None \
+                or self._cluster_calib_tick_counter % self.cluster_calibration_period == 0:
+            self._calibrate_cluster_radius()
+
+    def collective_anomaly_detection(self, merged_batch, predicted_kernel, one_hot_labels, predicted_online_zda_mask, num_of_online_samples, hiddens, input_reps=None):
+        """
+        Partitions the predicted-anomalous online samples into clusters, over
+        which act_on_unknown_clusters then takes one DM decision each.
+
+        Two substrates:
+          * legacy (default): the learned kernel-regression head -- binarise the
+            predicted kernel at 0.5 into an adjacency and split into components
+            (get_clusters), in the drifting hidden space; or ground-truth
+            clusters when use_neural_KR is off.
+          * input_space_clustering (SIMBA parity, tiger_vs_simba.md #1): SIMBA's
+            single-linkage connected components in the STANDARDISED RAW-INPUT
+            space, under the G1-calibrated radius (_calibrate_cluster_radius).
+            Stationary by construction; granularity set by an explicit
+            G1-calibrated radius, not wherever the kernel sigmoid lands.
+
+        The kernel-regression head is trained/evaluated identically in both
+        cases -- evaluate_kernel_regression still runs so kr_metrics keep
+        reporting; input_space_clustering only changes which partition the DM
+        acts on. `hiddens` centroids are still returned (used as the DM's
+        exteroceptive centroids unless `state: input` recomputes input-space
+        centroids in act_on_unknown_clusters).
         """
         if self.use_neural_KR:
             _, predicted_decimal_clusters, kr_metrics = self.evaluate_kernel_regression(
-                predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:], 
+                predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:],
                 one_hot_labels[-num_of_online_samples:],
                 INFERENCE)
         else:
@@ -2010,15 +2192,36 @@ class TigerBrain:
                 predicted_kernel[-num_of_online_samples:][:,-num_of_online_samples:],
                 one_hot_labels[-num_of_online_samples:],
                 INFERENCE)
-            
-        num_clusters = predicted_decimal_clusters.max() + 1
-        anomalous_clusters = predicted_decimal_clusters[predicted_online_zda_mask]
+
+        anomalous_hiddens = hiddens[-num_of_online_samples:][predicted_online_zda_mask]
+
+        if self.input_space_clustering and input_reps is not None:
+            # SIMBA substrate: cluster the anomalous samples' standardised
+            # input-space reps by single linkage. Row order matches
+            # input_reps[predicted_online_zda_mask], hence clusters_oh's rows
+            # align with the same anomalous-sample ordering every other
+            # act_on_unknown_clusters input (probs / labels / rewards / logits)
+            # is indexed by. Before the radius is calibrated, everything falls
+            # into one cluster (SIMBA's None-radius cold start). Components are
+            # dense (each has >=1 member), so no column is ever "missing".
+            anomalous_input_reps = input_reps[predicted_online_zda_mask]
+            if self._cluster_radius is None:
+                anomalous_clusters = torch.zeros(
+                    anomalous_input_reps.shape[0], dtype=torch.long, device=self.device)
+            else:
+                anomalous_clusters = self._single_linkage_clusters(
+                    anomalous_input_reps, self._cluster_radius).to(self.device)
+            num_clusters = int(anomalous_clusters.max().item()) + 1 if anomalous_clusters.numel() else 0
+        else:
+            num_clusters = int(predicted_decimal_clusters.max().item()) + 1
+            anomalous_clusters = predicted_decimal_clusters[predicted_online_zda_mask].to(self.device)
+
         predicted_clusters_oh = torch.nn.functional.one_hot(anomalous_clusters, num_classes=num_clusters)
 
-        centroids, missing = self.get_centroids(hiddens[-num_of_online_samples:][predicted_online_zda_mask], predicted_clusters_oh.to(torch.float32))
+        centroids, missing = self.get_centroids(anomalous_hiddens, predicted_clusters_oh.to(torch.float32))
 
         return predicted_clusters_oh, centroids, missing, kr_metrics
-    
+
     def _remap_epistemic_to_block(self, action):
         """
         Ablation helper: turns a CTI-purchase action (2) into a block (1).
@@ -2536,14 +2739,18 @@ class TigerBrain:
 
         num_online = online_batch.zda_labels.shape[0]
 
-        # 'input' state mode (SIMBA parity): compute the online tail's
-        # standardised raw-input-space representations once per tick -- the
-        # stationary substrate whose group/cluster centroids become the DM's
-        # exteroceptive state. Computed every tick (not only when decisions
-        # happen) so the running standardisation stats warm up immediately.
+        # Standardised raw-input-space representations of the online tail
+        # (SIMBA's input_rep), computed once per tick. Needed by two SIMBA-parity
+        # features that share this stationary substrate: `state: input` (the
+        # DM's exteroceptive centroids) and `input_space_clustering` (the
+        # single-linkage partition of the anomalous samples). Computed every tick
+        # (not only when decisions happen) so the running standardisation stats
+        # warm up immediately; also drives the per-tick radius (re)calibration.
         online_input_reps = None
-        if self.use_input_state:
+        if self.use_input_state or self.input_space_clustering:
             online_input_reps = self._standardised_input_reps(merged_batch, num_online)
+        if self.input_space_clustering:
+            self._maybe_calibrate_cluster_radius()
 
         # Always evaluate to update online stats (CMs) and get metrics
         # evaluate_anomaly_detection expects zda_labels and zda_predictions for the query subset
@@ -2613,7 +2820,7 @@ class TigerBrain:
 
         if num_anom > 0:
             with self.profile("onl_inf_CAD"):
-                clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens)
+                clusters_oh, centroids, missing, kr_metrics = self.collective_anomaly_detection(merged_batch, predicted_kernel, one_hot_labels, pred_online_zda_mask, num_online, hiddens, input_reps=online_input_reps)
             if self.agency:
                 online_anomaly_probs = zda_predictions[-num_online:]
                 true_label_names_zda = [name for name, is_zda in zip(true_label_names, pred_online_zda_mask.tolist()) if is_zda]
