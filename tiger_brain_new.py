@@ -263,11 +263,27 @@ class TigerBrain:
             'state',
             'relational' if self.intrusion_detection_kwargs.get('relational_state', False) else 'prototype')
         state_mode = str(state_mode).strip().lower()
-        if state_mode not in ('prototype', 'relational', 'mixed'):
+        if state_mode not in ('prototype', 'relational', 'mixed', 'input'):
             raise ValueError(
                 "intrusion_detection.state must be one of 'prototype', "
-                f"'relational', 'mixed'; got {state_mode!r}")
+                f"'relational', 'mixed', 'input'; got {state_mode!r}")
         self.state_mode = state_mode
+        # 'input' (SIMBA parity): the exteroceptive block is the group's/
+        # cluster's centroid in the STANDARDISED RAW-INPUT space -- SIMBA's
+        # input_rep: [latest flowstats row | window mean] log1p-compressed,
+        # plus the mean packet bytes scaled to [0,1], standardised by running
+        # per-feature statistics (see _standardised_input_reps). Unlike the
+        # hidden-space centroid this representation is STATIONARY: it never
+        # moves as the encoder trains, so cluster identities stay legible to
+        # the DM across IM updates -- SIMBA's stated reason for using it.
+        self.use_input_state = state_mode == 'input'
+        # Running per-feature standardisation stats for the input-space
+        # representation (batched Welford). Deliberately NOT reset per episode:
+        # SIMBA fits its feat_mu/feat_sd once and restores the same values with
+        # every episode snapshot, so the representation stays fixed run-wide.
+        self._input_stats_count = 0
+        self._input_stats_mean = None
+        self._input_stats_m2 = None
         # Derived flags naming which encodings contribute to the exteroceptive
         # block. `relational_state` stays a boolean alias driving all the
         # relational-summary machinery (reward tracker, summary construction,
@@ -659,6 +675,14 @@ class TigerBrain:
             if self.use_packet_feats:
                 self.exteroceptive_proto_dim += self.hidden_size
         self.exteroceptive_dim = self.exteroceptive_proto_dim
+        # 'input' mode (SIMBA parity): the exteroceptive block is the
+        # standardised raw-input-space centroid. It is already normalised
+        # per-feature by construction, so it must NOT be LayerNormed --
+        # exteroceptive_proto_dim stays 0 (use_prototype_state is False in
+        # this mode) and the DM nets' extero norm no-ops, exactly as in pure
+        # 'relational' mode.
+        if self.use_input_state:
+            self.exteroceptive_dim += self._input_rep_dim()
         if self.relational_state:
             self.exteroceptive_dim += self.RELATIONAL_STATE_DIM
         # Canonical, class-name-keyed layout for the full association vector.
@@ -1357,6 +1381,83 @@ class TigerBrain:
                 out[pos] = per_class[code].to(out.dtype)
         return out
 
+    def _input_rep_dim(self):
+        """
+        Width of the standardised raw-input-space representation used by the
+        'input' state mode (SIMBA's input_rep_dim): latest flowstats row +
+        window mean (2 * flow_feat_dim), plus the mean packet bytes
+        (packet_feat_dim) and, when node telemetry is active, the mean node
+        features (third_stream_input_size) -- SIMBA itself is traffic-only,
+        so the node part only exists for configs SIMBA never ran.
+        """
+        d = 2 * self.flow_feat_dim
+        if self.use_packet_feats:
+            d += self.packet_feat_dim
+        if self.use_node_feats:
+            d += int(self.kwargs['neural_modules'].get('third_stream_input_size', 0))
+        return d
+
+    def _raw_input_reps(self, batch, tail_n):
+        """
+        SIMBA's _raw_rep for the batch's last `tail_n` (online) rows: fixed,
+        parameter-free transforms only -- flowstats are heavy-tailed counters
+        (log1p-compress), packet bytes live in [0, 255] (scale to [0, 1]) --
+        summarised as [latest flow row | window mean | mean packet bytes]
+        so a flow's window-fill phase doesn't scatter same-class samples.
+        """
+        flow = torch.log1p(torch.clamp(batch.flow_features[-tail_n:], min=0.0))
+        parts = [flow[:, -1, :], flow.mean(dim=1)]
+        if self.use_packet_feats:
+            parts.append((batch.packet_features[-tail_n:] / 255.0).mean(dim=1))
+        if self.use_node_feats:
+            node = torch.log1p(torch.clamp(batch.node_features[-tail_n:], min=0.0))
+            parts.append(node.mean(dim=1))
+        return torch.cat(parts, dim=1)
+
+    def _update_input_stats(self, x):
+        """
+        Fold a batch of raw input representations into the running per-feature
+        mean/variance (batched Welford). SIMBA fits its feat_mu/feat_sd once on
+        the pretraining shadow buffers and keeps them fixed; online TIGER has
+        no such offline fitting pass, so the stats are accumulated over every
+        online sample instead -- they converge within the first few ticks and
+        are never reset (not per episode either), so the representation is
+        effectively stationary for the rest of the run.
+        """
+        b = x.shape[0]
+        if b == 0:
+            return
+        batch_mean = x.mean(dim=0)
+        batch_m2 = ((x - batch_mean) ** 2).sum(dim=0)
+        if self._input_stats_mean is None:
+            self._input_stats_count = b
+            self._input_stats_mean = batch_mean
+            self._input_stats_m2 = batch_m2
+            return
+        total = self._input_stats_count + b
+        delta = batch_mean - self._input_stats_mean
+        self._input_stats_mean = self._input_stats_mean + delta * (b / total)
+        self._input_stats_m2 = self._input_stats_m2 + batch_m2 \
+            + delta.pow(2) * (self._input_stats_count * b / total)
+        self._input_stats_count = total
+
+    def _standardised_input_reps(self, batch, tail_n):
+        """
+        Standardised raw-input-space representation of the batch's online
+        tail -- SIMBA's input_rep: the fixed _raw_input_reps transform,
+        standardised per-feature by the running statistics. This is the
+        STATIONARY substrate the 'input' state mode feeds the DM (group/
+        cluster centroids are means of these rows), so the DM's exteroceptive
+        state never drifts as the encoder trains. Returns the un-standardised
+        representation during the first tick (before any stats exist).
+        """
+        x = self._raw_input_reps(batch, tail_n).detach()
+        self._update_input_stats(x)
+        if self._input_stats_count < 2:
+            return x
+        sd = torch.sqrt(self._input_stats_m2 / (self._input_stats_count - 1)) + 1e-6
+        return (x - self._input_stats_mean) / sd
+
     def _exteroceptive_block(self, centroid, score_slice):
         """
         Assemble one group's/cluster's exteroceptive state block, concatenating
@@ -1369,14 +1470,17 @@ class TigerBrain:
             relational summary.
           - class scores (include_class_scores): the full per-class association
             vector in the canonical layout.
-        `centroid` is the group's/cluster's hidden-space centroid; `score_slice`
-        is that group's/cluster's rows of prototypical similarity scores. Only
-        the encodings that are active are computed. The centroid is always
-        passed and is used as the device/dtype reference so every part lands on
-        the same device/dtype before the concatenation, regardless of mode.
+        `centroid` is the group's/cluster's hidden-space centroid -- except in
+        'input' mode, where the callers pass the standardised raw-input-space
+        centroid instead (SIMBA's stationary DM representation) and it is used
+        verbatim as the block; `score_slice` is that group's/cluster's rows of
+        prototypical similarity scores. Only the encodings that are active are
+        computed. The centroid is always passed and is used as the device/dtype
+        reference so every part lands on the same device/dtype before the
+        concatenation, regardless of mode.
         """
         parts = []
-        if self.use_prototype_state:
+        if self.use_prototype_state or self.use_input_state:
             parts.append(centroid)
         if self.relational_state:
             summary = self._relational_summary(score_slice)
@@ -1680,7 +1784,7 @@ class TigerBrain:
 
     def act_on_known_traffic(self, num_of_anomalies, num_known, hiddens, zda_mask, rewards,
                               class_preds, interest_logits_slice, number_of_known_classes,
-                              true_label_names_known):
+                              true_label_names_known, input_reps=None):
         """
         One DM decision per predicted closed-set class-inference group within
         this tick's known-traffic sub-batch, mirroring act_on_unknown_clusters's
@@ -1713,7 +1817,15 @@ class TigerBrain:
         num_groups = unique_classes.shape[0]
 
         group_member_masks = [class_preds == cls for cls in unique_classes]
-        group_centroids = [known_hiddens[mask].mean(dim=0) for mask in group_member_masks]
+        # 'input' state mode (SIMBA parity): the group centroid the DM sees is
+        # computed in the stationary standardised raw-input space instead of
+        # the drifting hidden space. input_reps rows are the online samples in
+        # the same order as hiddens' online tail, so the same masks apply.
+        if self.use_input_state and input_reps is not None:
+            known_state_src = input_reps[~zda_mask]
+        else:
+            known_state_src = known_hiddens
+        group_centroids = [known_state_src[mask].mean(dim=0) for mask in group_member_masks]
         # Exteroceptive state block per group: the raw centroid, the relational
         # summary of the group's similarity to the known prototypes, or (mixed)
         # both concatenated -- selected by the `state` mode (see
@@ -2047,7 +2159,7 @@ class TigerBrain:
             return self._remap_epistemic_to_block(action)
         return action
 
-    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs, true_label_names_zda, anomalous_logits=None):
+    def act_on_unknown_clusters(self, clusters_oh, centroids, missing, num_anom, num_known, zda_mask, rewards, online_anomaly_probs, true_label_names_zda, anomalous_logits=None, input_reps=None):
         """
         Performs mitigation actions (block/pass/CTI) on detected unknown clusters.
         Each cluster's decision uses its own members' zda_confidence (via
@@ -2073,11 +2185,23 @@ class TigerBrain:
         anomalous_probs = online_anomaly_probs[zda_mask].view(-1, 1)
         non_missing_columns = (~missing).nonzero(as_tuple=False).squeeze(-1)
 
-        # Exteroceptive state block per cluster: the raw centroid, the
+        # Exteroceptive state block per cluster: the raw hidden centroid, the
         # relational summary of the cluster's similarity to the known
-        # prototypes, or (mixed) both concatenated -- selected by the `state`
-        # mode (see _exteroceptive_block).
-        cluster_centroids = centroids[~missing]
+        # prototypes, (mixed) both concatenated, or ('input', SIMBA parity)
+        # the cluster's centroid in the stationary standardised raw-input
+        # space -- selected by the `state` mode (see _exteroceptive_block).
+        # Clustering itself always happens upstream on the kernel head;
+        # 'input' only changes the representation the DM is shown. clusters_oh
+        # rows are the predicted-anomalous online samples in the same order as
+        # input_reps[zda_mask], so the same column masks apply.
+        if self.use_input_state and input_reps is not None:
+            anom_input_reps = input_reps[zda_mask]
+            cluster_centroids = torch.stack([
+                anom_input_reps[clusters_oh[:, non_missing_columns[i]].bool()].mean(dim=0)
+                for i in range(num_identified)
+            ]) if num_identified > 0 else centroids[~missing]
+        else:
+            cluster_centroids = centroids[~missing]
         cluster_exteroceptive = [
             self._exteroceptive_block(
                 cluster_centroids[i],
@@ -2411,6 +2535,16 @@ class TigerBrain:
         steps_before_tick = self.env.steps_done if self.agency else 0
 
         num_online = online_batch.zda_labels.shape[0]
+
+        # 'input' state mode (SIMBA parity): compute the online tail's
+        # standardised raw-input-space representations once per tick -- the
+        # stationary substrate whose group/cluster centroids become the DM's
+        # exteroceptive state. Computed every tick (not only when decisions
+        # happen) so the running standardisation stats warm up immediately.
+        online_input_reps = None
+        if self.use_input_state:
+            online_input_reps = self._standardised_input_reps(merged_batch, num_online)
+
         # Always evaluate to update online stats (CMs) and get metrics
         # evaluate_anomaly_detection expects zda_labels and zda_predictions for the query subset
         _, _, ad_metrics = self.evaluate_anomaly_detection(merged_batch.zda_labels[merged_query_mask], zda_predictions, accuracy_mask[merged_query_mask], INFERENCE)
@@ -2475,7 +2609,7 @@ class TigerBrain:
                 self.act_on_known_traffic(
                     num_anom, num_known, hiddens, pred_online_zda_mask, rewards,
                     class_preds, interest_logits_slice, number_of_known_classes,
-                    true_label_names_known)
+                    true_label_names_known, input_reps=online_input_reps)
 
         if num_anom > 0:
             with self.profile("onl_inf_CAD"):
@@ -2486,7 +2620,7 @@ class TigerBrain:
                 # Anomalous online samples' prototypical-score rows, in the
                 # same order as clusters_oh's rows -- used by relational_state.
                 anomalous_logits = logits[-num_online:][pred_online_zda_mask]
-                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs, true_label_names_zda, anomalous_logits=anomalous_logits)
+                self.act_on_unknown_clusters(clusters_oh, centroids, missing, num_anom, num_known, pred_online_zda_mask, rewards, online_anomaly_probs, true_label_names_zda, anomalous_logits=anomalous_logits, input_reps=online_input_reps)
 
         if self.agency:
             with self.profile("onl_inf_ER"):
