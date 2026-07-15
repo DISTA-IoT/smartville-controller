@@ -91,7 +91,6 @@
     "epistemic_regularisation_factor": "0.1",
     "transitionnet_kl_divergence_regularisation_factor": "1.0",
     "variational_variational_transition_loss": false,
-    "leakyrelu_alpha": 0.2,
     "actor_train_interval_steps": "100",
     "entropy_reg_coefficient": "1",
     "temperature_for_action_sampling": "1.0",
@@ -179,16 +178,16 @@
   "prices": {
     "echo": "10",
     "hakai": "10",
-    "mirai": "10",
+    "mirai": "150",
     "hajime": "10",
     "doorlock": "10",
     "gafgyt": "10",
-    "muhstik": "150",
+    "muhstik": "10",
     "h_scan": "10",
     "okiru": "10",
     "generic_ddos": "10",
     "torii": "10",
-    "cc_heartbeat": "50",
+    "cc_heartbeat": "10",
     "hue": "10"
   },
   "health": {
