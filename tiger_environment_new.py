@@ -480,14 +480,23 @@ class NewTigerEnvironment:
         purchase is delivered clean and instantly, as before.
         """
         g2s = self.current_knowledge['G2s']
+        # G2s whose CTI has been paid for but not yet delivered (delivery delay).
+        # They are still in current_knowledge['G2s'] -- an unlearnable, still-
+        # costly zero-day until delivery -- so the `not in g2s` guard below would
+        # let them be re-purchased. A re-buy would append a second pending entry
+        # for the same label, and _deliver_label would then run G2s.remove(label)
+        # twice, the second raising ValueError. Treat a still-pending label as
+        # non-acquirable (a wasted buy), honouring "it must not be paid for twice".
+        pending = self.cti_delivery.pending_labels()
 
         if target_label is None:
             target_label = list(self.current_cti_options.keys())[0]
 
-        if target_label not in g2s:
+        if target_label not in g2s or target_label in pending:
             # The target is not a purchasable G2 (an already-Known class -- e.g. a
-            # G2 already bought -- or a G1 for which no CTI is ever offered), so
-            # the buy is wasted: full price is paid but nothing is acquired. Under
+            # G2 already bought -- a G2 already paid for but still awaiting delayed
+            # delivery, or a G1 for which no CTI is ever offered), so the buy is
+            # wasted: full price is paid but nothing is acquired. Under
             # hard_epistemic_action a G2's AD oracle is already granted at its
             # (level-1) label buy in _deliver_label, so a repeat buy on it is
             # wasted like any other -- there is no separate second-level action.
