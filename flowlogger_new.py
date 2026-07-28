@@ -44,13 +44,15 @@ class FlowLogger(object):
       self.logger_instance = core.getLogger()
       self.logger_instance.name = "FlowLogger"
       self.logger_instance.setLevel(kwargs.get("flow_logger_log_level").upper())
-      self.replay_buffer_max_capacity = int(args.intrusion_detection.replay_buffer_max_capacity)
       self.packets_per_sample = int(args.intrusion_detection.packets_per_sample)
       self.packet_feat_dim = int(args.intrusion_detection.packet_feat_dim)
       self.anomyn_ports = args.intrusion_detection.anonymize_transport_ports
       self.flow_feat_dim = int(args.intrusion_detection.flow_feat_dim)
       self.flows_per_sample = int(args.intrusion_detection.flows_per_sample)
       self.use_packet_feats = args.use_packet_feats
+      self.max_pending_packet_feats = args.intrusion_detection.get('max_pending_packet_feats', None)
+      if self.max_pending_packet_feats is not None:
+         self.max_pending_packet_feats = int(self.max_pending_packet_feats)
 
 
     def reset(self):
@@ -98,13 +100,20 @@ class FlowLogger(object):
             elif len(raw) > ihl:
                 raw[ihl:] = b'\x00' * (len(raw) - ihl)
 
-        # Convert packet data to a tensor efficiently
-        payload_data_tensor = torch.frombuffer(raw, dtype=torch.uint8).to(torch.float32)
-        
+        # Keep the raw packet bytes as uint8 all the way through the per-flow
+        # window and pending queue: they are integral values in [0, 255], so
+        # uint8 is lossless and 4x smaller than float32, and it avoids a
+        # per-packet float cast on this hot PacketIn thread. The single
+        # (device-preserving) float32 cast is done once per assembled batch in
+        # TigerBrain.stack_flow_tensors. .clone() so the tensor owns its storage
+        # rather than aliasing `raw` (a local bytearray freed after this call);
+        # torch.frombuffer shares the buffer's memory.
+        payload_data_tensor = torch.frombuffer(raw, dtype=torch.uint8).clone()
+
         # Pad the array if it's less than self.packet_feat_dim bytes
         if payload_data_tensor.shape[0] < self.packet_feat_dim:
-            payload_data_tensor = F.pad(payload_data_tensor, 
-                                  (0, self.packet_feat_dim - payload_data_tensor.shape[0]), 
+            payload_data_tensor = F.pad(payload_data_tensor,
+                                  (0, self.packet_feat_dim - payload_data_tensor.shape[0]),
                                   mode='constant', value=0)
 
         return payload_data_tensor
@@ -126,11 +135,23 @@ class FlowLogger(object):
         if flows:
             # Extract packet tensor (only once for all matching flows)
             packet_tensor = self.build_packet_tensor(packet=packet.next)
-            
+
             for flow in flows:
-               # Add packet to the buffer
-               flow.packet_feat_circular_buffer.add(packet_tensor)
-               self.logger_instance.debug(f"Updated packet buffer for {ip_pair}")
+               # Keep the sticky "last packet" slot (used as a fallback when a
+               # flow has no freshly-queued packets this tick) ...
+               flow.add_packet_feature(packet_tensor)
+               # ... and queue the packet so every one captured during this
+               # sampling burst gets turned into its own sample later on,
+               # instead of being overwritten and lost.
+               if flow.queue_packet_feature(packet_tensor):
+                  self.logger_instance.debug(
+                     f"Queued packet for {ip_pair} (flow {flow.flow_id}): "
+                     f"{len(flow.pending_packet_feats)} packet(s) pending consumption")
+               else:
+                  self.logger_instance.debug(
+                     f"Dropped packet for {ip_pair} (flow {flow.flow_id}): "
+                     f"pending queue full (max_pending_packet_feats="
+                     f"{flow.max_pending_packet_feats})")
 
 
 
@@ -166,14 +187,14 @@ class FlowLogger(object):
             # Create new flow object
             self.logger_instance.info(f"Creating new flow object: {flow_id}")
             flow = Flow(
-               source_ip=sender_ip_addr, 
-               dest_ip=dest_ip_addr, 
+               source_ip=sender_ip_addr,
+               dest_ip=dest_ip_addr,
                switch_output_port=of_flowstats_obj['actions'][1]['port'],
                flow_feat_dim=self.flow_feat_dim,
                flows_per_sample=self.flows_per_sample,
                packet_feat_dim=self.packet_feat_dim,
                packets_per_sample=self.packets_per_sample,
-               replay_buffer_max_capacity=self.replay_buffer_max_capacity)
+               max_pending_packet_feats=self.max_pending_packet_feats)
             self.flows_dict[flow.flow_id] = flow
             self.ip_pair_to_flows[(sender_ip_addr, dest_ip_addr)].append(flow)
 
@@ -188,14 +209,14 @@ class FlowLogger(object):
          
          # flow feature extraction ( packet feature circular buffer is updated asychonously...)
          curr_flow_stats_vec = self.extract_flow_feature_tensor(flow=of_flowstats_obj, sender_ip_addr=sender_ip_addr)
-         # update the flow feature circular buffer
-         flow.flow_feat_circular_buffer.add(curr_flow_stats_vec)
+         # update the flow feature rolling window
+         flow.add_flow_feature(curr_flow_stats_vec)
 
     
     def _handle_flowstats_received(self, event, current_knowledge, traffic_dict, ips_containers):
       self.logger_instance.debug("FlowStatsReceived")
       stats = flow_stats_to_list(event.stats)
-      self.logger_instance.debug(f"Received {len(stats)} flow stats")
+      self.logger_instance.info(f"Received {len(stats)} flow stats")
       for sender_flow in stats:
         self.process_received_flow(
            of_flowstats_obj=sender_flow,

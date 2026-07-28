@@ -95,10 +95,24 @@ class SmartSwitch(EventMixin):
 
 
   def initialize(
-        self, 
+        self,
         flow_logger,
         wb_tracker,
         **kwargs):
+    self.logger = core.getLogger()
+    self.logger.name = "SmartSwitch"
+    self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
+    # Wipe any flow entries the switch is still holding from a previous
+    # experiment *before* resetting our own bookkeeping. self.forwardingRules/
+    # self.sampling_rule_messages are Python-side caches; clearing them alone
+    # does nothing to the switch's real flow table. Without this, a permanent
+    # forwarding rule installed for an IP pair in a prior run keeps matching
+    # in the dataplane on every later run that reuses the same topology, so
+    # the controller never sees a PacketIn for that flow again: the packet
+    # sampling rule never gets reinstalled (packet-level data goes dark for
+    # that flow) and flow-stats counters keep accumulating across experiments
+    # instead of starting from zero.
+    self._flush_switch_flow_tables()
 
     self.resample_packets = bool(kwargs['resample_packets'])
     self.sampling_rate_seconds = int(kwargs['switching_args'].get('sampling_rate_seconds'))
@@ -108,9 +122,7 @@ class SmartSwitch(EventMixin):
     self.max_buffering_secs = int(kwargs['switching_args'].get('max_buffering_secs'))
     self.arp_req_exp_secs = int(kwargs['switching_args'].get('arp_req_exp_secs'))
     self.sampling_flow_hardtimeout = int(kwargs['switching_args'].get('sampling_flow_hard_timeout'))
-    self.logger = core.getLogger()
-    self.logger.name = "SmartSwitch"
-    self.logger.setLevel(kwargs.get("smart_switch_log_level").upper())
+    
     self.logger.info(f"SmartSwitch started with args: {kwargs['switching_args']}")
     self.logger.info(f"SmartSwitch resampling packets: {self.resample_packets}")
     self.flow_logger = flow_logger
@@ -160,6 +172,34 @@ class SmartSwitch(EventMixin):
     self.connection = None
     self.sampling_rules_timer = Timer(self.sampling_rate_seconds, self.send_sampling_rules, recurring=True)
     self.logger.info(f"SmartSwitch initialized!!")
+
+
+  def _notify_wandb_alert(self, title, text, level="ERROR"):
+    """
+    Best-effort W&B alert, mirroring tiger_server.py's notify_wandb_alert.
+    Must never raise, since it's called from an event handler.
+    """
+    try:
+      if self.wb_tracker is None or self.wb_tracker.wb_run_finished or \
+        getattr(self.wb_tracker, "wb_run", None) is None:
+        return
+      import wandb
+      alert_level = getattr(wandb.AlertLevel, level, wandb.AlertLevel.ERROR)
+      self.wb_tracker.wb_run.alert(title=title, text=text, level=alert_level)
+    except Exception as alert_exc:
+      self.logger.warning(f"Failed to send W&B alert ({title}): {alert_exc}")
+
+
+  def _handle_openflow_ConnectionUp(self, event):
+    self.logger.info(f"[OpenFlow] Connection UP for switch {event.dpid} ({event.connection})")
+
+
+  def _handle_openflow_ConnectionDown(self, event):
+    self.logger.warning(f"[OpenFlow] Connection DOWN for switch {event.dpid} ({event.connection})")
+    self._notify_wandb_alert(
+      title="SmartSwitch lost OpenFlow connection",
+      text=f"Switch {event.dpid} disconnected from the controller ({event.connection}).",
+    )
 
 
   def _handle_expiration(self):
@@ -235,6 +275,29 @@ class SmartSwitch(EventMixin):
         core.openflow.sendToDPID(switch_id, po)
 
 
+  def _flush_switch_flow_tables(self):
+      """
+      Delete every flow entry (wildcard match) on every currently connected
+      switch. Called at the top of initialize() so each new experiment
+      starts from an empty flow table on the real switch, not just an empty
+      Python-side cache. Iterates core.openflow._connections directly
+      (rather than self.connection) because self.connection is only learned
+      lazily from the first PacketIn/ConnectionUp and may still be None or
+      stale at /initialize time, while the switch itself stays connected
+      across experiments.
+      """
+      try:
+        connections = list(core.openflow._connections.values())
+      except Exception as e:
+        self.logger.warning(f"Could not enumerate switch connections to flush flow tables: {e}")
+        return
+
+      for connection in connections:
+        msg = of.ofp_flow_mod(command=of.OFPFC_DELETE)
+        connection.send(msg)
+        self.logger.info(f"Flushed all flow table entries on switch {connection.dpid} before re-initializing")
+
+
   def delete_ip_flow_matching_rules(self, dest_ip, connection):
       switch_id = connection.dpid
 
@@ -303,6 +366,22 @@ class SmartSwitch(EventMixin):
         self.connection.send(sampling_msg)
         self.logger.debug(f"Sent sampling rule for flow {flow_id}")
        
+
+  def pause(self):
+      """
+      Quiesce the switch between experiments: stop processing PacketIns and
+      stop the recurring timers. initialize() re-arms everything on the next
+      /initialize. Safe to call repeatedly.
+      """
+      self.paused = True
+
+      if getattr(self, '_expire_timer', None) is not None:
+        self._expire_timer.cancel()
+        self._expire_timer = None
+
+      if getattr(self, 'sampling_rules_timer', None) is not None:
+        self.sampling_rules_timer.cancel()
+        self.sampling_rules_timer = None
 
   def add_ip_to_ip_flow_matching_rule(self, 
                                  switch_id,
@@ -634,6 +713,7 @@ class SmartSwitch(EventMixin):
 
 
   def _handle_openflow_PacketIn(self, event):
+    
     self.connection = event.connection
     self.openflow_packets_received += 1
     switch_id = event.connection.dpid
@@ -649,7 +729,7 @@ class SmartSwitch(EventMixin):
       self.logger.warning(f"switch {switch_id}, port {incomming_port}: ignoring unparsed packet")
       return
   
-    # ── NEW ──────────────────────────────────────────────────────────────────
+    
     # Packet was explicitly forwarded here by a sampling flow rule (OFPR_ACTION).
     # Only cache it for ML feature extraction; do NOT touch routing/ARP/buffers.
     if event.ofp.reason == of.OFPR_ACTION:
@@ -659,7 +739,6 @@ class SmartSwitch(EventMixin):
                 dst_ip=packet.next.dstip,
                 packet=packet)
         return
-    # ─────────────────────────────────────────────────────────────────────────
 
     if switch_id not in self.arpTables:
       # New switch -- create an empty table
@@ -670,13 +749,14 @@ class SmartSwitch(EventMixin):
       #Ignore lldp packets
       return
 
+    
     if isinstance(packet.next, ipv4):
-      
-        self.handle_ipv4_packet_in(
-          switch_id=switch_id,
-          incomming_port=incomming_port,
-          packet_in_event=event,
-          packet=packet)
+        
+          self.handle_ipv4_packet_in(
+            switch_id=switch_id,
+            incomming_port=incomming_port,
+            packet_in_event=event,
+            packet=packet)
 
     elif isinstance(packet.next, arp):
         self.handle_arp_packet_in(

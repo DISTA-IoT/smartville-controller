@@ -17,6 +17,7 @@
 # used in this file can be found in the accompanying `NOTICE` file.
 import torch
 import random
+import warnings
 import numpy as np
 from collections import deque
 
@@ -94,6 +95,22 @@ class PrioritizedReplayBuffer:
         np.random.seed(seed)
 
     def _get_priority(self, error):
+        # Guard against a non-finite TD error (upstream NaN/inf, e.g. a diverged
+        # encoder producing NaN states). A single inf/NaN priority would set
+        # max_priority=inf, poison every subsequent push, drive tree.total() to
+        # inf, and make sample()'s np.random.uniform raise "Range exceeds valid
+        # bounds" -- a run-killing crash far from the real cause. Treat it as a
+        # zero-error (lowest) priority and warn once so the divergence is
+        # visible rather than silently swallowed.
+        if not np.isfinite(error):
+            if not getattr(self, '_warned_nonfinite_priority', False):
+                warnings.warn(
+                    "PrioritizedReplayBuffer: non-finite TD error encountered; "
+                    "clamping its priority to the minimum. This indicates an "
+                    "upstream NaN/inf (e.g. a diverged model producing NaN "
+                    "states/Q-values) -- investigate the source.")
+                self._warned_nonfinite_priority = True
+            error = 0.0
         return (np.abs(error) + self.epsilon) ** self.alpha
 
     def push(self, sample):
@@ -167,20 +184,51 @@ class RawReplayBuffer():
     """
     This buffer is not using binary labels for zdas and test zdas,
     instead, it will ask the zda labellings to the dynamic curriculum in the caller.
+
+    Storage is a struct-of-arrays ring: each feature stream (flow / packet /
+    node) and the label live in their own preallocated tensor, filled lazily on
+    the first push (once shapes/dtype/device are known). Sampling is then a
+    single vectorised gather (advanced-index by the drawn row indices) instead
+    of a per-sample Python loop + torch.cat, which matters because
+    sample() runs per class, twice per tick (inference support + training).
+    The push/sample tensor contract is unchanged: push takes [1, ...] rows,
+    sample returns [n, ...] features and an [n, 1] label column, drawn without
+    replacement via random.sample (same RNG semantics as before).
     """
     def __init__(self, capacity, seed):
         self.capacity = capacity
-        self.buffer = [None] * capacity
+        self._flow = None
+        self._packet = None
+        self._node = None
+        self._label = None
         self.position = 0
         self.size = 0
+        # Preserve the original global-RNG seeding (and thus sampling sequence
+        # side effects) rather than switching to a private generator.
         random.seed(seed)
 
+    def _alloc_like(self, state):
+        # state is a [1, ...] row; allocate [capacity, ...] with its dtype/device.
+        return torch.empty((self.capacity, *state.shape[1:]), dtype=state.dtype, device=state.device)
 
     def push(self, flow_state, packet_state, node_state, label):
-        self.buffer[self.position] = (flow_state, packet_state, node_state, label)
+        if self._flow is None:
+            self._flow = self._alloc_like(flow_state)
+            self._label = self._alloc_like(label)
+            if packet_state is not None:
+                self._packet = self._alloc_like(packet_state)
+            if node_state is not None:
+                self._node = self._alloc_like(node_state)
+
+        self._flow[self.position] = flow_state[0]
+        self._label[self.position] = label[0]
+        if self._packet is not None:
+            self._packet[self.position] = packet_state[0]
+        if self._node is not None:
+            self._node[self.position] = node_state[0]
+
         self.position = (self.position + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
-
 
     def sample(self, num_of_samples):
         if self.size < num_of_samples:
@@ -188,19 +236,21 @@ class RawReplayBuffer():
 
         indices = random.sample(range(self.size), num_of_samples)
 
-        f_batch, p_batch, n_batch, l_batch = [], [], [], []
+        # Gather each stream with an index tensor on that stream's own device.
+        # The streams need not all share a device (as in the live path, flow/
+        # packet/node features are CPU while labels are on self.device), so a
+        # single fixed-device index would break advanced-indexing on a GPU
+        # deployment. Building the (tiny) index per stream keeps this correct
+        # for all-CPU, all-GPU, and the mixed layout alike.
+        def _gather(t):
+            if t is None:
+                return None
+            return t[torch.as_tensor(indices, dtype=torch.long, device=t.device)]
 
-        for i in indices:
-            f, p, n, l = self.buffer[i]
-            f_batch.append(f)
-            if p is not None: p_batch.append(p)
-            if n is not None: n_batch.append(n)
-            l_batch.append(l)
-        
-        return torch.cat(f_batch, 0), \
-            (torch.cat(p_batch, 0) if p_batch else None), \
-            (torch.cat(n_batch, 0) if n_batch else None), \
-            torch.cat(l_batch, 0).unsqueeze(1)
+        return _gather(self._flow), \
+            _gather(self._packet), \
+            _gather(self._node), \
+            _gather(self._label).unsqueeze(1)
 
 
     def __len__(self):

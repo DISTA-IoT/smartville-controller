@@ -20,26 +20,55 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _as_bool(value):
+    """Coerce a kwargs value (which may arrive as a real bool or as a config
+    string like "True"/"1") into a Python bool."""
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
+# Length of the proprioceptive tail of every DM state vector -- the fixed
+# block of scalars that follows the exteroceptive (centroid/relational) block.
+# Every state-consuming net splits the state at this boundary
+# (exteroceptive = x[:, :-PROPRIOCEPTIVE_STATE_SIZE],
+#  proprioceptive = x[:, -PROPRIOCEPTIVE_STATE_SIZE:]), so this is the single
+# source of truth for the split. Must stay in sync with the channels assembled
+# in TigerBrain.assembly_state_vector and with the `state_space_dim +=
+# PROPRIOCEPTIVE_STATE_SIZE` that sizes the state there. Channels, in order:
+# anomaly count, ZDA confidence, known count, classification confidence,
+# acquired-CTI fraction, CTI-available flag, budget.
+PROPRIOCEPTIVE_STATE_SIZE = 7
+
+
+def _make_proprio_norm(kwargs):
+    """Normaliser for the proprioceptive tail. Default is the pooled
+    LayerNorm(PROPRIOCEPTIVE_STATE_SIZE). When proprio_feature_scaling is on,
+    the tail is instead normalised per-feature upstream
+    (TigerBrain.assembly_state_vector), so the net must NOT normalise it
+    again -- return Identity to pass it through."""
+    if _as_bool(kwargs.get('proprio_feature_scaling', False)):
+        return nn.Identity()
+    return nn.LayerNorm(PROPRIOCEPTIVE_STATE_SIZE)
+
+
 class PolicyNet(nn.Module):
     def __init__(self, kwargs):
         super(PolicyNet, self).__init__()
-        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
-        self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
-        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
-        self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), int(kwargs['action_size']))
+        self.proprio_norm = _make_proprio_norm(kwargs)
+        hidden_size = int(kwargs['hidden_size'])
+        self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, int(kwargs['action_size']))
 
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
-        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
-        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
-        # concat the two parts
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
         x = F.softmax(self.fc3(x), dim=len(x.shape)-1)
         return x
 
@@ -47,23 +76,20 @@ class PolicyNet(nn.Module):
 class ValueNet(nn.Module):
     def __init__(self, kwargs):
         super(ValueNet, self).__init__()
-        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
-        self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
-        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
-        self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), 1)
+        self.proprio_norm = _make_proprio_norm(kwargs)
+        hidden_size = int(kwargs['hidden_size'])
+        self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
-        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
-        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
-        # concat the two parts
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
         return self.fc3(x)
 
 
@@ -73,59 +99,50 @@ class NEFENet(nn.Module):
         Thought to booststrap the value in term of the NEGATIVE EXPECTED FREE ENERGY
         """
         super(NEFENet, self).__init__()
-        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
-        self.fc1_prime = nn.Linear(6, int(kwargs['hidden_size']))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(kwargs['hidden_size']) // 5)
-        self.fc2_prime = nn.Linear(int(kwargs['hidden_size']), 4 * (int(kwargs['hidden_size']) // 5))
-        self.fc3 = nn.Linear(5 * (int(kwargs['hidden_size']) // 5), int(kwargs['action_size']))
+        self.proprio_norm = _make_proprio_norm(kwargs)
+        hidden_size = int(kwargs['hidden_size'])
+        self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, int(kwargs['action_size']))
 
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
-        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
-        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
-        # concat the two parts
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
         return self.fc3(x)
-    
+
 
 class DQN(nn.Module):
     def __init__(self, kwargs):
         super(DQN, self).__init__()
-        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
-        self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
-        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
-        self.fc3 = nn.Linear(5 * (int(int(kwargs['hidden_size'])) // 5), int(int(kwargs['action_size'])))
-
+        self.proprio_norm = _make_proprio_norm(kwargs)
+        hidden_size = int(int(kwargs['hidden_size']))
+        self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, int(int(kwargs['action_size'])))
 
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
-        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
-        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
-        # concat the two parts
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
         return self.fc3(x)
 
 
 class DuelingDQN(nn.Module):
     def __init__(self, kwargs):
         super(DuelingDQN, self).__init__()
-        self.fc1 = nn.Linear(int(kwargs['state_size']) - 6, 2 * int(kwargs['state_size']))
-        self.fc1_prime = nn.Linear(6, int(int(kwargs['hidden_size'])))
-        self.fc2 = nn.Linear(2 * int(kwargs['state_size']), int(int(kwargs['hidden_size'])) // 5)
-        self.fc2_prime = nn.Linear(int(int(kwargs['hidden_size'])), 4 * (int(int(kwargs['hidden_size'])) // 5))
-
-        hidden_dim = 5 * (int(int(kwargs['hidden_size'])) // 5)
+        self.proprio_norm = _make_proprio_norm(kwargs)
+        hidden_dim = int(int(kwargs['hidden_size']))
+        self.fc1 = nn.Linear(int(kwargs['state_size']), hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
 
         # Dueling streams
         self.value_stream = nn.Sequential(
@@ -144,14 +161,11 @@ class DuelingDQN(nn.Module):
     def forward(self, x):
         if len(x.shape)<2:
             x = x.unsqueeze(0)
-        exteroceptive_part = x[:,:-6]
-        proprioceptive_part = x[:,-6:]
-        exteroceptive_part = torch.relu(self.fc1(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc1_prime(proprioceptive_part))
-        exteroceptive_part = torch.relu(self.fc2(exteroceptive_part))
-        proprioceptive_part = torch.relu(self.fc2_prime(proprioceptive_part))
-        # concat the two parts
+        exteroceptive_part = x[:,:-PROPRIOCEPTIVE_STATE_SIZE]
+        proprioceptive_part = self.proprio_norm(x[:,-PROPRIOCEPTIVE_STATE_SIZE:])
         x = torch.cat((exteroceptive_part, proprioceptive_part), dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
 
         value = self.value_stream(x)
         advantage = self.advantage_stream(x)
