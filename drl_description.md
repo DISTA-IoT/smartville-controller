@@ -1,6 +1,6 @@
 # TIGER's DRL — Detailed Analysis
 
-Grounded entirely in `smartville-controller` (branch `TIGER_PAPER_DO_NOT_DELETE`, files `tiger_environment_new.py`, `tiger_brain_new.py`, `tiger_agents.py`, `neural_modules.py`) and the hyperparameters actually shipped in `tiger/config/default.yaml`. 
+Grounded entirely in `smartville-controller` (branch `tiger_second_round`, files `tiger_environment_new.py`, `tiger_brain_new.py`, `tiger_agents.py`, `neural_modules.py`) and the hyperparameters actually shipped in `tiger/config/default.yaml`. 
 
 ## 1. The two levels 
 Two *coupled but asynchronously-updated* learning problems sharing one stream of network traffic:
@@ -47,7 +47,7 @@ For known-class traffic, the action space is collapsed to a binary choice in eff
 
 `zda_confidence` and `cs_classif_confidence` are passed into `assembly_state_vector` explicitly by the caller, so each call site supplies the confidence of the specific group/cluster the decision is actually about. `acquired_cti_fraction` and `epistemic_actions_available` are *not* passed as arguments; both are read live off `self.env` inside `assembly_state_vector` (hence the unchanged 6-argument signature).
 
-`acquired_cti_fraction` (`NewTigerEnvironment.acquired_cti_fraction()`) is the fraction of *this episode's* G2 (zero-day) pool that has been bought and delivered so far — `0.0` at episode reset, rising monotonically toward `1.0` as G2s are purchased and promoted to Knowns (delivered buys only; a paid-but-not-yet-delivered G2 under the delivery-delay model is not yet counted). It gives the value function an explicit, monotone memory of how much CTI the agent has acquired, so a purchase's delayed pay-off — earned later, on the known-traffic path, once the bought class reappears — becomes attributable to the epistemic action that caused it. **This channel is an addition on this working branch to address the CTI credit-assignment problem; it is not present in the `TIGER_PAPER_DO_NOT_DELETE` snapshot, whose proprioceptive block is 6-dim (no `acquired_cti_fraction`).**
+`acquired_cti_fraction` (`NewTigerEnvironment.acquired_cti_fraction()`) is the fraction of *this episode's* G2 (zero-day) pool that has been bought and delivered so far — `0.0` at episode reset, rising monotonically toward `1.0` as G2s are purchased and promoted to Knowns (delivered buys only; a paid-but-not-yet-delivered G2 under the delivery-delay model is not yet counted). It gives the value function an explicit, monotone memory of how much CTI the agent has acquired, so a purchase's delayed pay-off — earned later, on the known-traffic path, once the bought class reappears — becomes attributable to the epistemic action that caused it. **This channel is an addition on this working branch to address the CTI credit-assignment problem; it is not present in the `tiger_second_round` snapshot, whose proprioceptive block is 6-dim (no `acquired_cti_fraction`).**
 
 Both call sites take **one DM decision per identified group**, looped, with a real exteroceptive centroid every time:
 
